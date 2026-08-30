@@ -122,19 +122,6 @@ module rv_rename2 #(
     return selected;
   endfunction
 
-  function automatic logic [PHYS_TAG_WIDTH-1:0] map_source(
-    input reg_class_e source_class,
-    input logic [4:0] source_arch,
-    input logic [PHYS_TAG_WIDTH-1:0] integer_map [0:ARCH_INT_REGS-1],
-    input logic [PHYS_TAG_WIDTH-1:0] fp_map [0:ARCH_FP_REGS-1]
-  );
-    case (source_class)
-      REG_INT: return integer_map[source_arch];
-      REG_FP:  return fp_map[source_arch];
-      default: return '0;
-    endcase
-  endfunction
-
   always_comb begin
     committed_int_free = '1;
     committed_fp_free  = '1;
@@ -178,12 +165,21 @@ module rv_rename2 #(
     lane_shape_ok          = !rename_valid_i[1] || rename_valid_i[0];
 
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      src0_phys_o[lane] = map_source(src0_class_i[lane], src0_arch_i[lane],
-                                     int_rat_work, fp_rat_work);
-      src1_phys_o[lane] = map_source(src1_class_i[lane], src1_arch_i[lane],
-                                     int_rat_work, fp_rat_work);
-      src2_phys_o[lane] = map_source(src2_class_i[lane], src2_arch_i[lane],
-                                     int_rat_work, fp_rat_work);
+      case (src0_class_i[lane])
+        REG_INT: src0_phys_o[lane] = int_rat_work[src0_arch_i[lane]];
+        REG_FP:  src0_phys_o[lane] = fp_rat_work[src0_arch_i[lane]];
+        default: src0_phys_o[lane] = '0;
+      endcase
+      case (src1_class_i[lane])
+        REG_INT: src1_phys_o[lane] = int_rat_work[src1_arch_i[lane]];
+        REG_FP:  src1_phys_o[lane] = fp_rat_work[src1_arch_i[lane]];
+        default: src1_phys_o[lane] = '0;
+      endcase
+      case (src2_class_i[lane])
+        REG_INT: src2_phys_o[lane] = int_rat_work[src2_arch_i[lane]];
+        REG_FP:  src2_phys_o[lane] = fp_rat_work[src2_arch_i[lane]];
+        default: src2_phys_o[lane] = '0;
+      endcase
 
       writes_destination_o[lane] = rename_valid_i[lane] &&
         writes_destination_i[lane] &&
@@ -228,6 +224,9 @@ module rv_rename2 #(
 
     rename_can_accept_o = allocation_ok && lane_shape_ok &&
                           !recover_committed_i && !restore_checkpoint_i;
+  end
+
+  always_comb begin
     rename_fire_o = rename_can_accept_o && dispatch_accept_i &&
                     (|rename_valid_i);
   end

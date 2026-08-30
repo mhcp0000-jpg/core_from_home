@@ -30,29 +30,169 @@ module rv_frontend #(
   input  logic [1:0]                            imem_rsp_resp_i
 );
 
-  // M0 architecture shell. Fetch queue, branch predictor, and C aligner are
-  // implemented in M1/M3. Keeping every output inactive makes the incomplete
-  // state explicit and prevents accidental execution before those blocks exist.
-  always_comb begin
-    fetch_valid_o      = '0;
-    fetch_pc_o         = '0;
-    fetch_instr_o      = '0;
-    fetch_inst_len_o   = '0;
-    fetch_prediction_o = '0;
-    fetch_fault_o      = '0;
-    imem_req_valid_o   = 1'b0;
-    imem_req_addr_o    = RESET_VECTOR;
-    imem_req_id_o      = '0;
-    imem_req_epoch_o   = '0;
-    imem_rsp_ready_o   = 1'b0;
+  import rv_ooo_pkg::*;
+
+  localparam int unsigned QUEUE_BYTES = 64;
+  localparam int unsigned QUEUE_COUNT_WIDTH = $clog2(QUEUE_BYTES + 1);
+  localparam int unsigned FETCH_ADDR_LSB = $clog2(FETCH_BYTES);
+  localparam logic [XLEN-1:0] PC_INCREMENT_2 = 2;
+  localparam logic [XLEN-1:0] PC_INCREMENT_4 = 4;
+  localparam logic [PADDR_WIDTH-1:0] FETCH_BYTES_VALUE = FETCH_BYTES;
+
+  logic [PADDR_WIDTH-1:0] reset_vector_paddr;
+  logic [PADDR_WIDTH-1:0] redirect_paddr;
+  logic [PADDR_WIDTH-1:0] redirect_block_addr;
+  logic [PADDR_WIDTH-1:0] next_request_addr_q;
+  logic [3:0] epoch_q;
+  logic [3:0] next_id_q;
+  logic outstanding_q;
+  logic [3:0] outstanding_id_q;
+  logic [3:0] outstanding_epoch_q;
+  logic [PADDR_WIDTH-1:0] outstanding_addr_q;
+  logic fault_stop_q;
+
+  logic queue_fill_valid;
+  logic queue_fill_ready;
+  logic [1:0] queue_valid;
+  logic [1:0] queue_ready;
+  logic [1:0][XLEN-1:0] queue_pc;
+  logic [1:0][31:0] queue_instruction;
+  inst_len_e [1:0] queue_inst_len;
+  logic [1:0] queue_fault;
+  logic queue_empty;
+  logic [QUEUE_COUNT_WIDTH-1:0] queue_byte_count;
+  logic response_id_matches;
+  logic response_is_current;
+  logic [1:0][XLEN-1:0] sequential_pc;
+
+  if (PADDR_WIDTH >= XLEN) begin : g_pc_extend
+    assign reset_vector_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, RESET_VECTOR};
+    assign redirect_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, redirect_pc_i};
+  end else begin : g_pc_truncate
+    assign reset_vector_paddr = RESET_VECTOR[PADDR_WIDTH-1:0];
+    assign redirect_paddr = redirect_pc_i[PADDR_WIDTH-1:0];
   end
 
-  logic unused_inputs;
+  assign redirect_block_addr =
+    {redirect_paddr[PADDR_WIDTH-1:FETCH_ADDR_LSB], {FETCH_ADDR_LSB{1'b0}}};
+  assign response_id_matches = outstanding_q &&
+                               (imem_rsp_id_i == outstanding_id_q);
+  assign response_is_current = response_id_matches &&
+                               (imem_rsp_epoch_i == outstanding_epoch_q) &&
+                               (outstanding_epoch_q == epoch_q);
+
+  assign imem_req_valid_o = !redirect_valid_i && !outstanding_q &&
+                            !fault_stop_q &&
+                            (queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES));
+  assign imem_req_addr_o = next_request_addr_q;
+  assign imem_req_id_o = next_id_q;
+  assign imem_req_epoch_o = epoch_q;
+
+  assign queue_fill_valid = imem_rsp_valid_i && response_is_current &&
+                            !redirect_valid_i;
+  assign imem_rsp_ready_o = response_is_current ? queue_fill_ready : 1'b1;
+
+  assign fetch_valid_o = redirect_valid_i ? 2'b00 : queue_valid;
+  assign fetch_pc_o = queue_pc;
+  assign fetch_instr_o = queue_instruction;
+  assign fetch_inst_len_o = queue_inst_len;
+  assign fetch_fault_o = queue_fault;
+  assign queue_ready = redirect_valid_i ? 2'b00 : fetch_ready_i;
+
   always_comb begin
-    unused_inputs = clk_i ^ rst_ni ^ redirect_valid_i ^ (^redirect_pc_i) ^
-                    (^fetch_ready_i) ^ imem_req_ready_i ^ imem_rsp_valid_i ^
-                    (^imem_rsp_id_i) ^ (^imem_rsp_epoch_i) ^
-                    (^imem_rsp_data_i) ^ (^imem_rsp_resp_i);
+    fetch_prediction_o = '0;
+    sequential_pc = '0;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      sequential_pc[lane] = queue_pc[lane] +
+        ((queue_inst_len[lane] == INST_LEN_16) ?
+         PC_INCREMENT_2 : PC_INCREMENT_4);
+      fetch_prediction_o[lane].target = '0;
+      fetch_prediction_o[lane].target[XLEN-1:0] = sequential_pc[lane];
+    end
   end
+
+  rv_fetch_queue #(
+    .XLEN         (XLEN),
+    .PADDR_WIDTH  (PADDR_WIDTH),
+    .FETCH_BYTES  (FETCH_BYTES),
+    .QUEUE_BYTES  (QUEUE_BYTES),
+    .RESET_VECTOR (RESET_VECTOR)
+  ) u_fetch_queue (
+    .clk_i,
+    .rst_ni,
+    .fill_valid_i      (queue_fill_valid),
+    .fill_ready_o      (queue_fill_ready),
+    .fill_addr_i       (outstanding_addr_q),
+    .fill_id_i         (imem_rsp_id_i),
+    .fill_epoch_i      (imem_rsp_epoch_i),
+    .fill_data_i       (imem_rsp_data_i),
+    .fill_resp_i       (imem_rsp_resp_i),
+    .redirect_valid_i,
+    .redirect_pc_i,
+    .new_epoch_i       (epoch_q + 1'b1),
+    .out_valid_o       (queue_valid),
+    .out_ready_i       (queue_ready),
+    .out_pc_o          (queue_pc),
+    .out_instruction_o (queue_instruction),
+    .out_inst_len_o    (queue_inst_len),
+    .out_fault_o       (queue_fault),
+    .empty_o           (queue_empty),
+    .byte_count_o      (queue_byte_count)
+  );
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      next_request_addr_q <=
+        {reset_vector_paddr[PADDR_WIDTH-1:FETCH_ADDR_LSB],
+         {FETCH_ADDR_LSB{1'b0}}};
+      epoch_q <= '0;
+      next_id_q <= '0;
+      outstanding_q <= 1'b0;
+      outstanding_id_q <= '0;
+      outstanding_epoch_q <= '0;
+      outstanding_addr_q <= '0;
+      fault_stop_q <= 1'b0;
+    end else begin
+      if (imem_req_valid_o && imem_req_ready_i) begin
+        outstanding_q <= 1'b1;
+        outstanding_id_q <= next_id_q;
+        outstanding_epoch_q <= epoch_q;
+        outstanding_addr_q <= next_request_addr_q;
+        next_request_addr_q <= next_request_addr_q + FETCH_BYTES_VALUE;
+        next_id_q <= next_id_q + 1'b1;
+      end
+
+      if (imem_rsp_valid_i && imem_rsp_ready_o && response_id_matches) begin
+        outstanding_q <= 1'b0;
+        if (response_is_current && (imem_rsp_resp_i != 2'b00))
+          fault_stop_q <= 1'b1;
+      end
+
+      if (redirect_valid_i) begin
+        epoch_q <= epoch_q + 1'b1;
+        next_request_addr_q <= redirect_block_addr;
+        fault_stop_q <= 1'b0;
+      end
+    end
+  end
+
+`ifndef SYNTHESIS
+  property p_request_stable_when_stalled;
+    @(posedge clk_i) disable iff (!rst_ni || redirect_valid_i)
+      imem_req_valid_o && !imem_req_ready_i |=> imem_req_valid_o &&
+      $stable({imem_req_addr_o, imem_req_id_o, imem_req_epoch_o});
+  endproperty
+  assert property (p_request_stable_when_stalled);
+
+  property p_response_id_matches_outstanding;
+    @(posedge clk_i) disable iff (!rst_ni)
+      imem_rsp_valid_i && outstanding_q |->
+      (imem_rsp_id_i == outstanding_id_q);
+  endproperty
+  assert property (p_response_id_matches_outstanding);
+`endif
+
+  logic unused_queue_empty;
+  always_comb unused_queue_empty = queue_empty;
 
 endmodule

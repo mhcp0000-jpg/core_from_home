@@ -5,6 +5,7 @@ module rv_rob_tb;
   localparam int unsigned SEQ_WIDTH = ROB_SEQ_WIDTH;
   localparam int unsigned TAG_WIDTH = 7;
   localparam int unsigned SQ_WIDTH = 4;
+  localparam int unsigned LQ_WIDTH = 5;
   localparam int unsigned ROB_INDEX_WIDTH = $clog2(ROB_ENTRIES);
   localparam int unsigned ROB_COUNT_WIDTH = $clog2(ROB_ENTRIES + 1);
 
@@ -24,6 +25,8 @@ module rv_rob_tb;
   logic [1:0][TAG_WIDTH-1:0] alloc_destination_phys;
   logic [1:0][TAG_WIDTH-1:0] alloc_stale_phys;
   logic [1:0] alloc_is_store;
+  logic [1:0] alloc_is_load;
+  logic [1:0][LQ_WIDTH-1:0] alloc_lq_index;
   logic [1:0][SQ_WIDTH-1:0] alloc_sq_index;
   logic [1:0] alloc_is_branch;
   logic [1:0] alloc_serializing;
@@ -38,6 +41,8 @@ module rv_rob_tb;
   logic [1:0][31:0] complete_exception_tval;
   logic [1:0] complete_branch_mispredict;
   logic [1:0][31:0] complete_branch_target;
+  logic [3:0][SEQ_WIDTH-1:0] live_query_sequence;
+  logic [3:0] live_query_valid;
 
   logic [1:0] retire_valid;
   logic [1:0] retire_ready;
@@ -50,7 +55,11 @@ module rv_rob_tb;
   logic [1:0][TAG_WIDTH-1:0] retire_destination_phys;
   logic [1:0][TAG_WIDTH-1:0] retire_stale_phys;
   logic [1:0] retire_is_store;
+  logic [1:0] retire_is_load;
+  logic [1:0][LQ_WIDTH-1:0] retire_lq_index;
   logic [1:0][SQ_WIDTH-1:0] retire_sq_index;
+  logic head_valid;
+  logic [SEQ_WIDTH-1:0] head_sequence;
   logic trap_valid;
   logic trap_ready;
   logic [SEQ_WIDTH-1:0] trap_sequence;
@@ -74,8 +83,10 @@ module rv_rob_tb;
     .ROB_ENTRIES    (ROB_ENTRIES),
     .SEQ_WIDTH      (SEQ_WIDTH),
     .PHYS_TAG_WIDTH (TAG_WIDTH),
+    .LQ_INDEX_WIDTH (LQ_WIDTH),
     .SQ_INDEX_WIDTH (SQ_WIDTH),
-    .COMPLETE_PORTS (2)
+    .COMPLETE_PORTS  (2),
+    .LIVE_QUERY_PORTS(4)
   ) u_dut (
     .clk_i                     (clk),
     .rst_ni                    (rst_n),
@@ -93,6 +104,8 @@ module rv_rob_tb;
     .alloc_destination_phys_i  (alloc_destination_phys),
     .alloc_stale_phys_i        (alloc_stale_phys),
     .alloc_is_store_i          (alloc_is_store),
+    .alloc_is_load_i           (alloc_is_load),
+    .alloc_lq_index_i          (alloc_lq_index),
     .alloc_sq_index_i          (alloc_sq_index),
     .alloc_is_branch_i         (alloc_is_branch),
     .alloc_serializing_i       (alloc_serializing),
@@ -106,6 +119,8 @@ module rv_rob_tb;
     .complete_exception_tval_i (complete_exception_tval),
     .complete_branch_mispredict_i(complete_branch_mispredict),
     .complete_branch_target_i  (complete_branch_target),
+    .live_query_sequence_i     (live_query_sequence),
+    .live_query_valid_o        (live_query_valid),
     .retire_valid_o            (retire_valid),
     .retire_ready_i            (retire_ready),
     .retire_sequence_o         (retire_sequence),
@@ -117,7 +132,11 @@ module rv_rob_tb;
     .retire_destination_phys_o (retire_destination_phys),
     .retire_stale_phys_o       (retire_stale_phys),
     .retire_is_store_o         (retire_is_store),
+    .retire_is_load_o          (retire_is_load),
+    .retire_lq_index_o         (retire_lq_index),
     .retire_sq_index_o         (retire_sq_index),
+    .head_valid_o              (head_valid),
+    .head_sequence_o           (head_sequence),
     .trap_valid_o              (trap_valid),
     .trap_ready_i              (trap_ready),
     .trap_sequence_o           (trap_sequence),
@@ -144,6 +163,8 @@ module rv_rob_tb;
     alloc_destination_phys      = '0;
     alloc_stale_phys            = '0;
     alloc_is_store              = '0;
+    alloc_is_load               = '0;
+    alloc_lq_index              = '0;
     alloc_sq_index              = '0;
     alloc_is_branch             = '0;
     alloc_serializing           = '0;
@@ -157,6 +178,7 @@ module rv_rob_tb;
     complete_exception_tval     = '0;
     complete_branch_mispredict  = '0;
     complete_branch_target      = '0;
+    live_query_sequence          = '0;
     retire_ready                = '0;
     trap_ready                  = 1'b0;
     flush_all                   = 1'b0;
@@ -198,9 +220,13 @@ module rv_rob_tb;
     @(posedge clk);
     @(negedge clk);
     clear_inputs();
+    live_query_sequence[0] = first_sequence[0];
+    live_query_sequence[1] = first_sequence[1];
     #1;
     if ((count != 2) || (retire_valid != 0))
       $fatal(1, "Younger ROB completion bypassed incomplete head");
+    if (live_query_valid[1:0] != 2'b11)
+      $fatal(1, "ROB live sequence query missed allocated entries");
 
     complete_valid[0]    = 1'b1;
     complete_sequence[0] = first_sequence[0];
@@ -269,6 +295,12 @@ module rv_rob_tb;
     clear_inputs();
     flush_younger  = 1'b1;
     flush_sequence = second_sequence[1];
+    live_query_sequence[0] = second_sequence[0];
+    live_query_sequence[1] = second_sequence[1];
+    live_query_sequence[2] = third_sequence;
+    #1;
+    if (live_query_valid[2:0] != 3'b111)
+      $fatal(1, "ROB live query must report pre-flush resident entries");
     @(posedge clk);
     @(negedge clk);
     clear_inputs();
@@ -277,6 +309,10 @@ module rv_rob_tb;
         (retire_sequence[1] != second_sequence[1]) ||
         (third_sequence == second_sequence[1]))
       $fatal(1, "ROB younger-only flush failed");
+    live_query_sequence[0] = third_sequence;
+    #1;
+    if (live_query_valid[0])
+      $fatal(1, "ROB live query retained a flushed sequence");
 
     $display("rv_rob_tb PASS");
     $finish;

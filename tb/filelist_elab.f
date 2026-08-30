@@ -18,6 +18,10 @@ rtl/soc/rv_i_fabric.sv
 rtl/soc/rv_soc_top.sv
 rtl/rv_ooo_pkg.sv
 rtl/backend/rv_lsq_order_check.sv
+rtl/backend/rv_lsu_pipe.sv
+rtl/backend/rv_lsq.sv
+rtl/backend/rv_store_buffer.sv
+rtl/backend/rv_lsu_cluster.sv
 rtl/backend/rv_rename2.sv
 rtl/backend/rv_phys_regfile.sv
 rtl/backend/rv_issue_queue.sv

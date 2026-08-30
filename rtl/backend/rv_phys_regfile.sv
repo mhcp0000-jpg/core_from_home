@@ -3,6 +3,7 @@ module rv_phys_regfile #(
   parameter int unsigned PHYS_REGS = 80,
   parameter int unsigned TAG_WIDTH = 7,
   parameter int unsigned READ_PORTS = 4,
+  parameter int unsigned QUERY_PORTS = 6,
   parameter int unsigned WRITE_PORTS = 2,
   parameter int unsigned ALLOC_PORTS = 2,
   parameter int unsigned INITIAL_MAPPED_REGS = 32,
@@ -15,6 +16,11 @@ module rv_phys_regfile #(
   input  logic [READ_PORTS-1:0][TAG_WIDTH-1:0]  read_addr_i,
   output logic [READ_PORTS-1:0][DATA_WIDTH-1:0] read_data_o,
   output logic [READ_PORTS-1:0]                 read_ready_o,
+
+  // Query-only ports let rename/dispatch sample producer readiness without
+  // consuming the data-read ports reserved for issued execution operands.
+  input  logic [QUERY_PORTS-1:0][TAG_WIDTH-1:0] query_addr_i,
+  output logic [QUERY_PORTS-1:0]                query_ready_o,
 
   input  logic [WRITE_PORTS-1:0]                write_valid_i,
   input  logic [WRITE_PORTS-1:0][TAG_WIDTH-1:0] write_addr_i,
@@ -67,6 +73,21 @@ module rv_phys_regfile #(
         read_data_o[read_port]  = '0;
         read_ready_o[read_port] = 1'b1;
       end
+    end
+
+    for (int unsigned query_port = 0;
+         query_port < QUERY_PORTS; query_port++) begin
+      query_ready_o[query_port] = ready_q[query_addr_i[query_port]];
+      for (int unsigned write_port = 0;
+           write_port < WRITE_PORTS; write_port++) begin
+        if (write_valid_i[write_port] &&
+            (write_addr_i[write_port] == query_addr_i[query_port]))
+          query_ready_o[query_port] = 1'b1;
+      end
+      if (tag_is_allocated_this_cycle(query_addr_i[query_port]))
+        query_ready_o[query_port] = 1'b0;
+      if (ZERO_REGISTER && (query_addr_i[query_port] == ZERO_TAG))
+        query_ready_o[query_port] = 1'b1;
     end
 
     probe_ready_o = ready_q[probe_addr_i];
@@ -147,7 +168,8 @@ module rv_phys_regfile #(
       $fatal(1, "Physical register file dimensions are invalid");
     if (PHYS_REGS > (1 << TAG_WIDTH))
       $fatal(1, "TAG_WIDTH cannot represent all physical registers");
-    if ((READ_PORTS == 0) || (WRITE_PORTS == 0) || (ALLOC_PORTS == 0))
+    if ((READ_PORTS == 0) || (QUERY_PORTS == 0) ||
+        (WRITE_PORTS == 0) || (ALLOC_PORTS == 0))
       $fatal(1, "Physical register file port counts must be nonzero");
     if (ZERO_REGISTER && (ZERO_TAG >= PHYS_REGS))
       $fatal(1, "ZERO_TAG lies outside the physical register file");

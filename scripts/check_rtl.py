@@ -30,7 +30,14 @@ SOURCES = (
     "rtl/soc/rv_i_fabric.sv",
     "rtl/soc/rv_soc_top.sv",
     "rtl/rv_ooo_pkg.sv",
+    "rtl/frontend/rv_c_expander.sv",
+    "rtl/frontend/rv_fetch_queue.sv",
+    "rtl/backend/rv_decode2.sv",
     "rtl/backend/rv_lsq_order_check.sv",
+    "rtl/backend/rv_lsu_pipe.sv",
+    "rtl/backend/rv_lsq.sv",
+    "rtl/backend/rv_store_buffer.sv",
+    "rtl/backend/rv_lsu_cluster.sv",
     "rtl/backend/rv_rename2.sv",
     "rtl/backend/rv_phys_regfile.sv",
     "rtl/backend/rv_issue_queue.sv",
@@ -38,6 +45,10 @@ SOURCES = (
     "rtl/backend/rv_int_alu.sv",
     "rtl/backend/rv_branch_unit.sv",
     "rtl/backend/rv_multiplier.sv",
+    "rtl/backend/rv_divider.sv",
+    "rtl/backend/rv_writeback_arbiter.sv",
+    "rtl/backend/rv_branch_recovery.sv",
+    "rtl/backend/rv_exec_result_buffer.sv",
     "rtl/backend/rv_rob.sv",
     "rtl/frontend/rv_frontend.sv",
     "rtl/backend/rv_backend.sv",
@@ -61,6 +72,16 @@ SOURCES = (
     "tb/unit/rv_phys_regfile_tb.sv",
     "tb/unit/rv_execute_units_tb.sv",
     "tb/unit/rv_multiplier_tb.sv",
+    "tb/unit/rv_decode2_tb.sv",
+    "tb/unit/rv_divider_tb.sv",
+    "tb/unit/rv_fetch_queue_tb.sv",
+    "tb/unit/rv_lsu_pipe_tb.sv",
+    "tb/unit/rv_store_buffer_tb.sv",
+    "tb/unit/rv_lsq_tb.sv",
+    "tb/unit/rv_writeback_arbiter_tb.sv",
+    "tb/unit/rv_branch_recovery_tb.sv",
+    "tb/unit/rv_exec_result_buffer_tb.sv",
+    "tb/unit/rv_backend_int_tb.sv",
 )
 
 
@@ -89,7 +110,10 @@ def main() -> int:
         "rv64_smoke, soc_default_map, soc_relocated_map, soc_top, soc_leafs, "
         "d_fabric_tb, i_fabric_tb, axi_bridges, axi_xbar, peripherals, "
         "axi_bridge_tbs, soc_top_tb, rename2_tb, rob_tb, issue_queue_tb, "
-        "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb"
+        "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb, "
+        "decode2_tb, divider_tb, fetch_queue_tb, lsu_pipe_tb, store_buffer_tb, "
+        "lsq_tb, writeback_arbiter_tb, branch_recovery_tb, result_buffer_tb, "
+        "backend_int_tb"
     )
     return 0
 

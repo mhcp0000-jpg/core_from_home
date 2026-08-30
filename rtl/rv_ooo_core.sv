@@ -14,7 +14,12 @@ module rv_ooo_core #(
   parameter int unsigned SQ_ENTRIES       = 16,
   parameter int unsigned STORE_BUFFER_ENTRIES = 16,
   parameter int unsigned BR_CHECKPOINTS   = 8,
-  parameter logic [XLEN-1:0] RESET_VECTOR = 'h8000_0000
+  parameter logic [XLEN-1:0] RESET_VECTOR = 'h8000_0000,
+  parameter logic [XLEN-1:0] TRAP_VECTOR  = 'h8000_0000,
+  parameter logic [PADDR_WIDTH-1:0] ITIM_BASE_ADDR = 'h8000_0000,
+  parameter int unsigned ITIM_SIZE_KB     = 128,
+  parameter logic [PADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,
+  parameter int unsigned DTIM_SIZE_KB     = 128
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -145,7 +150,12 @@ module rv_ooo_core #(
     .LQ_ENTRIES      (LQ_ENTRIES),
     .SQ_ENTRIES      (SQ_ENTRIES),
     .STORE_BUFFER_ENTRIES (STORE_BUFFER_ENTRIES),
-    .BR_CHECKPOINTS  (BR_CHECKPOINTS)
+    .BR_CHECKPOINTS  (BR_CHECKPOINTS),
+    .ITIM_BASE_ADDR  (ITIM_BASE_ADDR),
+    .ITIM_SIZE_KB    (ITIM_SIZE_KB),
+    .DTIM_BASE_ADDR  (DTIM_BASE_ADDR),
+    .DTIM_SIZE_KB    (DTIM_SIZE_KB),
+    .TRAP_VECTOR     (TRAP_VECTOR)
   ) u_backend (
     .clk_i,
     .rst_ni,

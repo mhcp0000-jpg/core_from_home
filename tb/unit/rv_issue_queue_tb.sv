@@ -15,17 +15,30 @@ module rv_issue_queue_tb;
   fu_class_e [1:0] dispatch_fu;
   logic [1:0][4:0] dispatch_port_mask;
   logic [1:0][2:0] dispatch_src_used;
+  reg_class_e [1:0][2:0] dispatch_src_class;
   logic [1:0][2:0][TAG_WIDTH-1:0] dispatch_src_phys;
   logic [1:0][2:0] dispatch_src_ready;
   logic [1:0] dispatch_destination_valid;
+  reg_class_e [1:0] dispatch_destination_class;
   logic [1:0][TAG_WIDTH-1:0] dispatch_destination_phys;
   logic [1:0][31:0] dispatch_pc;
   logic [1:0][31:0] dispatch_instruction;
+  inst_len_e [1:0] dispatch_inst_len;
+  prediction_meta_t [1:0] dispatch_prediction;
   logic [1:0][31:0] dispatch_immediate;
   logic [1:0][15:0] dispatch_operation;
+  logic [1:0] dispatch_use_pc;
+  logic [1:0] dispatch_use_immediate;
+  logic [1:0] dispatch_word_operation;
+  logic [1:0][2:0] dispatch_mem_size;
+  logic [1:0] dispatch_mem_unsigned;
+  logic [1:0][2:0] dispatch_rounding_mode;
+  logic [1:0] dispatch_checkpoint_valid;
+  logic [1:0][2:0] dispatch_checkpoint_id;
   logic [1:0][4:0] dispatch_lq_index;
   logic [1:0][3:0] dispatch_sq_index;
   logic [1:0] writeback_valid;
+  reg_class_e [1:0] writeback_class;
   logic [1:0][TAG_WIDTH-1:0] writeback_phys;
 
   logic [1:0] candidate_valid;
@@ -35,12 +48,24 @@ module rv_issue_queue_tb;
   fu_class_e [1:0] candidate_fu;
   logic [1:0][4:0] candidate_port_mask;
   logic [1:0][2:0][TAG_WIDTH-1:0] candidate_src_phys;
+  reg_class_e [1:0][2:0] candidate_src_class;
   logic [1:0] candidate_destination_valid;
+  reg_class_e [1:0] candidate_destination_class;
   logic [1:0][TAG_WIDTH-1:0] candidate_destination_phys;
   logic [1:0][31:0] candidate_pc;
   logic [1:0][31:0] candidate_instruction;
+  inst_len_e [1:0] candidate_inst_len;
+  prediction_meta_t [1:0] candidate_prediction;
   logic [1:0][31:0] candidate_immediate;
   logic [1:0][15:0] candidate_operation;
+  logic [1:0] candidate_use_pc;
+  logic [1:0] candidate_use_immediate;
+  logic [1:0] candidate_word_operation;
+  logic [1:0][2:0] candidate_mem_size;
+  logic [1:0] candidate_mem_unsigned;
+  logic [1:0][2:0] candidate_rounding_mode;
+  logic [1:0] candidate_checkpoint_valid;
+  logic [1:0][2:0] candidate_checkpoint_id;
   logic [1:0][4:0] candidate_lq_index;
   logic [1:0][3:0] candidate_sq_index;
   logic flush_all;
@@ -66,17 +91,30 @@ module rv_issue_queue_tb;
     .dispatch_fu_i             (dispatch_fu),
     .dispatch_port_mask_i      (dispatch_port_mask),
     .dispatch_src_used_i       (dispatch_src_used),
+    .dispatch_src_class_i      (dispatch_src_class),
     .dispatch_src_phys_i       (dispatch_src_phys),
     .dispatch_src_ready_i      (dispatch_src_ready),
     .dispatch_destination_valid_i(dispatch_destination_valid),
+    .dispatch_destination_class_i(dispatch_destination_class),
     .dispatch_destination_phys_i(dispatch_destination_phys),
     .dispatch_pc_i             (dispatch_pc),
     .dispatch_instruction_i    (dispatch_instruction),
+    .dispatch_inst_len_i       (dispatch_inst_len),
+    .dispatch_prediction_i     (dispatch_prediction),
     .dispatch_immediate_i      (dispatch_immediate),
     .dispatch_operation_i      (dispatch_operation),
+    .dispatch_use_pc_i         (dispatch_use_pc),
+    .dispatch_use_immediate_i  (dispatch_use_immediate),
+    .dispatch_word_operation_i (dispatch_word_operation),
+    .dispatch_mem_size_i       (dispatch_mem_size),
+    .dispatch_mem_unsigned_i   (dispatch_mem_unsigned),
+    .dispatch_rounding_mode_i  (dispatch_rounding_mode),
+    .dispatch_checkpoint_valid_i(dispatch_checkpoint_valid),
+    .dispatch_checkpoint_id_i  (dispatch_checkpoint_id),
     .dispatch_lq_index_i       (dispatch_lq_index),
     .dispatch_sq_index_i       (dispatch_sq_index),
     .writeback_valid_i         (writeback_valid),
+    .writeback_class_i         (writeback_class),
     .writeback_phys_i          (writeback_phys),
     .candidate_valid_o         (candidate_valid),
     .candidate_accept_i        (candidate_accept),
@@ -85,12 +123,24 @@ module rv_issue_queue_tb;
     .candidate_fu_o            (candidate_fu),
     .candidate_port_mask_o     (candidate_port_mask),
     .candidate_src_phys_o      (candidate_src_phys),
+    .candidate_src_class_o     (candidate_src_class),
     .candidate_destination_valid_o(candidate_destination_valid),
+    .candidate_destination_class_o(candidate_destination_class),
     .candidate_destination_phys_o(candidate_destination_phys),
     .candidate_pc_o            (candidate_pc),
     .candidate_instruction_o   (candidate_instruction),
+    .candidate_inst_len_o      (candidate_inst_len),
+    .candidate_prediction_o    (candidate_prediction),
     .candidate_immediate_o     (candidate_immediate),
     .candidate_operation_o     (candidate_operation),
+    .candidate_use_pc_o        (candidate_use_pc),
+    .candidate_use_immediate_o (candidate_use_immediate),
+    .candidate_word_operation_o(candidate_word_operation),
+    .candidate_mem_size_o      (candidate_mem_size),
+    .candidate_mem_unsigned_o  (candidate_mem_unsigned),
+    .candidate_rounding_mode_o (candidate_rounding_mode),
+    .candidate_checkpoint_valid_o(candidate_checkpoint_valid),
+    .candidate_checkpoint_id_o (candidate_checkpoint_id),
     .candidate_lq_index_o      (candidate_lq_index),
     .candidate_sq_index_o      (candidate_sq_index),
     .flush_all_i               (flush_all),
@@ -107,17 +157,30 @@ module rv_issue_queue_tb;
     dispatch_fu                = '{default: FU_INT};
     dispatch_port_mask         = '1;
     dispatch_src_used          = '0;
+    dispatch_src_class         = '{default: REG_NONE};
     dispatch_src_phys          = '0;
     dispatch_src_ready         = '0;
     dispatch_destination_valid = '0;
+    dispatch_destination_class = '{default: REG_NONE};
     dispatch_destination_phys  = '0;
     dispatch_pc                = '0;
     dispatch_instruction       = '0;
+    dispatch_inst_len          = '{default: INST_LEN_32};
+    dispatch_prediction        = '0;
     dispatch_immediate         = '0;
     dispatch_operation         = '0;
+    dispatch_use_pc            = '0;
+    dispatch_use_immediate     = '0;
+    dispatch_word_operation    = '0;
+    dispatch_mem_size          = '0;
+    dispatch_mem_unsigned      = '0;
+    dispatch_rounding_mode     = '0;
+    dispatch_checkpoint_valid  = '0;
+    dispatch_checkpoint_id     = '0;
     dispatch_lq_index          = '0;
     dispatch_sq_index          = '0;
     writeback_valid            = '0;
+    writeback_class            = '{default: REG_INT};
     writeback_phys             = '0;
     candidate_accept           = '0;
     flush_all                  = 1'b0;
@@ -157,6 +220,7 @@ module rv_issue_queue_tb;
     dispatch_sequence[0]    = 8'd10;
     dispatch_sequence[1]    = 8'd11;
     dispatch_src_used[0][0] = 1'b1;
+    dispatch_src_class[0][0] = REG_INT;
     dispatch_src_phys[0][0] = 7'd5;
     dispatch_src_ready[0][0] = 1'b0;
     dispatch_src_ready[1]   = '1;

@@ -3,8 +3,10 @@ module rv_rob #(
   parameter int unsigned ROB_ENTRIES     = 48,
   parameter int unsigned SEQ_WIDTH       = rv_ooo_pkg::ROB_SEQ_WIDTH,
   parameter int unsigned PHYS_TAG_WIDTH  = 7,
+  parameter int unsigned LQ_INDEX_WIDTH  = 5,
   parameter int unsigned SQ_INDEX_WIDTH  = 4,
   parameter int unsigned COMPLETE_PORTS  = 4,
+  parameter int unsigned LIVE_QUERY_PORTS = 8,
   localparam int unsigned ROB_INDEX_WIDTH = $clog2(ROB_ENTRIES),
   localparam int unsigned ROB_COUNT_WIDTH = $clog2(ROB_ENTRIES + 1)
 ) (
@@ -25,6 +27,8 @@ module rv_rob #(
   input  logic [1:0][PHYS_TAG_WIDTH-1:0]        alloc_destination_phys_i,
   input  logic [1:0][PHYS_TAG_WIDTH-1:0]        alloc_stale_phys_i,
   input  logic [1:0]                            alloc_is_store_i,
+  input  logic [1:0]                            alloc_is_load_i,
+  input  logic [1:0][LQ_INDEX_WIDTH-1:0]        alloc_lq_index_i,
   input  logic [1:0][SQ_INDEX_WIDTH-1:0]        alloc_sq_index_i,
   input  logic [1:0]                            alloc_is_branch_i,
   input  logic [1:0]                            alloc_serializing_i,
@@ -42,6 +46,13 @@ module rv_rob #(
   input  logic [COMPLETE_PORTS-1:0]             complete_branch_mispredict_i,
   input  logic [COMPLETE_PORTS-1:0][XLEN-1:0]   complete_branch_target_i,
 
+  // Completion sources and recovery logic must prove that a sequence still
+  // names a live ROB generation before updating the PRF or architectural
+  // state. Queries are combinational and account for an active flush.
+  input  logic [LIVE_QUERY_PORTS-1:0][SEQ_WIDTH-1:0]
+                                                   live_query_sequence_i,
+  output logic [LIVE_QUERY_PORTS-1:0]            live_query_valid_o,
+
   output logic [1:0]                            retire_valid_o,
   input  logic [1:0]                            retire_ready_i,
   output logic [1:0][SEQ_WIDTH-1:0]             retire_sequence_o,
@@ -53,7 +64,12 @@ module rv_rob #(
   output logic [1:0][PHYS_TAG_WIDTH-1:0]        retire_destination_phys_o,
   output logic [1:0][PHYS_TAG_WIDTH-1:0]        retire_stale_phys_o,
   output logic [1:0]                            retire_is_store_o,
+  output logic [1:0]                            retire_is_load_o,
+  output logic [1:0][LQ_INDEX_WIDTH-1:0]        retire_lq_index_o,
   output logic [1:0][SQ_INDEX_WIDTH-1:0]        retire_sq_index_o,
+
+  output logic                                  head_valid_o,
+  output logic [SEQ_WIDTH-1:0]                  head_sequence_o,
 
   output logic                                  trap_valid_o,
   input  logic                                  trap_ready_i,
@@ -86,6 +102,8 @@ module rv_rob #(
     logic [PHYS_TAG_WIDTH-1:0]    destination_phys;
     logic [PHYS_TAG_WIDTH-1:0]    stale_phys;
     logic                         is_store;
+    logic                         is_load;
+    logic [LQ_INDEX_WIDTH-1:0]    lq_index;
     logic [SQ_INDEX_WIDTH-1:0]    sq_index;
     logic                         is_branch;
     logic                         serializing;
@@ -165,6 +183,18 @@ module rv_rob #(
     alloc_index_o[1]    = increment_index(tail_q, 1);
     alloc_sequence_o[0] = next_sequence_q;
     alloc_sequence_o[1] = next_sequence_q + 1'b1;
+
+  end
+
+  always_comb begin
+    live_query_valid_o = '0;
+    for (int unsigned query = 0; query < LIVE_QUERY_PORTS; query++) begin
+      for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
+        if (entries_q[entry].valid &&
+            (entries_q[entry].sequence_id == live_query_sequence_i[query]))
+          live_query_valid_o[query] = 1'b1;
+      end
+    end
   end
 
   always_comb begin
@@ -172,11 +202,13 @@ module rv_rob #(
     retire_pc_o                  = '0;
     retire_instruction_o         = '0;
     retire_writes_destination_o  = '0;
-    retire_destination_class_o   = '{default: REG_NONE};
+    retire_destination_class_o   = '0;
     retire_destination_arch_o    = '0;
     retire_destination_phys_o    = '0;
     retire_stale_phys_o          = '0;
     retire_is_store_o            = '0;
+    retire_is_load_o             = '0;
+    retire_lq_index_o            = '0;
     retire_sq_index_o            = '0;
 
     if (count_q != 0) begin
@@ -190,6 +222,8 @@ module rv_rob #(
       retire_destination_phys_o[0]   = entries_q[head_q].destination_phys;
       retire_stale_phys_o[0]         = entries_q[head_q].stale_phys;
       retire_is_store_o[0]           = entries_q[head_q].is_store;
+      retire_is_load_o[0]            = entries_q[head_q].is_load;
+      retire_lq_index_o[0]           = entries_q[head_q].lq_index;
       retire_sq_index_o[0]           = entries_q[head_q].sq_index;
     end
     if (count_q > 1) begin
@@ -206,6 +240,8 @@ module rv_rob #(
         entries_q[head_plus_one].destination_phys;
       retire_stale_phys_o[1]         = entries_q[head_plus_one].stale_phys;
       retire_is_store_o[1]           = entries_q[head_plus_one].is_store;
+      retire_is_load_o[1]            = entries_q[head_plus_one].is_load;
+      retire_lq_index_o[1]           = entries_q[head_plus_one].lq_index;
       retire_sq_index_o[1]           = entries_q[head_plus_one].sq_index;
     end
 
@@ -217,6 +253,8 @@ module rv_rob #(
     trap_cause_o    = (count_q != 0) ? entries_q[head_q].exception_cause :
                                        EXC_ILLEGAL_INSTRUCTION;
     trap_tval_o     = (count_q != 0) ? entries_q[head_q].exception_tval : '0;
+    head_valid_o    = (count_q != 0) && entries_q[head_q].valid;
+    head_sequence_o = (count_q != 0) ? entries_q[head_q].sequence_id : '0;
   end
 
   always_comb begin
@@ -257,6 +295,35 @@ module rv_rob #(
         end
         tail_q  <= flush_tail;
         count_q <= flush_kept_count;
+
+        // The resolving branch normally completes in the same cycle that it
+        // requests a younger flush. Preserve completions at or before the
+        // boundary; otherwise the branch result could be consumed by WB while
+        // its ROB entry remains permanently incomplete.
+        for (int unsigned port = 0; port < COMPLETE_PORTS; port++) begin
+          if (complete_valid_i[port] &&
+              !sequence_after(complete_sequence_i[port], flush_sequence_i)) begin
+            for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
+              if (entries_q[entry].valid &&
+                  (entries_q[entry].sequence_id == complete_sequence_i[port])) begin
+                entries_q[entry].complete <= 1'b1;
+                if (complete_exception_valid_i[port]) begin
+                  entries_q[entry].exception_valid <= 1'b1;
+                  entries_q[entry].exception_cause <=
+                    complete_exception_cause_i[port];
+                  entries_q[entry].exception_tval <=
+                    complete_exception_tval_i[port];
+                end
+                if (entries_q[entry].is_branch) begin
+                  entries_q[entry].branch_mispredict <=
+                    complete_branch_mispredict_i[port];
+                  entries_q[entry].branch_target <=
+                    complete_branch_target_i[port];
+                end
+              end
+            end
+          end
+        end
       end else begin
         for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++)
           entries_q[entry].valid <= 1'b0;
@@ -320,6 +387,10 @@ module rv_rob #(
               alloc_stale_phys_i[lane];
             entries_q[alloc_index_o[lane]].is_store <=
               alloc_is_store_i[lane];
+            entries_q[alloc_index_o[lane]].is_load <=
+              alloc_is_load_i[lane];
+            entries_q[alloc_index_o[lane]].lq_index <=
+              alloc_lq_index_i[lane];
             entries_q[alloc_index_o[lane]].sq_index <= alloc_sq_index_i[lane];
             entries_q[alloc_index_o[lane]].is_branch <=
               alloc_is_branch_i[lane];
@@ -394,7 +465,7 @@ module rv_rob #(
       $fatal(1, "ROB must contain at least four entries");
     if (ROB_ENTRIES >= (1 << (SEQ_WIDTH-1)))
       $fatal(1, "ROB entries must be less than half the sequence space");
-    if (COMPLETE_PORTS == 0)
+    if ((COMPLETE_PORTS == 0) || (LIVE_QUERY_PORTS == 0))
       $fatal(1, "ROB requires at least one completion port");
   end
 

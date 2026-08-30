@@ -42,7 +42,8 @@ package rv_ooo_pkg;
     LSQ_STALL_UNKNOWN_ADDR,
     LSQ_STALL_STORE_DATA,
     LSQ_STALL_PARTIAL_OVERLAP,
-    LSQ_STALL_BANK_CONFLICT
+    LSQ_STALL_BANK_CONFLICT,
+    LSQ_STALL_DEVICE_SERIALIZE
   } lsq_stall_reason_e;
 
   typedef enum logic [3:0] {
@@ -92,6 +93,20 @@ package rv_ooo_pkg;
     MUL_HIGH_UU
   } multiply_op_e;
 
+  typedef enum logic [1:0] {
+    DIV_SIGNED_QUOTIENT,
+    DIV_UNSIGNED_QUOTIENT,
+    DIV_SIGNED_REMAINDER,
+    DIV_UNSIGNED_REMAINDER
+  } divide_op_e;
+
+  typedef enum logic [2:0] {
+    CSR_CMD_NONE,
+    CSR_CMD_WRITE,
+    CSR_CMD_SET,
+    CSR_CMD_CLEAR
+  } csr_cmd_e;
+
   typedef enum logic [2:0] {
     REG_NONE,
     REG_INT,
@@ -123,6 +138,7 @@ package rv_ooo_pkg;
     logic       taken;
     logic       is_call;
     logic       is_return;
+    logic [63:0] target;
     logic [9:0] global_history;
     logic [6:0] btb_index;
   } prediction_meta_t;

@@ -15,6 +15,10 @@ module rv_multiplier #(
   input  logic                         destination_valid_i,
   input  logic [PHYS_TAG_WIDTH-1:0]    destination_phys_i,
 
+  input  logic                         flush_valid_i,
+  input  logic                         flush_all_i,
+  input  logic [ROB_SEQ_WIDTH-1:0]     flush_sequence_i,
+
   output logic                         result_valid_o,
   input  logic                         result_ready_i,
   output logic [XLEN-1:0]              result_o,
@@ -50,6 +54,15 @@ module rv_multiplier #(
   logic [XLEN-1:0] selected_result;
   logic [31:0] word_result;
 
+  function automatic logic sequence_is_younger(
+    input logic [ROB_SEQ_WIDTH-1:0] candidate,
+    input logic [ROB_SEQ_WIDTH-1:0] boundary
+  );
+    logic [ROB_SEQ_WIDTH-1:0] distance;
+    distance = candidate - boundary;
+    return (distance != 0) && !distance[ROB_SEQ_WIDTH-1];
+  endfunction
+
   always_comb begin
     signed_a_ext = $signed({{XLEN{operand_a_i[XLEN-1]}}, operand_a_i});
     signed_b_ext = $signed({{XLEN{operand_b_i[XLEN-1]}}, operand_b_i});
@@ -72,7 +85,8 @@ module rv_multiplier #(
   end
 
   assign stage1_advance = !stage1_valid_q || result_ready_i;
-  assign request_ready_o = !stage0_valid_q || stage1_advance;
+  assign request_ready_o = (!stage0_valid_q || stage1_advance) &&
+                           !flush_valid_i;
   assign result_valid_o = stage1_valid_q;
   assign result_o = stage1_q.result;
   assign result_sequence_o = stage1_q.sequence_id;
@@ -85,6 +99,15 @@ module rv_multiplier #(
       stage1_valid_q <= 1'b0;
       stage0_q       <= '0;
       stage1_q       <= '0;
+    end else if (flush_valid_i) begin
+      if (flush_all_i ||
+          (stage0_valid_q &&
+           sequence_is_younger(stage0_q.sequence_id, flush_sequence_i)))
+        stage0_valid_q <= 1'b0;
+      if (flush_all_i ||
+          (stage1_valid_q &&
+           sequence_is_younger(stage1_q.sequence_id, flush_sequence_i)))
+        stage1_valid_q <= 1'b0;
     end else begin
       if (stage1_advance) begin
         stage1_valid_q <= stage0_valid_q;

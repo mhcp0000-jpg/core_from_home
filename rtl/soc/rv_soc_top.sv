@@ -145,7 +145,12 @@ module rv_soc_top #(
     .PADDR_WIDTH    (32),
     .MEM_DATA_WIDTH (64),
     .FETCH_BYTES    (16),
-    .RESET_VECTOR   (CORE_RESET_VECTOR)
+    .RESET_VECTOR   (CORE_RESET_VECTOR),
+    .TRAP_VECTOR    (XLEN'(BOOT_MTVEC_ADDR)),
+    .ITIM_BASE_ADDR (ITIM_BASE_ADDR),
+    .ITIM_SIZE_KB   (ITIM_SIZE_KB),
+    .DTIM_BASE_ADDR (DTIM_BASE_ADDR),
+    .DTIM_SIZE_KB   (DTIM_SIZE_KB)
   ) u_core (
     .clk_i,
     .rst_ni,
