@@ -7,6 +7,7 @@ module rv_lsu_cluster #(
   parameter int unsigned LQ_ENTRIES           = 24,
   parameter int unsigned SQ_ENTRIES           = 16,
   parameter int unsigned STORE_BUFFER_ENTRIES = 16,
+  parameter int unsigned PMP_ENTRIES          = 8,
   parameter logic [PADDR_WIDTH-1:0] ITIM_BASE_ADDR = 'h8000_0000,
   parameter int unsigned ITIM_SIZE_KB         = 128,
   parameter logic [PADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,
@@ -15,6 +16,7 @@ module rv_lsu_cluster #(
   localparam int unsigned LQ_INDEX_WIDTH       = $clog2(LQ_ENTRIES),
   localparam int unsigned SQ_INDEX_WIDTH       = $clog2(SQ_ENTRIES),
   localparam int unsigned SB_INDEX_WIDTH       = $clog2(STORE_BUFFER_ENTRIES),
+  localparam int unsigned PMP_ADDR_WIDTH       = PADDR_WIDTH - 2,
   localparam int unsigned COMPLETION_SOURCES   = 5
 ) (
   input  logic                                  clk_i,
@@ -50,6 +52,8 @@ module rv_lsu_cluster #(
   input  logic [1:0][XLEN-1:0]                  issue_store_data_i,
   input  logic [1:0][2:0]                       issue_size_i,
   input  rv_ooo_pkg::privilege_e                 current_privilege_i,
+  input  logic [PMP_ENTRIES*8-1:0]               pmpcfg_i,
+  input  logic [PMP_ENTRIES*PMP_ADDR_WIDTH-1:0]  pmpaddr_i,
 
   input  logic                                  rob_head_valid_i,
   input  logic [ROB_SEQ_WIDTH-1:0]              rob_head_sequence_i,
@@ -175,14 +179,22 @@ module rv_lsu_cluster #(
   logic [1:0][LQ_INDEX_WIDTH-1:0] agu_update_lq_index;
   logic [1:0][SQ_INDEX_WIDTH-1:0] agu_update_sq_index;
   logic [1:0][PADDR_WIDTH-1:0] agu_update_address;
+  logic [1:0][2:0] agu_update_size;
   logic [1:0][MEM_BYTES-1:0] agu_update_mask;
   logic [1:0][MEM_DATA_WIDTH-1:0] agu_update_store_data;
   logic [1:0] agu_update_address_valid, agu_update_store_data_valid;
   logic [1:0] agu_update_exception;
   exception_code_e [1:0] agu_update_cause;
   logic [1:0][XLEN-1:0] agu_update_tval;
+  logic [1:0] agu_effective_exception;
+  exception_code_e [1:0] agu_effective_cause;
+  logic [1:0][XLEN-1:0] agu_effective_tval;
   logic [1:0] agu_to_lsq_valid, agu_lsq_ready, agu_completion_needed;
   logic [1:0] agu_device;
+  logic [1:0] pmp_check_valid, pmp_allow, pmp_matched;
+  logic [1:0][2:0] pmp_access;
+  logic [1:0][PADDR_WIDTH-1:0] pmp_fault_address;
+  privilege_e [1:0] pmp_privilege;
 
   for (genvar lane = 0; lane < 2; lane++) begin : g_agu
     rv_lsu_pipe #(
@@ -213,6 +225,7 @@ module rv_lsu_cluster #(
       .update_sq_valid_o(agu_update_sq_valid[lane]),
       .update_sq_index_o(agu_update_sq_index[lane]),
       .update_address_o(agu_update_address[lane]),
+      .update_memory_size_o(agu_update_size[lane]),
       .update_byte_mask_o(agu_update_mask[lane]),
       .update_store_data_o(agu_update_store_data[lane]),
       .update_address_valid_o(agu_update_address_valid[lane]),
@@ -222,6 +235,16 @@ module rv_lsu_cluster #(
       .update_exception_tval_o(agu_update_tval[lane])
     );
   end
+
+  rv_pmp #(
+    .PADDR_WIDTH(PADDR_WIDTH), .PMP_ENTRIES(PMP_ENTRIES), .CHECK_PORTS(2)
+  ) u_data_pmp (
+    .pmpcfg_i, .pmpaddr_i, .check_valid_i(pmp_check_valid),
+    .check_address_i(agu_update_address), .check_size_i(agu_update_size),
+    .check_access_i(pmp_access), .check_privilege_i(pmp_privilege),
+    .allow_o(pmp_allow), .matched_o(pmp_matched),
+    .fault_address_o(pmp_fault_address)
+  );
 
   logic [1:0] load_candidate_present, load_candidate_valid;
   logic [1:0] load_candidate_ready;
@@ -263,8 +286,22 @@ module rv_lsu_cluster #(
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
+      pmp_check_valid[lane] = agu_update_valid[lane] &&
+        agu_update_address_valid[lane] && !agu_update_exception[lane];
+      pmp_access[lane] = agu_update_is_store[lane] ? 3'b010 : 3'b001;
+      pmp_privilege[lane] = current_privilege_i;
+      agu_effective_exception[lane] = agu_update_exception[lane] ||
+        (pmp_check_valid[lane] && !pmp_allow[lane]);
+      agu_effective_cause[lane] = agu_update_cause[lane];
+      agu_effective_tval[lane] = agu_update_tval[lane];
+      if (!agu_update_exception[lane] && pmp_check_valid[lane] &&
+          !pmp_allow[lane]) begin
+        agu_effective_cause[lane] = agu_update_is_store[lane] ?
+          EXC_STORE_ACCESS_FAULT : EXC_LOAD_ACCESS_FAULT;
+        agu_effective_tval[lane] = XLEN'(pmp_fault_address[lane]);
+      end
       agu_completion_needed[lane] = agu_update_is_store[lane] ||
-                                    agu_update_exception[lane];
+                                    agu_effective_exception[lane];
       agu_device[lane] = is_device_address(agu_update_address[lane]);
       agu_to_lsq_valid[lane] = agu_update_valid[lane] &&
         !flush_valid_i &&
@@ -315,8 +352,8 @@ module rv_lsu_cluster #(
     .agu_store_data_i(agu_update_store_data),
     .agu_address_valid_i(agu_update_address_valid),
     .agu_store_data_valid_i(agu_update_store_data_valid),
-    .agu_device_i(agu_device), .agu_exception_valid_i(agu_update_exception),
-    .agu_exception_cause_i(agu_update_cause),
+    .agu_device_i(agu_device), .agu_exception_valid_i(agu_effective_exception),
+    .agu_exception_cause_i(agu_effective_cause),
     .load_candidate_present_o(load_candidate_present),
     .load_candidate_valid_o(load_candidate_valid),
     .load_candidate_ready_i(load_candidate_ready),
@@ -438,9 +475,9 @@ module rv_lsu_cluster #(
       completion_valid_o[lane] = agu_update_valid[lane] &&
         agu_lsq_ready[lane] && !flush_valid_i && agu_completion_needed[lane];
       completion_sequence_o[lane] = agu_update_sequence[lane];
-      completion_exception_valid_o[lane] = agu_update_exception[lane];
-      completion_exception_cause_o[lane] = agu_update_cause[lane];
-      completion_exception_tval_o[lane] = agu_update_tval[lane];
+      completion_exception_valid_o[lane] = agu_effective_exception[lane];
+      completion_exception_cause_o[lane] = agu_effective_cause[lane];
+      completion_exception_tval_o[lane] = agu_effective_tval[lane];
 
       if (dmem_rsp_valid_i[lane] && response_is_load[lane] &&
           (dmem_rsp_replay_i[lane] == 0)) begin
@@ -674,6 +711,8 @@ module rv_lsu_cluster #(
       $fatal(1, "LSU cluster XLEN must be 32 or 64");
     if ((LQ_ENTRIES > 32) || (STORE_BUFFER_ENTRIES > 16))
       $fatal(1, "LSU response ID encoding supports LQ<=32 and SB<=16");
+    if ((PADDR_WIDTH < 4) || (PMP_ENTRIES == 0))
+      $fatal(1, "LSU PMP configuration is invalid");
     if ((MEM_DATA_WIDTH < XLEN) || ((MEM_DATA_WIDTH % 8) != 0))
       $fatal(1, "LSU memory beat must cover XLEN");
   end

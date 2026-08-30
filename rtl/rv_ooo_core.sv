@@ -82,6 +82,22 @@ module rv_ooo_core #(
 
   logic                          redirect_valid;
   logic [XLEN-1:0]               redirect_pc;
+  privilege_e                    current_privilege;
+  logic [7:0][7:0]               pmpcfg;
+  logic [7:0][PADDR_WIDTH-3:0]   pmpaddr;
+
+  logic                          fe_imem_req_valid, fe_imem_req_ready;
+  logic [PADDR_WIDTH-1:0]        fe_imem_req_addr;
+  logic [3:0]                    fe_imem_req_id, fe_imem_req_epoch;
+  logic                          fe_imem_rsp_valid, fe_imem_rsp_ready;
+  logic [3:0]                    fe_imem_rsp_id, fe_imem_rsp_epoch;
+  logic [FETCH_BYTES*8-1:0]      fe_imem_rsp_data;
+  logic [1:0]                    fe_imem_rsp_resp;
+  logic                          ifu_pmp_allow, ifu_pmp_matched;
+  logic [PADDR_WIDTH-1:0]        ifu_pmp_fault_address;
+  privilege_e [0:0]              ifu_pmp_privilege;
+  logic                          ifu_pmp_fault_pending_q;
+  logic [3:0]                    ifu_pmp_fault_id_q, ifu_pmp_fault_epoch_q;
 
   initial begin : p_parameter_checks
     if (!is_supported_xlen(XLEN))
@@ -124,18 +140,63 @@ module rv_ooo_core #(
     .fetch_inst_len_o     (fe_inst_len),
     .fetch_prediction_o   (fe_prediction),
     .fetch_fault_o        (fe_fetch_fault),
-    .imem_req_valid_o,
-    .imem_req_ready_i,
-    .imem_req_addr_o,
-    .imem_req_id_o,
-    .imem_req_epoch_o,
-    .imem_rsp_valid_i,
-    .imem_rsp_ready_o,
-    .imem_rsp_id_i,
-    .imem_rsp_epoch_i,
-    .imem_rsp_data_i,
-    .imem_rsp_resp_i
+    .imem_req_valid_o    (fe_imem_req_valid),
+    .imem_req_ready_i    (fe_imem_req_ready),
+    .imem_req_addr_o     (fe_imem_req_addr),
+    .imem_req_id_o       (fe_imem_req_id),
+    .imem_req_epoch_o    (fe_imem_req_epoch),
+    .imem_rsp_valid_i    (fe_imem_rsp_valid),
+    .imem_rsp_ready_o    (fe_imem_rsp_ready),
+    .imem_rsp_id_i       (fe_imem_rsp_id),
+    .imem_rsp_epoch_i    (fe_imem_rsp_epoch),
+    .imem_rsp_data_i     (fe_imem_rsp_data),
+    .imem_rsp_resp_i     (fe_imem_rsp_resp)
   );
+
+  assign ifu_pmp_privilege[0] = current_privilege;
+  rv_pmp #(
+    .PADDR_WIDTH(PADDR_WIDTH), .PMP_ENTRIES(8), .CHECK_PORTS(1)
+  ) u_ifu_pmp (
+    .pmpcfg_i(pmpcfg), .pmpaddr_i(pmpaddr),
+    .check_valid_i(fe_imem_req_valid), .check_address_i(fe_imem_req_addr),
+    .check_size_i(3'($clog2(FETCH_BYTES))), .check_access_i(3'b100),
+    .check_privilege_i(ifu_pmp_privilege), .allow_o(ifu_pmp_allow),
+    .matched_o(ifu_pmp_matched), .fault_address_o(ifu_pmp_fault_address)
+  );
+
+  // A denied fetch is completed locally as an instruction access fault. The
+  // frontend still observes its original ID/epoch and therefore applies the
+  // same stale-response rules as a memory response after a redirect.
+  assign imem_req_valid_o = fe_imem_req_valid && ifu_pmp_allow;
+  assign imem_req_addr_o = fe_imem_req_addr;
+  assign imem_req_id_o = fe_imem_req_id;
+  assign imem_req_epoch_o = fe_imem_req_epoch;
+  assign fe_imem_req_ready = ifu_pmp_allow ? imem_req_ready_i :
+                             !ifu_pmp_fault_pending_q;
+  assign fe_imem_rsp_valid = ifu_pmp_fault_pending_q ? 1'b1 : imem_rsp_valid_i;
+  assign fe_imem_rsp_id = ifu_pmp_fault_pending_q ?
+                          ifu_pmp_fault_id_q : imem_rsp_id_i;
+  assign fe_imem_rsp_epoch = ifu_pmp_fault_pending_q ?
+                             ifu_pmp_fault_epoch_q : imem_rsp_epoch_i;
+  assign fe_imem_rsp_data = ifu_pmp_fault_pending_q ? '0 : imem_rsp_data_i;
+  assign fe_imem_rsp_resp = ifu_pmp_fault_pending_q ? 2'b10 : imem_rsp_resp_i;
+  assign imem_rsp_ready_o = !ifu_pmp_fault_pending_q && fe_imem_rsp_ready;
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      ifu_pmp_fault_pending_q <= 1'b0;
+      ifu_pmp_fault_id_q <= '0;
+      ifu_pmp_fault_epoch_q <= '0;
+    end else begin
+      if (fe_imem_req_valid && fe_imem_req_ready && !ifu_pmp_allow) begin
+        ifu_pmp_fault_pending_q <= 1'b1;
+        ifu_pmp_fault_id_q <= fe_imem_req_id;
+        ifu_pmp_fault_epoch_q <= fe_imem_req_epoch;
+      end
+      if (ifu_pmp_fault_pending_q && fe_imem_rsp_ready)
+        ifu_pmp_fault_pending_q <= 1'b0;
+    end
+  end
 
   rv_backend #(
     .XLEN            (XLEN),
@@ -199,7 +260,29 @@ module rv_ooo_core #(
     .trace_rd_o,
     .trace_rd_write_o,
     .trace_rd_wdata_o,
-    .trace_trap_o
+    .trace_trap_o,
+    .current_privilege_o (current_privilege),
+    .pmpcfg_o            (pmpcfg),
+    .pmpaddr_o           (pmpaddr)
   );
+
+  logic unused_ifu_pmp;
+  always_comb unused_ifu_pmp = ifu_pmp_matched ^ (^ifu_pmp_fault_address);
+
+`ifndef SYNTHESIS
+  property p_denied_fetch_never_reaches_memory;
+    @(posedge clk_i) disable iff (!rst_ni)
+      fe_imem_req_valid && !ifu_pmp_allow |-> !imem_req_valid_o;
+  endproperty
+  assert property (p_denied_fetch_never_reaches_memory);
+
+  property p_pmp_fault_response_keeps_identity;
+    @(posedge clk_i) disable iff (!rst_ni)
+      ifu_pmp_fault_pending_q && !fe_imem_rsp_ready |=>
+        ifu_pmp_fault_pending_q &&
+        $stable({ifu_pmp_fault_id_q, ifu_pmp_fault_epoch_q});
+  endproperty
+  assert property (p_pmp_fault_response_keeps_identity);
+`endif
 
 endmodule

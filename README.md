@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer와 D-memory response도 통합되어 conservative memory ordering, store-to-load forwarding, commit 이후 store visibility, branch recovery를 실행 시뮬레이션으로 검증합니다. commit-time CSR, M/U privilege state, precise exception/interrupt, `MRET`, `WFI`, `FENCE/FENCE.I` 경로도 backend에 통합됐습니다. FPU datapath, PMP permission checker, predictor, Boot ROM 실행 image와 DPI ELF loader/BFM은 아직 남아 있으므로 전체 RV32IMFC software를 부팅하는 완료 단계는 아닙니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer와 D-memory response도 통합되어 conservative memory ordering, store-to-load forwarding, commit 이후 store visibility, branch recovery를 실행 시뮬레이션으로 검증합니다. commit-time CSR, M/U privilege state, precise exception/interrupt, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry OFF/TOR/NA4/NAPOT PMP R/W/X checker도 IFU/dual-LSU에 통합됐습니다. FPU datapath, predictor, Boot ROM 실행 image와 DPI ELF loader/BFM은 아직 남아 있으므로 전체 RV32IMFC software를 부팅하는 완료 단계는 아닙니다.
 
 ## 문서
 
@@ -58,7 +58,7 @@ python scripts/check_rtl.py
 powershell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1
 ```
 
-Icarus 회귀는 decoder/C expander, divider, fetch queue, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer와 CSR/privilege/trap 상태 전이를 검증합니다.
+Icarus 회귀는 decoder/C expander, divider, fetch queue, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer, CSR/privilege/trap 상태 전이와 PMP mode/priority/permission을 검증합니다.
 `-DSYNTHESIS`는 Icarus가 지원하지 않는 SVA 구문만 제외하며 RTL 데이터 경로는
 동일하게 시뮬레이션합니다.
 
@@ -71,3 +71,4 @@ powershell -ExecutionPolicy Bypass -File scripts/run_integration_tests.ps1
 이 통합 회귀는 out-of-order 완료와 in-order retire, branch squash, store→load forwarding,
 store의 commit 전 외부 비가시성, dual-LSU 독립 load와 load sign extension뿐 아니라
 CSR old-value/commit ordering, WFI wake, MSIP trap, mtvec redirect, MRET 복귀와 ECALL precise trap을 확인합니다.
+추가로 MPRV=U에서 PMP가 거부한 load/store가 precise access fault를 만들고 D-memory에는 전혀 요청되지 않는지도 확인합니다.

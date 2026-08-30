@@ -33,6 +33,7 @@ module rv_backend_int_tb;
   logic saw_uncommitted_write;
   logic saw_bad_forward_read;
   logic saw_dual_load_request;
+  int unsigned memory_request_count;
   logic [1:0] accepted_memory_write, accepted_memory_read;
   logic irq_software;
 
@@ -139,6 +140,7 @@ module rv_backend_int_tb;
       saw_uncommitted_write <= 1'b0;
       saw_bad_forward_read <= 1'b0;
       saw_dual_load_request <= 1'b0;
+      memory_request_count <= 0;
     end else begin
       memory_write_count <= memory_write_count +
         $unsigned($countones(accepted_memory_write));
@@ -164,6 +166,8 @@ module rv_backend_int_tb;
       end
       if (&dmem_req_valid && !(|dmem_req_write) && (&dmem_req_ready))
         saw_dual_load_request <= 1'b1;
+      if (|(dmem_req_valid & dmem_req_ready))
+        memory_request_count <= memory_request_count + 1;
     end
   end
 
@@ -348,6 +352,46 @@ module rv_backend_int_tb;
       if (!redirect_valid || (redirect_pc != 32'h8000_0000) ||
           !trace_trap[0])
         $fatal(1, "ECALL precise trap/trace is missing");
+    end
+
+    // MPRV with MPP=U makes data accesses use U privilege. With every PMP
+    // entry OFF, the load must trap locally and must never reach D-memory.
+    send_pair(32'h8000_0000, 32'h0002_0537, 1'b1,
+              32'h8000_0004, 32'h3005_1073); // lui x10,0x20; csrw mstatus,x10
+    begin
+      int unsigned requests_before;
+      int unsigned timeout;
+      requests_before = memory_request_count;
+      send_pair(32'h8000_0008, 32'h0000_2583, 1'b0, '0, '0); // lw x11,0(x0)
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h8000_0000)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || !trace_trap[0])
+        $fatal(1, "PMP-denied load did not create a precise trap");
+      if (memory_request_count != requests_before)
+        $fatal(1, "PMP-denied load escaped to D-memory");
+    end
+
+    send_pair(32'h8000_0000, 32'h0002_0537, 1'b1,
+              32'h8000_0004, 32'h3005_1073);
+    begin
+      int unsigned requests_before;
+      int unsigned timeout;
+      requests_before = memory_request_count;
+      send_pair(32'h8000_0008, 32'h0000_2023, 1'b0, '0, '0); // sw x0,0(x0)
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h8000_0000)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || !trace_trap[0])
+        $fatal(1, "PMP-denied store did not create a precise trap");
+      if (memory_request_count != requests_before)
+        $fatal(1, "PMP-denied store escaped to D-memory");
     end
 
     $display("rv_backend_int_tb PASS");

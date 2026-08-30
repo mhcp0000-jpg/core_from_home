@@ -1,9 +1,11 @@
 module rv_csr_file #(
   parameter int unsigned XLEN = 32,
+  parameter int unsigned PADDR_WIDTH = XLEN,
   parameter bit HAS_SMODE = 1'b0,
   parameter int unsigned PMP_ENTRIES = 8,
   parameter logic [XLEN-1:0] RESET_MTVEC = 'h8000_0000,
-  parameter logic [XLEN-1:0] HART_ID = '0
+  parameter logic [XLEN-1:0] HART_ID = '0,
+  localparam int unsigned PMP_ADDR_WIDTH = PADDR_WIDTH - 2
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -62,7 +64,7 @@ module rv_csr_file #(
   output logic [2:0]                   frm_o,
   output logic [4:0]                   fflags_o,
   output logic [PMP_ENTRIES-1:0][7:0] pmpcfg_o,
-  output logic [PMP_ENTRIES-1:0][XLEN-3:0] pmpaddr_o
+  output logic [PMP_ENTRIES-1:0][PMP_ADDR_WIDTH-1:0] pmpaddr_o
 );
 
   import rv_ooo_pkg::*;
@@ -91,7 +93,7 @@ module rv_csr_file #(
   logic [4:0] fflags_q;
   logic [2:0] frm_q;
   logic [7:0] pmpcfg_q [0:PMP_ENTRIES-1];
-  logic [XLEN-3:0] pmpaddr_q [0:PMP_ENTRIES-1];
+  logic [PMP_ADDR_WIDTH-1:0] pmpaddr_q [0:PMP_ENTRIES-1];
   logic csr_pending_q;
   logic [11:0] csr_pending_addr_q;
   logic csr_pending_write_q;
@@ -241,7 +243,7 @@ module rv_csr_file #(
         for (int unsigned entry = 0; entry < PMP_ENTRIES; entry++) begin
           if (csr_addr_i == (12'h3B0 + entry)) begin
             csr_exists = 1'b1;
-            csr_read_value = {{2{1'b0}}, pmpaddr_q[entry]};
+            csr_read_value = XLEN'(pmpaddr_q[entry]);
           end
         end
       end
@@ -420,7 +422,7 @@ module rv_csr_file #(
             for (int unsigned entry = 0; entry < PMP_ENTRIES; entry++) begin
               if ((csr_pending_addr_q == (12'h3B0 + entry)) &&
                   !pmp_address_locked(entry))
-                pmpaddr_q[entry] <= csr_pending_wdata_q[XLEN-1:2];
+                pmpaddr_q[entry] <= PMP_ADDR_WIDTH'(csr_pending_wdata_q);
             end
           end
         endcase
@@ -458,6 +460,8 @@ module rv_csr_file #(
   initial begin : p_parameter_checks
     if ((XLEN != 32) && (XLEN != 64))
       $fatal(1, "CSR file XLEN must be 32 or 64");
+    if ((PADDR_WIDTH < 4) || ((PADDR_WIDTH-2) > XLEN))
+      $fatal(1, "CSR PMP address width must be in [2, XLEN]");
     if ((PMP_ENTRIES == 0) || (PMP_ENTRIES > 16))
       $fatal(1, "CSR file supports 1..16 PMP entries");
   end

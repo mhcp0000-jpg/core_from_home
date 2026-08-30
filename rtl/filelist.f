@@ -37,6 +37,7 @@ rtl/backend/rv_writeback_arbiter.sv
 rtl/backend/rv_branch_recovery.sv
 rtl/backend/rv_exec_result_buffer.sv
 rtl/backend/rv_csr_file.sv
+rtl/backend/rv_pmp.sv
 rtl/backend/rv_rob.sv
 rtl/frontend/rv_frontend.sv
 rtl/backend/rv_backend.sv

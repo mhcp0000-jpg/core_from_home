@@ -110,6 +110,14 @@ $tests = @(
       "rtl/backend/rv_csr_file.sv",
       "tb/unit/rv_csr_file_tb.sv"
     )
+  },
+  @{
+    Top = "rv_pmp_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_pmp.sv",
+      "tb/unit/rv_pmp_tb.sv"
+    )
   }
 )
 

@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Implementation baseline v1.3.6 (CSR/privilege/trap integration checkpoint) |
+| 상태 | Implementation baseline v1.3.7 (PMP enforcement checkpoint) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-08-31)는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**이다. address/package와 공용 interface, map/decode/static check, 1R1W SRAM, 2-bank TIM, CLINT, I/D-Fabric, local↔AXI bridge, Main AXI Xbar, PLIC, Boot ROM, HostIF 및 이들을 연결한 `rv_soc_top` RTL이 존재한다. frontend는 single-outstanding sequential block fetch, 64-byte queue, 16/32-bit dual align과 stale-epoch drop까지 기능 RTL이다. backend는 C expander/RV32·RV64 decoder, dual-lane RAT/RRAT/free list, ROB, unified IQ와 global 2-wide issue, INT/FP PRF, ALU 2개, branch, multiplier, iterative divider, writeback arbiter와 checkpoint branch recovery를 실제로 연결한다. dual LSU cluster도 AGU 2개, LQ/SQ, committed-store buffer와 두 D-memory port를 연결하여 unknown older-store/load stall, youngest full-cover store-to-load forwarding, partial/data-wait stall, killed-outstanding tombstone, normal-store commit 후 drain과 precise device-store response를 구현한다. `rv_csr_file`과 backend head controller는 CSR evaluation/commit 분리, M/U privilege state, machine CSR/counter/FCSR/PMP configuration storage, precise synchronous trap와 machine interrupt, direct/vectored mtvec, MRET, WFI, FENCE/FENCE.I serialization을 구현한다. LSU request privilege도 현재 privilege를 전달하며, 수락된 device store는 younger branch flush로 중복 발행되지 않는다. Verilator 통합 회귀는 integer/LSU 항목에 더해 CSR old-value/commit ordering, WFI→MSIP trap, mtvec redirect, MRET와 ECALL precise trap을 통과했다. 기본 RV32 top과 재배치 주소/RV64 top은 parse/elaboration을 통과한다. 단, predictor는 sequential stub이고 FPU datapath, PMP R/W/X permission checker, Boot ROM 실행 image, DPI ELF loader/BFM은 아직 Contract/Partial 단계이므로 전체 RV32IMFC software를 부팅하는 단계는 아니다. HDD의 `Implemented/Partial/Contract` 표기를 확인하지 않고 계획된 기능을 완료 RTL로 간주하면 안 된다.
+현재 구현 상태(2026-08-31)는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**이다. address/package와 공용 interface, map/decode/static check, 1R1W SRAM, 2-bank TIM, CLINT, I/D-Fabric, local↔AXI bridge, Main AXI Xbar, PLIC, Boot ROM, HostIF 및 이들을 연결한 `rv_soc_top` RTL이 존재한다. frontend는 single-outstanding sequential block fetch, 64-byte queue, 16/32-bit dual align과 stale-epoch drop까지 기능 RTL이다. backend는 C expander/RV32·RV64 decoder, dual-lane RAT/RRAT/free list, ROB, unified IQ와 global 2-wide issue, INT/FP PRF, ALU 2개, branch, multiplier, iterative divider, writeback arbiter와 checkpoint branch recovery를 실제로 연결한다. dual LSU cluster도 AGU 2개, LQ/SQ, committed-store buffer와 두 D-memory port를 연결하여 unknown older-store/load stall, youngest full-cover store-to-load forwarding, partial/data-wait stall, killed-outstanding tombstone, normal-store commit 후 drain과 precise device-store response를 구현한다. `rv_csr_file`과 backend head controller는 CSR evaluation/commit 분리, M/U privilege state, machine CSR/counter/FCSR/PMP configuration storage, precise synchronous trap와 machine interrupt, direct/vectored mtvec, MRET, WFI, FENCE/FENCE.I serialization을 구현한다. 8-entry `rv_pmp`는 OFF/TOR/NA4/NAPOT, lower-index priority, full-access coverage, R/W/X와 lock/M-mode 규칙을 구현하고 IFU 1개 및 LSU AGU 2개 경로에 연결된다. MPRV/MPP는 LSU effective privilege에 반영되며 denied access는 외부 request 없이 precise access fault가 된다. 수락된 device store는 younger branch flush로 중복 발행되지 않는다. Verilator 통합 회귀는 integer/LSU/CSR/trap 항목에 더해 MPRV=U PMP-denied load/store의 외부 비가시성을 통과했다. 기본 RV32/PADDR34, 재배치 주소/RV64 top은 parse/elaboration을 통과한다. 단, predictor는 sequential stub이고 FPU datapath, Boot ROM 실행 image, DPI ELF loader/BFM은 아직 Contract/Partial 단계이므로 전체 RV32IMFC software를 부팅하는 단계는 아니다. HDD의 `Implemented/Partial/Contract` 표기를 확인하지 않고 계획된 기능을 완료 RTL로 간주하면 안 된다.
 
 ## 1. 목적과 성능 포지션
 
@@ -1043,7 +1043,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_axi_to_local_bridge` | Implemented | single clock, sync active-low reset | target window, device attribute, max burst |
 | `rv_axi_error_slave`, `rv_axi_xbar` | Implemented | single clock, sync active-low reset | local/Xbar ID width, 전 region map |
 | `rv_plic`, `rv_bootrom`, `rv_hostif` | Implemented | single clock, sync active-low reset | register map, AXI ID width, init image/event |
-| `rv_soc_top` | Partial: interconnect + privileged core path integrated, FPU/PMP check pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
+| `rv_soc_top` | Partial: interconnect + privileged/PMP core path integrated, FPU/boot flow pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
 | `rv_rename2` | Implemented standalone | core clock/reset | INT/FP physical registers, tag width, branch checkpoints |
 | `rv_rob` | Implemented standalone | core clock/reset | XLEN, 48 entries, sequence width, allocate/complete/retire width |
 | `rv_phys_regfile` | Implemented standalone | core clock/reset | data/tag width, 4R2W, allocation ports, zero-tag option |
@@ -1055,7 +1055,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_fp_cluster` | Contract | core clock/reset | queue/resource 폭, XLEN/FLEN |
 | `rv_writeback_arbiter`, `rv_branch_recovery`, `rv_exec_result_buffer` | Implemented and backend-integrated | core clock/reset 또는 조합 | Section 15.28~15.33 참조 |
 | `rv_csr_file` | Implemented and backend-integrated | core clock/reset | Section 15.34 참조 |
-| `rv_pmp` | Contract; CSR configuration storage만 구현 | 조합 | Section 15.34 참조 |
+| `rv_pmp` | Implemented and IFU/dual-LSU integrated | 조합 | PADDR/PMP entries/check ports, Section 15.34 참조 |
 | `rv_trap_controller`, `rv_fence_controller` | Partial: baseline control is integrated in `rv_backend` | core clock/reset 또는 조합 | Section 15.34~15.35 참조 |
 
 ### 15.13 공용 interface: `rv_local_mem_if`와 `rv_axi4_if`
@@ -1212,7 +1212,7 @@ top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral i
 | Interrupt/debug | `irq_software/timer/external`, `debug_halt_req` | commit boundary에서 precise accept |
 | Retire trace | lane별 valid/PC/instruction/rd/write-data/trap | commit한 instruction만 valid |
 
-`rv_frontend`는 redirect input, 2-wide raw/length/prediction fetch output, IFU block memory port를 갖는다. redirect가 accept되면 epoch를 증가시키고 stale response를 버린다. `rv_backend` 안의 decoder가 C instruction을 canonical 32-bit instruction으로 확장한다. `rv_backend`는 2-wide fetch bundle input, redirect output, dual LSU port, interrupt/debug/`mtime_i` input, retire trace output을 갖는다. 현재 integer/branch/M/dual-LSU와 CSR/privilege/trap/WFI/FENCE 경로는 기능 RTL이다. FPU datapath, PMP permission lookup, predictor와 독립 controller 분리는 남은 Partial/Contract 범위다. 외부 port 이름은 후속 구현에서도 유지한다.
+`rv_frontend`는 redirect input, 2-wide raw/length/prediction fetch output, IFU block memory port를 갖는다. redirect가 accept되면 epoch를 증가시키고 stale response를 버린다. `rv_backend` 안의 decoder가 C instruction을 canonical 32-bit instruction으로 확장한다. `rv_backend`는 2-wide fetch bundle input, redirect output, dual LSU port, interrupt/debug/`mtime_i` input, retire trace와 core-internal privilege/PMP-state output을 갖는다. 현재 integer/branch/M/dual-LSU, CSR/privilege/trap/WFI/FENCE와 IFU/LSU PMP 경로는 기능 RTL이다. FPU datapath, predictor와 독립 controller 분리는 남은 Partial/Contract 범위다. 외부 SoC port 이름은 후속 구현에서도 유지한다.
 
 `rv_lsq_order_check`는 load 한 건에 대해 다음 입력을 검사한다.
 
@@ -1332,7 +1332,7 @@ baseline Xbar는 다음 규칙을 지킨다.
 
 주소/크기, AXI ID 폭, `CLOCK_HZ/TIMEBASE_HZ`, `HAS_SMODE`, `BOOTROM_INIT_FILE`은 top parameter로 노출된다. 모든 region override는 map check, Xbar, inbound bridge, Fabric 및 peripheral까지 동일하게 전달해야 한다. D inbound bridge는 DTIM을 normal memory, CLINT를 device로 구분한다. PLIC의 `seip_o`는 `HAS_SMODE=1`에서 생성되지만 초기 M/U core에는 아직 연결하지 않고 향후 S-mode interrupt input hook으로 남긴다.
 
-현재 통합 top은 frontend의 sequential instruction fetch와 backend의 integer/branch/M/dual-LSU 실행, D-memory traffic, CSR/privilege/trap/WFI/FENCE, interrupt/timebase, redirect와 retire trace를 실제로 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 다만 Boot ROM 실행 image/DPI loader와 PMP checker/FPU가 없으므로 boot-flow 및 전체 privileged software 완료로 간주하지 않는다.
+현재 통합 top은 frontend의 sequential instruction fetch와 backend의 integer/branch/M/dual-LSU 실행, D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, redirect와 retire trace를 실제로 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 다만 Boot ROM 실행 image/DPI loader와 FPU가 없으므로 boot-flow 및 전체 RV32IMFC software 완료로 간주하지 않는다.
 
 ### 15.23 `rv_rename2` exact interface와 상태 전이
 
@@ -1595,7 +1595,7 @@ priority는 Section 16을 따른다. branch correct-predict는 checkpoint releas
 
 #### `rv_csr_file`
 
-parameter는 `XLEN`, `HAS_SMODE=0`, `PMP_ENTRIES=8`, `RESET_MTVEC`, `HART_ID`다. CSR instruction은 serializing uop이며 ROB head이고 모든 older instruction이 완료된 때 `csr_valid_i/csr_ready_o`, `csr_execute_i`, `csr_addr_i[11:0]`, `csr_cmd_i`, `csr_operand_i[XLEN-1:0]`, `csr_rs1_is_zero_i`로 평가한다. 출력은 `csr_rdata_o`, `csr_illegal_o`, `csr_write_effect_o`다. 평가 때 주소/write intent/write data를 내부 pending transaction으로 고정하고, 같은 instruction의 `csr_commit_i`에서만 상태를 변경한다. 따라서 cycle/time counter가 evaluation과 retire 사이에 증가해도 CSR RMW 결과가 바뀌지 않는다.
+parameter는 `XLEN`, `PADDR_WIDTH`, `HAS_SMODE=0`, `PMP_ENTRIES=8`, `RESET_MTVEC`, `HART_ID`다. CSR instruction은 serializing uop이며 ROB head이고 모든 older instruction이 완료된 때 `csr_valid_i/csr_ready_o`, `csr_execute_i`, `csr_addr_i[11:0]`, `csr_cmd_i`, `csr_operand_i[XLEN-1:0]`, `csr_rs1_is_zero_i`로 평가한다. 출력은 `csr_rdata_o`, `csr_illegal_o`, `csr_write_effect_o`다. 평가 때 주소/write intent/write data를 내부 pending transaction으로 고정하고, 같은 instruction의 `csr_commit_i`에서만 상태를 변경한다. 따라서 cycle/time counter가 evaluation과 retire 사이에 증가해도 CSR RMW 결과가 바뀌지 않는다. PMP address storage는 physical byte address의 `[PADDR_WIDTH-1:2]`를 보관하여 RV32/PADDR34도 지원한다.
 
 trap port는 `trap_valid_i/trap_ready_o`, `trap_pc_i`, `trap_cause_i[5:0]`, `trap_tval_i`, `trap_is_interrupt_i`, `trap_next_pc_i`를 받고 `trap_vector_o`를 낸다. return port는 `mret_valid_i`, `mret_commit_i`, `mret_ready_o`, `mret_pc_o`, `mret_illegal_o`다. WFI port는 `wfi_valid_i`, `wfi_illegal_o`, `wfi_wake_o`다. interrupt/time 입력은 `irq_software_i`, `irq_timer_i`, `irq_external_i`, `mtime_i[63:0]`이고 출력은 `interrupt_pending_o`, `interrupt_cause_o[5:0]`다. retire/FP 상태 입력은 `retire_count_i[1:0]`, `fflags_accrue_valid_i`, `fflags_accrue_i[4:0]`, recovery 입력은 `flush_all_i`다. 상태 출력은 `privilege_o`, `mstatus_o`, `mtvec_o`, `mepc_o`, PMP cfg/address array, `frm_o[2:0]`, `fflags_o[4:0]`다. SRET/delegation/satp는 `HAS_SMODE` 확장 단계에서 port를 추가한다.
 
@@ -1603,7 +1603,7 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 #### `rv_pmp`
 
-`rv_pmp`는 CSR file의 `pmpcfg_i[7:0]`, `pmpaddr_i[7:0]`를 받아 세 개의 조합 lookup port를 제공한다: IFU 1개와 LSU 2개. 각 port는 `check_valid_i`, physical address, size, access type R/W/X, privilege를 받고 `allow_o`, `matched_o`, `fault_address_o`를 낸다. entry priority는 낮은 index 우선이며 TOR/NA4/NAPOT과 lock bit를 구현한다. M-mode bypass와 locked entry 의미는 privileged specification을 따른다. 한 access가 entry 경계를 부분적으로 넘으면 deny한다.
+`rv_pmp` parameter는 `PADDR_WIDTH`, `PMP_ENTRIES=8`, `CHECK_PORTS`이고 CSR file의 flattened `pmpcfg_i[PMP_ENTRIES*8-1:0]`, `pmpaddr_i[PMP_ENTRIES*(PADDR_WIDTH-2)-1:0]`를 받는다. 각 조합 lookup port는 `check_valid_i`, physical address, log2-byte size, access bit R/W/X, privilege를 받고 `allow_o`, `matched_o`, `fault_address_o`를 낸다. core는 IFU용 1-port instance와 LSU용 2-port instance를 사용한다. entry priority는 낮은 index 우선이며 OFF/TOR/NA4/NAPOT과 lock bit를 구현한다. M-mode unlocked bypass와 locked entry 의미를 적용하고, 첫 matching entry가 access 일부만 덮으면 deny한다. LSU는 AGU의 latched size/address를 검사하며 MPRV일 때 MPP를 effective privilege로 사용한다. IFU denied block은 외부 request를 내지 않고 원 ID/epoch의 fault response를 생성한다.
 
 #### `rv_trap_controller`
 
@@ -1745,7 +1745,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 - PLIC priority/enable/threshold/claim/complete와 source0=0 검증
 - `rv_soc_top_tb`: Host AXI→BootROM/ITIM/DTIM/CLINT/HostIF 왕복과 unmapped DECERR 검증
 
-현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. Boot ROM image/DPI/PMP access-fault 항목은 아직 미완료다.
+현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. Boot ROM image/DPI와 실제 U-mode fetch 부트 시나리오는 아직 미완료다.
 
 ## 19. Clock/reset/DFT 원칙
 
@@ -1855,3 +1855,4 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | v1.3.4 | LSQ dual allocation/AGU update, conservative ordering/forwarding, tombstone recovery, normal/device store commit 분리 RTL 추가 |
 | v1.3.5 | decoder→rename/ROB/IQ/PRF→ALU/BRU/MUL/DIV→writeback/commit를 통합하고 checkpoint branch recovery를 연결. dual LSU cluster와 D-memory response를 backend에 연결해 SQ/SB youngest forwarding, commit-only store visibility, precise device store, dual independent load를 Verilator 통합 회귀로 검증. CSR/FPU/PMP/DPI는 후속 구현으로 명시 |
 | v1.3.6 | commit-time `rv_csr_file`, M/U privilege, machine CSR/counter/FCSR/PMP-config storage, precise exception/interrupt, direct/vectored mtvec, MRET/WFI/FENCE/FENCE.I와 `mtime`/interrupt 연결을 backend에 통합. 수락된 MMIO store의 younger-flush 생존 규칙을 수정하고 CSR/WFI/MSIP/MRET/ECALL 통합 회귀를 추가. PMP permission checker, FPU, Boot image/DPI는 후속 범위로 유지 |
+| v1.3.7 | `PADDR_WIDTH-2` PMP address storage, OFF/TOR/NA4/NAPOT lower-index checker, R/W/X/lock/M-mode 및 MPRV rules를 구현. IFU denied-fetch local fault adapter와 dual-AGU access-fault path를 연결하고 PMP-denied load/store의 precise trap 및 외부 request 0건을 회귀로 검증 |

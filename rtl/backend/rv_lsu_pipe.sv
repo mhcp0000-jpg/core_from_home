@@ -39,6 +39,7 @@ module rv_lsu_pipe #(
   output logic                              update_sq_valid_o,
   output logic [SQ_INDEX_WIDTH-1:0]         update_sq_index_o,
   output logic [PADDR_WIDTH-1:0]            update_address_o,
+  output logic [2:0]                        update_memory_size_o,
   output logic [MEM_BYTES-1:0]              update_byte_mask_o,
   output logic [MEM_DATA_WIDTH-1:0]         update_store_data_o,
   output logic                              update_address_valid_o,
@@ -71,6 +72,7 @@ module rv_lsu_pipe #(
   logic update_sq_valid_q;
   logic [SQ_INDEX_WIDTH-1:0] update_sq_index_q;
   logic [PADDR_WIDTH-1:0] update_address_q;
+  logic [2:0] update_memory_size_q;
   logic [MEM_BYTES-1:0] update_byte_mask_q;
   logic [MEM_DATA_WIDTH-1:0] update_store_data_q;
   logic update_address_valid_q;
@@ -131,6 +133,7 @@ module rv_lsu_pipe #(
   assign update_sq_valid_o = update_sq_valid_q;
   assign update_sq_index_o = update_sq_index_q;
   assign update_address_o = update_address_q;
+  assign update_memory_size_o = update_memory_size_q;
   assign update_byte_mask_o = update_byte_mask_q;
   assign update_store_data_o = update_store_data_q;
   assign update_address_valid_o = update_address_valid_q;
@@ -150,6 +153,7 @@ module rv_lsu_pipe #(
       update_sq_valid_q <= 1'b0;
       update_sq_index_q <= '0;
       update_address_q <= '0;
+      update_memory_size_q <= '0;
       update_byte_mask_q <= '0;
       update_store_data_q <= '0;
       update_address_valid_q <= 1'b0;
@@ -178,6 +182,7 @@ module rv_lsu_pipe #(
         update_sq_valid_q <= issue_sq_valid_i;
         update_sq_index_q <= issue_sq_index_i;
         update_address_q <= physical_address;
+        update_memory_size_q <= memory_size_i;
         update_byte_mask_q <= generated_mask;
         update_store_data_q <= generated_store_data;
         update_address_valid_q <= 1'b1;
@@ -197,7 +202,7 @@ module rv_lsu_pipe #(
       $stable({update_rob_sequence_o, update_is_load_o, update_is_store_o,
                update_lq_valid_o, update_lq_index_o,
                update_sq_valid_o, update_sq_index_o, update_address_o,
-               update_byte_mask_o, update_store_data_o,
+               update_memory_size_o, update_byte_mask_o, update_store_data_o,
                update_address_valid_o, update_store_data_valid_o,
                update_exception_valid_o, update_exception_cause_o,
                update_exception_tval_o});

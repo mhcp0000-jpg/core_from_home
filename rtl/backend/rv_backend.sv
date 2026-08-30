@@ -53,7 +53,10 @@ module rv_backend #(
   output logic [1:0][4:0] trace_rd_o,
   output logic [1:0] trace_rd_write_o,
   output logic [1:0][XLEN-1:0] trace_rd_wdata_o,
-  output logic [1:0] trace_trap_o
+  output logic [1:0] trace_trap_o,
+  output rv_ooo_pkg::privilege_e current_privilege_o,
+  output logic [7:0][7:0] pmpcfg_o,
+  output logic [7:0][PADDR_WIDTH-3:0] pmpaddr_o
 );
   import rv_ooo_pkg::*;
 
@@ -787,7 +790,9 @@ module rv_backend #(
   logic [4:0][XLEN-1:0] lsu_completion_data, lsu_completion_tval;
   exception_code_e [4:0] lsu_completion_cause;
   logic store_buffer_empty, lsu_memory_idle, store_machine_check;
-  privilege_e current_privilege;
+  privilege_e current_privilege, effective_data_privilege;
+  logic [7:0][7:0] csr_pmpcfg;
+  logic [7:0][PADDR_WIDTH-3:0] csr_pmpaddr;
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -835,7 +840,8 @@ module rv_backend #(
     .issue_sq_valid_i(lsu_issue_sq_valid), .issue_sq_index_i(lsu_issue_sq_index),
     .issue_base_i(lsu_issue_base), .issue_immediate_i(lsu_issue_immediate),
     .issue_store_data_i(lsu_issue_store_data), .issue_size_i(lsu_issue_size),
-    .current_privilege_i(current_privilege),
+    .current_privilege_i(effective_data_privilege),
+    .pmpcfg_i(csr_pmpcfg), .pmpaddr_i(csr_pmpaddr),
     .rob_head_valid_i(rob_head_valid), .rob_head_sequence_i(rob_head_sequence),
     .commit_valid_i(retire_valid),
     .commit_is_load_i(retire_is_load), .commit_is_store_i(retire_is_store),
@@ -894,8 +900,6 @@ module rv_backend #(
   logic [XLEN-1:0] csr_mret_pc, csr_mstatus, csr_mtvec, csr_mepc;
   logic [2:0] csr_frm;
   logic [4:0] csr_fflags;
-  logic [7:0][7:0] csr_pmpcfg;
-  logic [7:0][XLEN-3:0] csr_pmpaddr;
   logic system_completion_valid, system_completion_fire,
         system_completion_exception;
   exception_code_e system_completion_cause;
@@ -974,7 +978,7 @@ module rv_backend #(
   end
 
   rv_csr_file #(
-    .XLEN(XLEN), .HAS_SMODE(1'b0), .PMP_ENTRIES(8),
+    .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(1'b0), .PMP_ENTRIES(8),
     .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
   ) u_csr_file (
     .clk_i, .rst_ni, .csr_valid_i(head_special_request &&
@@ -1005,6 +1009,15 @@ module rv_backend #(
     .frm_o(csr_frm), .fflags_o(csr_fflags), .pmpcfg_o(csr_pmpcfg),
     .pmpaddr_o(csr_pmpaddr)
   );
+
+  always_comb begin
+    effective_data_privilege = current_privilege;
+    if ((current_privilege == PRIV_M) && csr_mstatus[17])
+      effective_data_privilege = privilege_e'(csr_mstatus[12:11]);
+  end
+  assign current_privilege_o = current_privilege;
+  assign pmpcfg_o = csr_pmpcfg;
+  assign pmpaddr_o = csr_pmpaddr;
 
   always_comb begin
     system_completion_valid = head_special_request;
