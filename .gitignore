@@ -1,0 +1,20 @@
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# RTL build and simulation outputs
+build/
+out/
+obj_dir/
+simv
+*.vcd
+*.fst
+*.wlf
+*.log
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
