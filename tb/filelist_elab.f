@@ -29,6 +29,7 @@ rtl/backend/rv_issue_arbiter.sv
 rtl/backend/rv_int_alu.sv
 rtl/backend/rv_branch_unit.sv
 rtl/backend/rv_multiplier.sv
+rtl/backend/rv_csr_file.sv
 rtl/backend/rv_rob.sv
 rtl/frontend/rv_frontend.sv
 rtl/backend/rv_backend.sv

@@ -24,6 +24,7 @@ module rv_rob_tb;
   logic [1:0][4:0] alloc_destination_arch;
   logic [1:0][TAG_WIDTH-1:0] alloc_destination_phys;
   logic [1:0][TAG_WIDTH-1:0] alloc_stale_phys;
+  logic [1:0][TAG_WIDTH-1:0] alloc_source0_phys;
   logic [1:0] alloc_is_store;
   logic [1:0] alloc_is_load;
   logic [1:0][LQ_WIDTH-1:0] alloc_lq_index;
@@ -49,6 +50,8 @@ module rv_rob_tb;
   logic [1:0][SEQ_WIDTH-1:0] retire_sequence;
   logic [1:0][31:0] retire_pc;
   logic [1:0][31:0] retire_instruction;
+  logic [1:0][1:0] retire_instruction_length;
+  logic [1:0][31:0] retire_next_pc;
   logic [1:0] retire_writes_destination;
   reg_class_e [1:0] retire_destination_class;
   logic [1:0][4:0] retire_destination_arch;
@@ -59,7 +62,13 @@ module rv_rob_tb;
   logic [1:0][LQ_WIDTH-1:0] retire_lq_index;
   logic [1:0][SQ_WIDTH-1:0] retire_sq_index;
   logic head_valid;
+  logic head_complete;
   logic [SEQ_WIDTH-1:0] head_sequence;
+  logic [31:0] head_pc, head_instruction;
+  logic [1:0] head_instruction_length;
+  logic head_writes_destination;
+  reg_class_e head_destination_class;
+  logic [TAG_WIDTH-1:0] head_destination_phys, head_source0_phys;
   logic trap_valid;
   logic trap_ready;
   logic [SEQ_WIDTH-1:0] trap_sequence;
@@ -103,6 +112,7 @@ module rv_rob_tb;
     .alloc_destination_arch_i  (alloc_destination_arch),
     .alloc_destination_phys_i  (alloc_destination_phys),
     .alloc_stale_phys_i        (alloc_stale_phys),
+    .alloc_source0_phys_i      (alloc_source0_phys),
     .alloc_is_store_i          (alloc_is_store),
     .alloc_is_load_i           (alloc_is_load),
     .alloc_lq_index_i          (alloc_lq_index),
@@ -126,6 +136,8 @@ module rv_rob_tb;
     .retire_sequence_o         (retire_sequence),
     .retire_pc_o               (retire_pc),
     .retire_instruction_o      (retire_instruction),
+    .retire_instruction_length_o(retire_instruction_length),
+    .retire_next_pc_o          (retire_next_pc),
     .retire_writes_destination_o(retire_writes_destination),
     .retire_destination_class_o(retire_destination_class),
     .retire_destination_arch_o (retire_destination_arch),
@@ -136,7 +148,15 @@ module rv_rob_tb;
     .retire_lq_index_o         (retire_lq_index),
     .retire_sq_index_o         (retire_sq_index),
     .head_valid_o              (head_valid),
+    .head_complete_o           (head_complete),
     .head_sequence_o           (head_sequence),
+    .head_pc_o                 (head_pc),
+    .head_instruction_o        (head_instruction),
+    .head_instruction_length_o (head_instruction_length),
+    .head_writes_destination_o (head_writes_destination),
+    .head_destination_class_o  (head_destination_class),
+    .head_destination_phys_o   (head_destination_phys),
+    .head_source0_phys_o       (head_source0_phys),
     .trap_valid_o              (trap_valid),
     .trap_ready_i              (trap_ready),
     .trap_sequence_o           (trap_sequence),
@@ -162,6 +182,7 @@ module rv_rob_tb;
     alloc_destination_arch      = '0;
     alloc_destination_phys      = '0;
     alloc_stale_phys            = '0;
+    alloc_source0_phys           = '0;
     alloc_is_store              = '0;
     alloc_is_load               = '0;
     alloc_lq_index              = '0;

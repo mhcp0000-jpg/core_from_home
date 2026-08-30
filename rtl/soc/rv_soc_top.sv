@@ -186,6 +186,7 @@ module rv_soc_top #(
     .irq_software_i   (msip),
     .irq_timer_i      (mtip),
     .irq_external_i   (meip),
+    .mtime_i          (mtime),
     .debug_halt_req_i (1'b0),
     .trace_valid_o,
     .trace_pc_o,

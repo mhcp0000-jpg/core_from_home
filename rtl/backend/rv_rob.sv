@@ -26,6 +26,7 @@ module rv_rob #(
   input  logic [1:0][4:0]                       alloc_destination_arch_i,
   input  logic [1:0][PHYS_TAG_WIDTH-1:0]        alloc_destination_phys_i,
   input  logic [1:0][PHYS_TAG_WIDTH-1:0]        alloc_stale_phys_i,
+  input  logic [1:0][PHYS_TAG_WIDTH-1:0]        alloc_source0_phys_i,
   input  logic [1:0]                            alloc_is_store_i,
   input  logic [1:0]                            alloc_is_load_i,
   input  logic [1:0][LQ_INDEX_WIDTH-1:0]        alloc_lq_index_i,
@@ -58,6 +59,8 @@ module rv_rob #(
   output logic [1:0][SEQ_WIDTH-1:0]             retire_sequence_o,
   output logic [1:0][XLEN-1:0]                  retire_pc_o,
   output logic [1:0][31:0]                      retire_instruction_o,
+  output logic [1:0][1:0]                       retire_instruction_length_o,
+  output logic [1:0][XLEN-1:0]                  retire_next_pc_o,
   output logic [1:0]                            retire_writes_destination_o,
   output rv_ooo_pkg::reg_class_e [1:0]          retire_destination_class_o,
   output logic [1:0][4:0]                       retire_destination_arch_o,
@@ -69,7 +72,15 @@ module rv_rob #(
   output logic [1:0][SQ_INDEX_WIDTH-1:0]        retire_sq_index_o,
 
   output logic                                  head_valid_o,
+  output logic                                  head_complete_o,
   output logic [SEQ_WIDTH-1:0]                  head_sequence_o,
+  output logic [XLEN-1:0]                       head_pc_o,
+  output logic [31:0]                           head_instruction_o,
+  output logic [1:0]                            head_instruction_length_o,
+  output logic                                  head_writes_destination_o,
+  output rv_ooo_pkg::reg_class_e                head_destination_class_o,
+  output logic [PHYS_TAG_WIDTH-1:0]             head_destination_phys_o,
+  output logic [PHYS_TAG_WIDTH-1:0]             head_source0_phys_o,
 
   output logic                                  trap_valid_o,
   input  logic                                  trap_ready_i,
@@ -101,6 +112,7 @@ module rv_rob #(
     logic [4:0]                   destination_arch;
     logic [PHYS_TAG_WIDTH-1:0]    destination_phys;
     logic [PHYS_TAG_WIDTH-1:0]    stale_phys;
+    logic [PHYS_TAG_WIDTH-1:0]    source0_phys;
     logic                         is_store;
     logic                         is_load;
     logic [LQ_INDEX_WIDTH-1:0]    lq_index;
@@ -201,6 +213,8 @@ module rv_rob #(
     retire_sequence_o            = '0;
     retire_pc_o                  = '0;
     retire_instruction_o         = '0;
+    retire_instruction_length_o  = '0;
+    retire_next_pc_o             = '0;
     retire_writes_destination_o  = '0;
     retire_destination_class_o   = '0;
     retire_destination_arch_o    = '0;
@@ -215,6 +229,11 @@ module rv_rob #(
       retire_sequence_o[0]           = entries_q[head_q].sequence_id;
       retire_pc_o[0]                 = entries_q[head_q].pc;
       retire_instruction_o[0]        = entries_q[head_q].instruction;
+      retire_instruction_length_o[0] = entries_q[head_q].instruction_length;
+      retire_next_pc_o[0] = entries_q[head_q].is_branch ?
+        entries_q[head_q].branch_target :
+        (entries_q[head_q].pc +
+         ((entries_q[head_q].instruction_length == INST_LEN_16) ? 2 : 4));
       retire_writes_destination_o[0] =
         entries_q[head_q].writes_destination;
       retire_destination_class_o[0]  = entries_q[head_q].destination_class;
@@ -230,6 +249,12 @@ module rv_rob #(
       retire_sequence_o[1]           = entries_q[head_plus_one].sequence_id;
       retire_pc_o[1]                 = entries_q[head_plus_one].pc;
       retire_instruction_o[1]        = entries_q[head_plus_one].instruction;
+      retire_instruction_length_o[1] =
+        entries_q[head_plus_one].instruction_length;
+      retire_next_pc_o[1] = entries_q[head_plus_one].is_branch ?
+        entries_q[head_plus_one].branch_target :
+        (entries_q[head_plus_one].pc +
+         ((entries_q[head_plus_one].instruction_length == INST_LEN_16) ? 2 : 4));
       retire_writes_destination_o[1] =
         entries_q[head_plus_one].writes_destination;
       retire_destination_class_o[1]  =
@@ -254,7 +279,21 @@ module rv_rob #(
                                        EXC_ILLEGAL_INSTRUCTION;
     trap_tval_o     = (count_q != 0) ? entries_q[head_q].exception_tval : '0;
     head_valid_o    = (count_q != 0) && entries_q[head_q].valid;
+    head_complete_o = head_valid_o && entries_q[head_q].complete;
     head_sequence_o = (count_q != 0) ? entries_q[head_q].sequence_id : '0;
+    head_pc_o = (count_q != 0) ? entries_q[head_q].pc : '0;
+    head_instruction_o = (count_q != 0) ?
+      entries_q[head_q].instruction : '0;
+    head_instruction_length_o = (count_q != 0) ?
+      entries_q[head_q].instruction_length : '0;
+    head_writes_destination_o = (count_q != 0) &&
+      entries_q[head_q].writes_destination;
+    head_destination_class_o = (count_q != 0) ?
+      entries_q[head_q].destination_class : REG_NONE;
+    head_destination_phys_o = (count_q != 0) ?
+      entries_q[head_q].destination_phys : '0;
+    head_source0_phys_o = (count_q != 0) ?
+      entries_q[head_q].source0_phys : '0;
   end
 
   always_comb begin
@@ -385,6 +424,8 @@ module rv_rob #(
               alloc_destination_phys_i[lane];
             entries_q[alloc_index_o[lane]].stale_phys <=
               alloc_stale_phys_i[lane];
+            entries_q[alloc_index_o[lane]].source0_phys <=
+              alloc_source0_phys_i[lane];
             entries_q[alloc_index_o[lane]].is_store <=
               alloc_is_store_i[lane];
             entries_q[alloc_index_o[lane]].is_load <=

@@ -17,6 +17,7 @@ module rv_backend #(
   parameter int unsigned ITIM_SIZE_KB = 128,
   parameter logic [PADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,
   parameter int unsigned DTIM_SIZE_KB = 128,
+  parameter logic [XLEN-1:0] RESET_VECTOR = 'h0000_1000,
   parameter logic [XLEN-1:0] TRAP_VECTOR = 'h8000_0000
 ) (
   input logic clk_i, input logic rst_ni,
@@ -45,6 +46,7 @@ module rv_backend #(
   input logic [1:0][2:0] dmem_rsp_replay_i,
   input logic irq_software_i, input logic irq_timer_i,
   input logic irq_external_i, input logic debug_halt_req_i,
+  input logic [63:0] mtime_i,
   output logic [1:0] trace_valid_o,
   output logic [1:0][XLEN-1:0] trace_pc_o,
   output logic [1:0][31:0] trace_instr_o,
@@ -64,10 +66,22 @@ module rv_backend #(
   localparam int unsigned ROB_COUNT_WIDTH = $clog2(ROB_ENTRIES + 1);
   localparam int unsigned LQ_WIDTH = $clog2(LQ_ENTRIES);
   localparam int unsigned SQ_WIDTH = $clog2(SQ_ENTRIES);
-  localparam int unsigned WB_SOURCES = 9;
+  localparam int unsigned WB_SOURCES = 10;
   localparam int unsigned WB_PORTS = 4;
   localparam int unsigned EXEC_PORTS = 5;
   localparam int unsigned SEQ_SPACE = 1 << ROB_SEQ_WIDTH;
+  localparam logic [15:0] SYS_ECALL = 16'h0100;
+  localparam logic [15:0] SYS_MRET  = 16'h0102;
+  localparam logic [15:0] SYS_WFI   = 16'h0104;
+
+  function automatic logic sequence_after_backend(
+    input logic [ROB_SEQ_WIDTH-1:0] lhs,
+    input logic [ROB_SEQ_WIDTH-1:0] rhs
+  );
+    logic signed [ROB_SEQ_WIDTH-1:0] difference;
+    difference = $signed(lhs-rhs);
+    return difference > 0;
+  endfunction
 
   // Decode contract.
   logic [1:0] dec_ready, dec_valid;
@@ -138,10 +152,11 @@ module rv_backend #(
         ((dec_fu[lane] == FU_INT) || (dec_fu[lane] == FU_BRANCH) ||
          (dec_fu[lane] == FU_MUL) || (dec_fu[lane] == FU_DIV) ||
          (dec_fu[lane] == FU_LOAD) || (dec_fu[lane] == FU_STORE));
-      // CSR/FP cannot leak a side effect before their clusters are attached;
-      // they take a precise illegal-instruction trap in the current stage.
+      // CSR/system/fence operations execute only when they reach the ROB
+      // head. FP remains illegal until the FP cluster is attached.
       if (dec_valid[lane] && !dec_exception_valid[lane] &&
-          !executable[lane] && !dec_is_fence[lane]) begin
+          !executable[lane] && (dec_fu[lane] != FU_CSR) &&
+          (dec_fu[lane] != FU_FENCE)) begin
         backend_exception[lane] = 1'b1;
         backend_exception_cause[lane] = EXC_ILLEGAL_INSTRUCTION;
         backend_exception_tval[lane] = XLEN'(dec_instruction[lane]);
@@ -161,6 +176,8 @@ module rv_backend #(
   logic [1:0][ROB_SEQ_WIDTH-1:0] retire_sequence;
   logic [1:0][XLEN-1:0] retire_pc;
   logic [1:0][31:0] retire_instruction;
+  logic [1:0][1:0] retire_instruction_length;
+  logic [1:0][XLEN-1:0] retire_next_pc;
   logic [1:0] retire_writes_dst, retire_is_store;
   logic [1:0] retire_is_load;
   reg_class_e [1:0] retire_dst_class;
@@ -168,8 +185,15 @@ module rv_backend #(
   logic [1:0][PHYS_TAG_WIDTH-1:0] retire_dst_phys, retire_stale_phys;
   logic [1:0][SQ_WIDTH-1:0] retire_sq_index;
   logic [1:0][LQ_WIDTH-1:0] retire_lq_index;
-  logic rob_head_valid;
+  logic rob_head_valid, rob_head_complete;
   logic [ROB_SEQ_WIDTH-1:0] rob_head_sequence;
+  logic [XLEN-1:0] rob_head_pc;
+  logic [31:0] rob_head_instruction;
+  logic [1:0] rob_head_instruction_length;
+  logic rob_head_writes_dst;
+  reg_class_e rob_head_dst_class;
+  logic [PHYS_TAG_WIDTH-1:0] rob_head_dst_phys, rob_head_src0_phys;
+  logic head_is_csr_instruction, head_is_special_instruction;
 
   // Rename and branch checkpoint allocation.
   logic rename_can_accept, rename_fire;
@@ -223,11 +247,17 @@ module rv_backend #(
   logic [ROB_COUNT_WIDTH-1:0] rob_count;
   logic [IQ_COUNT_WIDTH-1:0] iq_count;
   logic dispatch_resources_ready, dispatch_fire, lsq_dispatch_ready;
+  logic [1:0] serial_barrier_valid_q;
+  logic [1:0][ROB_SEQ_WIDTH-1:0] serial_barrier_sequence_q;
+  logic system_redirect_pending_q, wfi_sleep_q;
+  logic csr_interrupt_pending;
   always_comb begin
     dispatch_resources_ready = rename_can_accept && branch_capacity_ok &&
       ((ROB_ENTRIES - $unsigned(rob_count)) >= $unsigned(dispatch_count)) &&
       ((IQ_ENTRIES - $unsigned(iq_count)) >= $unsigned(iq_need)) &&
       lsq_dispatch_ready &&
+      !(|serial_barrier_valid_q) && !system_redirect_pending_q &&
+      !wfi_sleep_q && !csr_interrupt_pending &&
       !flush_valid && !debug_halt_req_i;
     dec_ready = {2{dispatch_resources_ready}};
     dispatch_fire = dispatch_resources_ready && (|dec_valid);
@@ -523,7 +553,9 @@ module rv_backend #(
         default:cand_operand1[candidate]='0;
       endcase
     end
-    int_read_addr[4]=retire_dst_phys[0]; int_read_addr[5]=retire_dst_phys[1];
+    int_read_addr[4]=retire_dst_phys[0];
+    int_read_addr[5]=head_is_csr_instruction ? rob_head_src0_phys :
+                                               retire_dst_phys[1];
     fp_read_addr[4]=retire_dst_phys[0]; fp_read_addr[5]=retire_dst_phys[1];
   end
 
@@ -548,6 +580,10 @@ module rv_backend #(
         end
         default:effective_mask[candidate]='0;
       endcase
+      if (serial_barrier_valid_q[0] &&
+          sequence_after_backend(cand_sequence[candidate],
+                                 serial_barrier_sequence_q[0]))
+        effective_mask[candidate] = '0;
     end
   end
   logic [1:0] cand_grant;
@@ -750,7 +786,8 @@ module rv_backend #(
   logic [4:0][PHYS_TAG_WIDTH-1:0] lsu_completion_dst_phys;
   logic [4:0][XLEN-1:0] lsu_completion_data, lsu_completion_tval;
   exception_code_e [4:0] lsu_completion_cause;
-  logic store_buffer_empty, store_machine_check;
+  logic store_buffer_empty, lsu_memory_idle, store_machine_check;
+  privilege_e current_privilege;
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -798,6 +835,7 @@ module rv_backend #(
     .issue_sq_valid_i(lsu_issue_sq_valid), .issue_sq_index_i(lsu_issue_sq_index),
     .issue_base_i(lsu_issue_base), .issue_immediate_i(lsu_issue_immediate),
     .issue_store_data_i(lsu_issue_store_data), .issue_size_i(lsu_issue_size),
+    .current_privilege_i(current_privilege),
     .rob_head_valid_i(rob_head_valid), .rob_head_sequence_i(rob_head_sequence),
     .commit_valid_i(retire_valid),
     .commit_is_load_i(retire_is_load), .commit_is_store_i(retire_is_store),
@@ -822,6 +860,7 @@ module rv_backend #(
     .dmem_rsp_valid_i, .dmem_rsp_ready_o, .dmem_rsp_id_i,
     .dmem_rsp_rdata_i, .dmem_rsp_resp_i, .dmem_rsp_replay_i,
     .store_buffer_empty_o(store_buffer_empty),
+    .memory_idle_o(lsu_memory_idle),
     .store_machine_check_o(store_machine_check)
   );
 
@@ -840,6 +879,199 @@ module rv_backend #(
   exception_code_e [3:0] complete_cause;
   logic [3:0][XLEN-1:0] complete_tval,complete_target;
   logic [3:0][4:0] complete_fflags;
+
+  logic head_is_ecall, head_is_mret, head_is_wfi, head_is_fence,
+        head_is_fence_i, head_special_request;
+  logic retire_is_csr, retire_is_mret, retire_is_wfi, retire_is_fence_i;
+  csr_cmd_e head_csr_cmd;
+  logic [XLEN-1:0] head_csr_operand, csr_rdata;
+  logic csr_ready, csr_illegal, csr_write_effect, csr_execute, csr_commit;
+  logic csr_trap_valid, csr_trap_ready, csr_trap_is_interrupt;
+  logic [XLEN-1:0] csr_trap_pc, csr_trap_tval, csr_trap_next_pc,
+                   csr_trap_vector;
+  logic [5:0] csr_trap_cause, csr_interrupt_cause;
+  logic csr_mret_ready, csr_mret_illegal, csr_wfi_illegal, csr_wfi_wake;
+  logic [XLEN-1:0] csr_mret_pc, csr_mstatus, csr_mtvec, csr_mepc;
+  logic [2:0] csr_frm;
+  logic [4:0] csr_fflags;
+  logic [7:0][7:0] csr_pmpcfg;
+  logic [7:0][XLEN-3:0] csr_pmpaddr;
+  logic system_completion_valid, system_completion_fire,
+        system_completion_exception;
+  exception_code_e system_completion_cause;
+  logic [XLEN-1:0] system_completion_tval;
+  logic [XLEN-1:0] system_redirect_target_q, architectural_next_pc_q;
+  logic architectural_redirect_valid;
+  logic [XLEN-1:0] architectural_redirect_pc;
+
+  assign head_is_csr_instruction = rob_head_valid &&
+    (rob_head_instruction[6:0] == 7'b1110011) &&
+    (rob_head_instruction[14:12] != 3'b000);
+  assign head_is_ecall = rob_head_valid &&
+    (rob_head_instruction == 32'h0000_0073);
+  assign head_is_mret = rob_head_valid &&
+    (rob_head_instruction == 32'h3020_0073);
+  assign head_is_wfi = rob_head_valid &&
+    (rob_head_instruction == 32'h1050_0073);
+  assign head_is_fence = rob_head_valid &&
+    (rob_head_instruction[6:0] == 7'b0001111) &&
+    (rob_head_instruction[14:12] == 3'b000);
+  assign head_is_fence_i = rob_head_valid &&
+    (rob_head_instruction[6:0] == 7'b0001111) &&
+    (rob_head_instruction[14:12] == 3'b001);
+  assign head_is_special_instruction = head_is_csr_instruction ||
+    head_is_ecall || head_is_mret || head_is_wfi || head_is_fence ||
+    head_is_fence_i;
+  assign head_special_request = head_is_special_instruction &&
+    !rob_head_complete && !flush_valid && !system_redirect_pending_q;
+
+  always_comb begin
+    case (rob_head_instruction[13:12])
+      2'b01: head_csr_cmd = CSR_CMD_WRITE;
+      2'b10: head_csr_cmd = CSR_CMD_SET;
+      2'b11: head_csr_cmd = CSR_CMD_CLEAR;
+      default: head_csr_cmd = CSR_CMD_NONE;
+    endcase
+    head_csr_operand = rob_head_instruction[14] ?
+      XLEN'(rob_head_instruction[19:15]) : int_read_data[5];
+  end
+
+  assign retire_is_csr = retire_valid[0] &&
+    (retire_instruction[0][6:0] == 7'b1110011) &&
+    (retire_instruction[0][14:12] != 3'b000);
+  assign retire_is_mret = retire_valid[0] &&
+    (retire_instruction[0] == 32'h3020_0073);
+  assign retire_is_wfi = retire_valid[0] &&
+    (retire_instruction[0] == 32'h1050_0073);
+  assign retire_is_fence_i = retire_valid[0] &&
+    (retire_instruction[0][6:0] == 7'b0001111) &&
+    (retire_instruction[0][14:12] == 3'b001);
+
+  assign csr_execute = system_completion_fire && head_is_csr_instruction &&
+                       !csr_illegal;
+  assign csr_commit = retire_fire[0] && retire_is_csr;
+
+  // Synchronous exception wins over an interrupt. Interrupts are accepted
+  // after the ROB drains to an instruction boundary; an older post-commit
+  // xRET/FENCE.I/WFI redirect wins over both for its one pending cycle.
+  always_comb begin
+    csr_trap_valid = 1'b0;
+    csr_trap_is_interrupt = 1'b0;
+    csr_trap_pc = rob_trap_pc;
+    csr_trap_tval = rob_trap_tval;
+    csr_trap_next_pc = architectural_next_pc_q;
+    csr_trap_cause = 6'(rob_trap_cause);
+    if (!system_redirect_pending_q && rob_trap_valid) begin
+      csr_trap_valid = 1'b1;
+    end else if (!system_redirect_pending_q && rob_empty &&
+                 csr_interrupt_pending) begin
+      csr_trap_valid = 1'b1;
+      csr_trap_is_interrupt = 1'b1;
+      csr_trap_pc = architectural_next_pc_q;
+      csr_trap_tval = '0;
+      csr_trap_cause = csr_interrupt_cause;
+    end
+  end
+
+  rv_csr_file #(
+    .XLEN(XLEN), .HAS_SMODE(1'b0), .PMP_ENTRIES(8),
+    .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
+  ) u_csr_file (
+    .clk_i, .rst_ni, .csr_valid_i(head_special_request &&
+                                  head_is_csr_instruction),
+    .csr_execute_i(csr_execute), .csr_commit_i(csr_commit),
+    .csr_addr_i(rob_head_instruction[31:20]), .csr_cmd_i(head_csr_cmd),
+    .csr_operand_i(head_csr_operand),
+    .csr_rs1_is_zero_i(rob_head_instruction[19:15] == 0),
+    .csr_ready_o(csr_ready), .csr_rdata_o(csr_rdata),
+    .csr_illegal_o(csr_illegal), .csr_write_effect_o(csr_write_effect),
+    .trap_valid_i(csr_trap_valid), .trap_ready_o(csr_trap_ready),
+    .trap_pc_i(csr_trap_pc), .trap_cause_i(csr_trap_cause),
+    .trap_tval_i(csr_trap_tval), .trap_is_interrupt_i(csr_trap_is_interrupt),
+    .trap_next_pc_i(csr_trap_next_pc), .trap_vector_o(csr_trap_vector),
+    .mret_valid_i(head_is_mret),
+    .mret_commit_i(retire_fire[0] && retire_is_mret),
+    .mret_ready_o(csr_mret_ready), .mret_pc_o(csr_mret_pc),
+    .mret_illegal_o(csr_mret_illegal),
+    .wfi_valid_i(head_special_request && head_is_wfi),
+    .wfi_illegal_o(csr_wfi_illegal), .wfi_wake_o(csr_wfi_wake),
+    .irq_software_i, .irq_timer_i, .irq_external_i, .mtime_i,
+    .interrupt_pending_o(csr_interrupt_pending),
+    .interrupt_cause_o(csr_interrupt_cause),
+    .retire_count_i({1'b0,retire_fire[0]} + {1'b0,retire_fire[1]}),
+    .fflags_accrue_valid_i(1'b0), .fflags_accrue_i('0),
+    .flush_all_i(flush_valid && flush_all), .privilege_o(current_privilege),
+    .mstatus_o(csr_mstatus), .mtvec_o(csr_mtvec), .mepc_o(csr_mepc),
+    .frm_o(csr_frm), .fflags_o(csr_fflags), .pmpcfg_o(csr_pmpcfg),
+    .pmpaddr_o(csr_pmpaddr)
+  );
+
+  always_comb begin
+    system_completion_valid = head_special_request;
+    if ((head_is_fence || head_is_fence_i) && !lsu_memory_idle)
+      system_completion_valid = 1'b0;
+    system_completion_exception = 1'b0;
+    system_completion_cause = EXC_ILLEGAL_INSTRUCTION;
+    system_completion_tval = '0;
+    if (head_is_csr_instruction && csr_illegal) begin
+      system_completion_exception = 1'b1;
+      system_completion_tval = XLEN'(rob_head_instruction);
+    end else if (head_is_ecall) begin
+      system_completion_exception = 1'b1;
+      case (current_privilege)
+        PRIV_U: system_completion_cause = EXC_ECALL_U;
+        PRIV_S: system_completion_cause = EXC_ECALL_S;
+        default: system_completion_cause = EXC_ECALL_M;
+      endcase
+    end else if (head_is_mret && csr_mret_illegal) begin
+      system_completion_exception = 1'b1;
+      system_completion_tval = XLEN'(rob_head_instruction);
+    end else if (head_is_wfi && csr_wfi_illegal) begin
+      system_completion_exception = 1'b1;
+      system_completion_tval = XLEN'(rob_head_instruction);
+    end
+    system_completion_fire = system_completion_valid && source_ready[9];
+  end
+
+  assign architectural_redirect_valid = system_redirect_pending_q ||
+                                         csr_trap_valid;
+  assign architectural_redirect_pc = system_redirect_pending_q ?
+    system_redirect_target_q : csr_trap_vector;
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      system_redirect_pending_q <= 1'b0;
+      system_redirect_target_q <= RESET_VECTOR;
+      architectural_next_pc_q <= RESET_VECTOR;
+      wfi_sleep_q <= 1'b0;
+    end else begin
+      if (system_redirect_pending_q)
+        system_redirect_pending_q <= 1'b0;
+
+      if (retire_fire[0] && retire_is_mret) begin
+        system_redirect_pending_q <= 1'b1;
+        system_redirect_target_q <= csr_mret_pc;
+      end else if (retire_fire[0] &&
+                   (retire_is_fence_i || retire_is_wfi)) begin
+        system_redirect_pending_q <= 1'b1;
+        system_redirect_target_q <= retire_next_pc[0];
+      end
+
+      if (retire_fire[1])
+        architectural_next_pc_q <= retire_next_pc[1];
+      else if (retire_fire[0])
+        architectural_next_pc_q <= retire_next_pc[0];
+      if (csr_trap_valid && csr_trap_ready)
+        architectural_next_pc_q <= csr_trap_vector;
+
+      if (retire_fire[0] && retire_is_wfi)
+        wfi_sleep_q <= 1'b1;
+      if ((wfi_sleep_q && csr_wfi_wake) ||
+          (csr_trap_valid && csr_trap_ready))
+        wfi_sleep_q <= 1'b0;
+    end
+  end
+
   always_comb begin
     source_valid='0; source_sequence='0; source_dst_valid='0;
     source_dst_class='{default:REG_NONE}; source_dst_phys='0; source_data='0;
@@ -893,6 +1125,16 @@ module rv_backend #(
       source_exception_cause[4+lsu_source]=lsu_completion_cause[lsu_source];
       source_exception_tval[4+lsu_source]=lsu_completion_tval[lsu_source];
     end
+    source_valid[9]=system_completion_valid;
+    source_sequence[9]=rob_head_sequence;
+    source_dst_valid[9]=head_is_csr_instruction && !csr_illegal &&
+      rob_head_writes_dst;
+    source_dst_class[9]=head_is_csr_instruction ? rob_head_dst_class : REG_NONE;
+    source_dst_phys[9]=rob_head_dst_phys;
+    source_data[9]=csr_rdata;
+    source_exception[9]=system_completion_exception;
+    source_exception_cause[9]=system_completion_cause;
+    source_exception_tval[9]=system_completion_tval;
     fast_result_ready=source_ready[1:0];mul_result_ready=source_ready[2];
     div_result_ready=source_ready[3];
     lsu_completion_ready=source_ready[8:4];
@@ -932,10 +1174,11 @@ module rv_backend #(
     .alloc_ready_o(rob_alloc_ready),.alloc_index_o(rob_alloc_index),
     .alloc_sequence_o(rob_alloc_sequence),.alloc_pc_i(dec_pc),
     .alloc_instruction_i(dec_raw),.alloc_instruction_length_i(dec_len),
-    .alloc_complete_i(backend_exception|dec_is_fence),
+    .alloc_complete_i(backend_exception),
     .alloc_writes_destination_i(renamed_writes_dst),
     .alloc_destination_class_i(dec_dst_class),.alloc_destination_arch_i(dec_dst_arch),
     .alloc_destination_phys_i(renamed_dst_phys),.alloc_stale_phys_i(stale_phys),
+    .alloc_source0_phys_i(src0_phys),
     .alloc_is_store_i(dec_is_store),.alloc_is_load_i(dec_is_load),
     .alloc_lq_index_i(lsq_dispatch_lq_index),
     .alloc_sq_index_i(lsq_dispatch_sq_index),.alloc_is_branch_i(dec_is_branch),
@@ -953,6 +1196,8 @@ module rv_backend #(
     .retire_valid_o(retire_valid),.retire_ready_i(retire_ready),
     .retire_sequence_o(retire_sequence),.retire_pc_o(retire_pc),
     .retire_instruction_o(retire_instruction),
+    .retire_instruction_length_o(retire_instruction_length),
+    .retire_next_pc_o(retire_next_pc),
     .retire_writes_destination_o(retire_writes_dst),
     .retire_destination_class_o(retire_dst_class),
     .retire_destination_arch_o(retire_dst_arch),
@@ -960,7 +1205,15 @@ module rv_backend #(
     .retire_stale_phys_o(retire_stale_phys),.retire_is_store_o(retire_is_store),
     .retire_is_load_o(retire_is_load),.retire_lq_index_o(retire_lq_index),
     .retire_sq_index_o(retire_sq_index),.head_valid_o(rob_head_valid),
-    .head_sequence_o(rob_head_sequence),.trap_valid_o(rob_trap_valid),
+    .head_complete_o(rob_head_complete),
+    .head_sequence_o(rob_head_sequence),.head_pc_o(rob_head_pc),
+    .head_instruction_o(rob_head_instruction),
+    .head_instruction_length_o(rob_head_instruction_length),
+    .head_writes_destination_o(rob_head_writes_dst),
+    .head_destination_class_o(rob_head_dst_class),
+    .head_destination_phys_o(rob_head_dst_phys),
+    .head_source0_phys_o(rob_head_src0_phys),
+    .trap_valid_o(rob_trap_valid),
     .trap_ready_i(rob_trap_ready),.trap_sequence_o(rob_trap_sequence),
     .trap_pc_o(rob_trap_pc),.trap_cause_o(rob_trap_cause),
     .trap_tval_o(rob_trap_tval),.flush_all_i(flush_valid&&flush_all),
@@ -976,7 +1229,8 @@ module rv_backend #(
   assign branch_resolve_live=source_live[0];
   rv_branch_recovery #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
     .CHECKPOINT_ID_WIDTH(CP_WIDTH)) u_recovery(
-    .trap_redirect_valid_i(rob_trap_valid),.trap_redirect_pc_i(TRAP_VECTOR),
+    .trap_redirect_valid_i(architectural_redirect_valid),
+    .trap_redirect_pc_i(architectural_redirect_pc),
     .resolve_valid_i(branch_resolve_valid),.resolve_live_i(branch_resolve_live),
     .resolve_sequence_i(fast_result_sequence[0]),
     .resolve_checkpoint_id_i(branch_cp_q[fast_result_sequence[0]]),
@@ -989,17 +1243,12 @@ module rv_backend #(
     .checkpoint_release_valid_o(cp_release_valid),
     .checkpoint_release_id_o(cp_release_id),.resolve_drop_o(branch_resolve_drop));
 
-  function automatic logic seq_after(input logic[ROB_SEQ_WIDTH-1:0] lhs,
-                                       input logic[ROB_SEQ_WIDTH-1:0] rhs);
-    logic signed[ROB_SEQ_WIDTH-1:0] difference;
-    difference=$signed(lhs-rhs);return difference>0;
-  endfunction
   always_comb begin
     cp_clear_mask='0;
     if(cp_restore_valid) for(int unsigned checkpoint=0;
       checkpoint<BR_CHECKPOINTS;checkpoint++)
       if(cp_valid[checkpoint]&&((cp_sequence_q[checkpoint]==flush_sequence)||
-         seq_after(cp_sequence_q[checkpoint],flush_sequence)))
+         sequence_after_backend(cp_sequence_q[checkpoint],flush_sequence)))
         cp_clear_mask[checkpoint]=1'b1;
   end
   always_ff @(posedge clk_i) begin
@@ -1022,13 +1271,65 @@ module rv_backend #(
     end
   end
 
+  // At most one decode bundle can introduce serializing operations while no
+  // older barrier is live, so a two-entry ordered tracker covers both lanes.
+  // Younger IQ entries may be allocated, but cannot issue across the oldest
+  // CSR/system/fence barrier.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni || (flush_valid && flush_all)) begin
+      serial_barrier_valid_q <= '0;
+      serial_barrier_sequence_q <= '0;
+    end else if (flush_valid && !flush_all) begin
+      if (serial_barrier_valid_q[0] &&
+          sequence_after_backend(serial_barrier_sequence_q[0],
+                                 flush_sequence)) begin
+        serial_barrier_valid_q <= '0;
+      end else if (serial_barrier_valid_q[1] &&
+                   sequence_after_backend(serial_barrier_sequence_q[1],
+                                          flush_sequence)) begin
+        serial_barrier_valid_q[1] <= 1'b0;
+      end
+    end else begin
+      if (serial_barrier_valid_q[0] &&
+          ((retire_fire[0] &&
+            (retire_sequence[0] == serial_barrier_sequence_q[0])) ||
+           (retire_fire[1] &&
+            (retire_sequence[1] == serial_barrier_sequence_q[0])))) begin
+        serial_barrier_valid_q[0] <= serial_barrier_valid_q[1];
+        serial_barrier_sequence_q[0] <= serial_barrier_sequence_q[1];
+        serial_barrier_valid_q[1] <= 1'b0;
+      end
+
+      if (dispatch_fire && !(|serial_barrier_valid_q)) begin
+        case ({dec_valid[1] && dec_serializing[1],
+               dec_valid[0] && dec_serializing[0]})
+          2'b01: begin
+            serial_barrier_valid_q <= 2'b01;
+            serial_barrier_sequence_q[0] <= rob_alloc_sequence[0];
+          end
+          2'b10: begin
+            serial_barrier_valid_q <= 2'b01;
+            serial_barrier_sequence_q[0] <= rob_alloc_sequence[1];
+          end
+          2'b11: begin
+            serial_barrier_valid_q <= 2'b11;
+            serial_barrier_sequence_q[0] <= rob_alloc_sequence[0];
+            serial_barrier_sequence_q[1] <= rob_alloc_sequence[1];
+          end
+          default: begin end
+        endcase
+      end
+    end
+  end
+
   // Precise commit and architectural trace.
   always_comb begin
     retire_ready[0]=!flush_valid&&!rob_trap_valid&&lsu_commit_ready[0];
     retire_ready[1]=!flush_valid&&!rob_trap_valid&&lsu_commit_ready[1];
     retire_fire[0]=retire_valid[0]&&retire_ready[0];
     retire_fire[1]=retire_valid[1]&&retire_ready[1]&&retire_fire[0];
-    rob_trap_ready=rob_trap_valid&&flush_valid&&flush_all;
+    rob_trap_ready=rob_trap_valid&&csr_trap_valid&&csr_trap_ready&&
+      flush_valid&&flush_all;
     trace_valid_o=retire_fire;trace_pc_o=retire_pc;trace_instr_o=retire_instruction;
     trace_rd_o=retire_dst_arch;trace_rd_write_o=retire_fire&retire_writes_dst;
     trace_rd_wdata_o='0;trace_trap_o='0;
@@ -1040,6 +1341,10 @@ module rv_backend #(
     if(rob_trap_valid) begin
       trace_valid_o=2'b01;trace_pc_o[0]=rob_trap_pc;
       trace_instr_o[0]=retire_instruction[0];trace_rd_o[0]='0;
+      trace_rd_write_o[0]=1'b0;trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
+    end else if(csr_trap_valid && csr_trap_is_interrupt) begin
+      trace_valid_o=2'b01;trace_pc_o[0]=architectural_next_pc_q;
+      trace_instr_o[0]='0;trace_rd_o[0]='0;
       trace_rd_write_o[0]=1'b0;trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
     end
   end

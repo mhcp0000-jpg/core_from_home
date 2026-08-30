@@ -49,6 +49,7 @@ module rv_lsu_cluster #(
   input  logic [1:0][XLEN-1:0]                  issue_immediate_i,
   input  logic [1:0][XLEN-1:0]                  issue_store_data_i,
   input  logic [1:0][2:0]                       issue_size_i,
+  input  rv_ooo_pkg::privilege_e                 current_privilege_i,
 
   input  logic                                  rob_head_valid_i,
   input  logic [ROB_SEQ_WIDTH-1:0]              rob_head_sequence_i,
@@ -101,6 +102,7 @@ module rv_lsu_cluster #(
   input  logic [1:0][2:0]                       dmem_rsp_replay_i,
 
   output logic                                  store_buffer_empty_o,
+  output logic                                  memory_idle_o,
   output logic                                  store_machine_check_o
 );
   import rv_ooo_pkg::*;
@@ -256,6 +258,8 @@ module rv_lsu_cluster #(
   logic [1:0][MEM_BYTES-1:0] direct_store_mask;
   logic [1:0][2:0] direct_store_size;
   logic load_outstanding;
+  logic [$clog2(LQ_ENTRIES+1)-1:0] lq_count;
+  logic [$clog2(SQ_ENTRIES+1)-1:0] sq_count;
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -356,7 +360,8 @@ module rv_lsu_cluster #(
     .direct_store_mask_o(direct_store_mask),
     .direct_store_size_o(direct_store_size),
     .flush_valid_i, .flush_all_i, .flush_sequence_i,
-    .lq_count_o(), .sq_count_o(), .load_outstanding_o(load_outstanding)
+    .lq_count_o(lq_count), .sq_count_o(sq_count),
+    .load_outstanding_o(load_outstanding)
   );
 
   logic [1:0] sb_drain_valid, sb_drain_ready;
@@ -490,7 +495,7 @@ module rv_lsu_cluster #(
     dmem_req_size_o = '0;
     dmem_req_wdata_o = '0;
     dmem_req_wstrb_o = '0;
-    dmem_req_priv_o = '{default: 2'b11};
+    dmem_req_priv_o = '{default: current_privilege_i};
     dmem_req_rob_seq_o = '0;
     dmem_req_committed_o = '0;
     dmem_req_device_o = '0;
@@ -541,6 +546,13 @@ module rv_lsu_cluster #(
         load_candidate_ready[lane] = completion_ready_i[2+lane];
     end
   end
+
+  // A fence at the ROB head has no older LQ/SQ entry left.  Younger memory
+  // operations may already own queue entries but are held behind the
+  // serializing barrier, so only accepted/outstanding traffic and committed
+  // stores participate in the drain condition.
+  assign memory_idle_o = store_buffer_empty_o && !load_outstanding &&
+                         !direct_pending_q && !direct_failed_q;
 
   always_comb begin
     dmem_rsp_ready_o = '0;
@@ -595,7 +607,15 @@ module rv_lsu_cluster #(
         load_meta_unsigned_q[entry] <= 1'b0;
       end
     end else begin
-      if (flush_valid_i) begin
+      // A direct device store is issued only when its store owns the ROB
+      // head.  A younger branch recovery must therefore leave the accepted
+      // transaction alive; dropping it would allow the same MMIO write to be
+      // issued twice after recovery.  Full recovery, or a boundary older than
+      // the tracked request, is allowed to kill it.
+      if (flush_valid_i &&
+          (flush_all_i ||
+           (direct_pending_q &&
+            sequence_after(direct_sequence_q, flush_sequence_i)))) begin
         direct_pending_q <= 1'b0;
         direct_failed_q <= 1'b0;
       end else begin
@@ -643,6 +663,9 @@ module rv_lsu_cluster #(
         assert (dmem_req_committed_o[lane]);
       assert (!(load_forward_valid[lane] && load_memory_read[lane]));
     end
+    if (memory_idle_o)
+      assert (store_buffer_empty_o && !load_outstanding &&
+              !direct_pending_q && !direct_failed_q);
   end
 `endif
 

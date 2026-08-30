@@ -107,6 +107,15 @@ package rv_ooo_pkg;
     CSR_CMD_CLEAR
   } csr_cmd_e;
 
+  // Architectural privilege encoding is deliberately identical to the
+  // privileged ISA CSR encoding.  PRIV_S remains reserved by the baseline
+  // M/U core and becomes active when HAS_SMODE is enabled.
+  typedef enum logic [1:0] {
+    PRIV_U = 2'b00,
+    PRIV_S = 2'b01,
+    PRIV_M = 2'b11
+  } privilege_e;
+
   typedef enum logic [2:0] {
     REG_NONE,
     REG_INT,

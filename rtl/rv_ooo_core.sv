@@ -58,6 +58,7 @@ module rv_ooo_core #(
   input  logic                         irq_software_i,
   input  logic                         irq_timer_i,
   input  logic                         irq_external_i,
+  input  logic [63:0]                  mtime_i,
   input  logic                         debug_halt_req_i,
 
   output logic [1:0]                   trace_valid_o,
@@ -155,6 +156,7 @@ module rv_ooo_core #(
     .ITIM_SIZE_KB    (ITIM_SIZE_KB),
     .DTIM_BASE_ADDR  (DTIM_BASE_ADDR),
     .DTIM_SIZE_KB    (DTIM_SIZE_KB),
+    .RESET_VECTOR    (RESET_VECTOR),
     .TRAP_VECTOR     (TRAP_VECTOR)
   ) u_backend (
     .clk_i,
@@ -189,6 +191,7 @@ module rv_ooo_core #(
     .irq_software_i,
     .irq_timer_i,
     .irq_external_i,
+    .mtime_i,
     .debug_halt_req_i,
     .trace_valid_o,
     .trace_pc_o,

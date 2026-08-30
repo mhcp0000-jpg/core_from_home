@@ -34,6 +34,7 @@ module rv_backend_int_tb;
   logic saw_bad_forward_read;
   logic saw_dual_load_request;
   logic [1:0] accepted_memory_write, accepted_memory_read;
+  logic irq_software;
 
   always #5 clk = ~clk;
 
@@ -63,8 +64,9 @@ module rv_backend_int_tb;
     .dmem_req_device_o(dmem_req_device), .dmem_rsp_valid_i(dmem_rsp_valid),
     .dmem_rsp_ready_o(dmem_rsp_ready), .dmem_rsp_id_i(dmem_rsp_id),
     .dmem_rsp_rdata_i(dmem_rsp_rdata), .dmem_rsp_resp_i(dmem_rsp_resp),
-    .dmem_rsp_replay_i(dmem_rsp_replay), .irq_software_i(1'b0),
-    .irq_timer_i(1'b0), .irq_external_i(1'b0), .debug_halt_req_i(1'b0),
+    .dmem_rsp_replay_i(dmem_rsp_replay), .irq_software_i(irq_software),
+    .irq_timer_i(1'b0), .irq_external_i(1'b0), .mtime_i(64'b0),
+    .debug_halt_req_i(1'b0),
     .trace_valid_o(trace_valid), .trace_pc_o(trace_pc),
     .trace_instr_o(trace_instr), .trace_rd_o(trace_rd),
     .trace_rd_write_o(trace_rd_write), .trace_rd_wdata_o(trace_wdata),
@@ -171,6 +173,7 @@ module rv_backend_int_tb;
     clear_fetch();
     write_count = 0;
     saw_bad_x6 = 1'b0;
+    irq_software = 1'b0;
     repeat (4) @(posedge clk);
     @(negedge clk);
     rst_n = 1'b1;
@@ -265,6 +268,87 @@ module rv_backend_int_tb;
              memory_read_count);
     if (!saw_dual_load_request)
       $fatal(1, "Two ready loads did not use both LSU request ports");
+
+    // Commit-time CSR execution: lane1 CSRRW depends on the lane0 LUI and
+    // must return old mtvec while updating it only at architectural commit.
+    send_pair(32'h3000, 32'h8000_04b7, 1'b1,
+              32'h3004, 32'h3054_9073); // lui x9,0x80000; csrrw x0,mtvec,x9
+    send_pair(32'h3008, 32'h3402_d3f3, 1'b1,
+              32'h300c, 32'h3400_2473); // csrrwi x7,mscratch,5; csrrs x8,...
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while ((write_count < 13) && (timeout < 160)) begin
+        @(negedge clk);
+        timeout++;
+      end
+    end
+    if ((write_count != 13) || (write_rd[10] != 9) ||
+        (write_data[10] != 32'h8000_0000) || (write_rd[11] != 7) ||
+        (write_data[11] != 0) || (write_rd[12] != 8) ||
+        (write_data[12] != 5))
+      $fatal(1, "Integrated CSR old-value/write ordering failed");
+
+    // Enable MSIP locally and globally, then retire WFI. WFI first refetches
+    // its next PC; asserting MSIP afterwards must vector to mtvec.
+    send_pair(32'h3010, 32'h3044_5073, 1'b1,
+              32'h3014, 32'h3004_5073); // csrrwi x0,mie,8; csrrwi x0,mstatus,8
+    send_pair(32'h3020, 32'h1050_0073, 1'b0, '0, '0);
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h3024)) &&
+             (timeout < 160)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (redirect_pc != 32'h3024))
+        $fatal(1, "WFI did not serialize/refetch its next PC");
+    end
+
+    @(negedge clk);
+    irq_software = 1'b1;
+    // The level interrupt creates a combinational redirect before the next
+    // active edge, where the frontend consumes it and the CSR file enters M.
+    #1;
+    if (!redirect_valid || (redirect_pc != 32'h8000_0000)) begin
+      $display("MSIP diagnostic: irq=%0b pending=%0b mie=%08x mstatus=%08x mtvec=%08x rob_empty=%0b wfi_sleep=%0b redirect=%0b/%08x",
+               irq_software, u_dut.csr_interrupt_pending,
+               u_dut.u_csr_file.mie_q, u_dut.csr_mstatus, u_dut.csr_mtvec,
+               u_dut.rob_empty, u_dut.wfi_sleep_q, redirect_valid, redirect_pc);
+      $fatal(1, "Enabled MSIP did not vector through mtvec");
+    end
+    @(posedge clk);
+    @(negedge clk);
+    irq_software = 1'b0;
+
+    // Handler MRET returns to the instruction after WFI. An ECALL at that
+    // boundary then produces a precise synchronous redirect back to mtvec.
+    send_pair(32'h8000_0000, 32'h3020_0073, 1'b0, '0, '0);
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h3024)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (redirect_pc != 32'h3024))
+        $fatal(1, "MRET did not return to the interrupted boundary");
+    end
+    send_pair(32'h3024, 32'h0000_0073, 1'b0, '0, '0);
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h8000_0000)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (redirect_pc != 32'h8000_0000) ||
+          !trace_trap[0])
+        $fatal(1, "ECALL precise trap/trace is missing");
+    end
 
     $display("rv_backend_int_tb PASS");
     $finish;

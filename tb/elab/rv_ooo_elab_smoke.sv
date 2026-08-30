@@ -103,6 +103,7 @@ module rv_ooo_elab_smoke #(
     .irq_software_i         (1'b0),
     .irq_timer_i            (1'b0),
     .irq_external_i         (1'b0),
+    .mtime_i                (64'b0),
     .debug_halt_req_i       (1'b0),
     .trace_valid_o          (trace_valid),
     .trace_pc_o             (trace_pc),

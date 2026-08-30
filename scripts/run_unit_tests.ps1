@@ -102,6 +102,14 @@ $tests = @(
       "rtl/backend/rv_exec_result_buffer.sv",
       "tb/unit/rv_exec_result_buffer_tb.sv"
     )
+  },
+  @{
+    Top = "rv_csr_file_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_csr_file.sv",
+      "tb/unit/rv_csr_file_tb.sv"
+    )
   }
 )
 
