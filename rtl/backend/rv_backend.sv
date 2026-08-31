@@ -2,6 +2,9 @@ module rv_backend #(
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
+  parameter bit HAS_C = 1'b1,
+  parameter bit HAS_F = 1'b1,
+  parameter bit HAS_SMODE = 1'b0,
   parameter int unsigned ROB_ENTRIES = 48,
   parameter int unsigned ROB_SEQ_WIDTH = rv_ooo_pkg::ROB_SEQ_WIDTH,
   parameter int unsigned INT_PHYS_REGS = 80,
@@ -124,7 +127,7 @@ module rv_backend #(
   logic [1:0] dec_csr_immediate;
   logic [1:0][3:0] dec_fence_predecessor, dec_fence_successor;
 
-  rv_decode2 #(.XLEN(XLEN)) u_decode (
+  rv_decode2 #(.XLEN(XLEN), .HAS_C(HAS_C), .HAS_F(HAS_F), .HAS_SMODE(HAS_SMODE)) u_decode (
     .in_valid_i(fetch_valid_i), .in_ready_o(fetch_ready_o),
     .in_pc_i(fetch_pc_i), .in_instruction_i(fetch_instr_i),
     .in_inst_len_i(fetch_inst_len_i), .in_prediction_i(fetch_prediction_i),
@@ -1049,7 +1052,7 @@ module rv_backend #(
   end
 
   rv_csr_file #(
-    .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(1'b0), .PMP_ENTRIES(8),
+    .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(HAS_SMODE), .PMP_ENTRIES(8),
     .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
   ) u_csr_file (
     .clk_i, .rst_ni, .csr_valid_i(head_special_request &&
