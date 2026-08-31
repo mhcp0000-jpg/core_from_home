@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Implementation candidate v1.4.0 (full-structure, verification pending) |
+| 상태 | Implementation baseline v1.5.0 (RTL structure complete, verification deferred) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-08-31)는 **RV32IMFC 전체 구조 통합 완료 후보, 일괄 검증 전**이다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. 신규 `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 신규 `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. 신규 DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. v1.3.8까지의 integer/LSU/CSR/trap/PMP/directed boot 회귀는 통과했지만, v1.4.0 신규 FPU·predictor·DPI 및 변경된 전체 top은 사용자 요청에 따라 아직 실행 검증하지 않았다. 따라서 현재 표기는 구조 완성 후보이며 sign-off가 아니다. 다음 단계에서 compile/elaboration, unit, core integration, SoC ELF boot, ISA 및 differential 검증을 일괄 수행하고 발견 결함을 보완한다.
+현재 구현 상태(2026-08-31)는 **RV32IMFC 1차 RTL 구조 구현 완료, 일괄 검증 전**이다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. trap/interrupt/WFI/post-commit redirect와 FENCE/FENCE.I drain은 각각 독립 controller로 분리했다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. v1.3.8까지의 integer/LSU/CSR/trap/PMP/directed boot 회귀는 통과했지만, v1.4.0 이후 신규 FPU·predictor·DPI 및 v1.5.0 controller 분리는 사용자 요청에 따라 아직 실행 검증하지 않았다. 따라서 구현 완료는 RTL 구조 경계를 뜻하며 sign-off가 아니다. 다음 단계에서 compile/elaboration, unit, core integration, SoC ELF boot, ISA 및 differential 검증을 일괄 수행하고 발견 결함을 보완한다.
 
 ## 1. 목적과 성능 포지션
 
@@ -1057,7 +1057,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_writeback_arbiter`, `rv_branch_recovery`, `rv_exec_result_buffer` | Implemented and backend-integrated | core clock/reset 또는 조합 | Section 15.28~15.33 참조 |
 | `rv_csr_file` | Implemented and backend-integrated | core clock/reset | Section 15.34 참조 |
 | `rv_pmp` | Implemented and IFU/dual-LSU integrated | 조합 | PADDR/PMP entries/check ports, Section 15.34 참조 |
-| `rv_trap_controller`, `rv_fence_controller` | Partial: baseline control is integrated in `rv_backend` | core clock/reset 또는 조합 | Section 15.34~15.35 참조 |
+| `rv_trap_controller`, `rv_fence_controller` | Implemented and integrated baseline | core clock/reset 또는 조합 | Section 15.34~15.35 참조 |
 
 ### 15.13 공용 interface: `rv_local_mem_if`와 `rv_axi4_if`
 
@@ -1606,11 +1606,11 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 #### `rv_trap_controller`
 
-baseline controller는 현재 `rv_backend`의 ROB-head control로 구현되어 있다. ROB head exception/PC/next-PC, CSR interrupt-pending/cause, debug halt, WFI/FENCE state를 받아 CSR trap/MRET request, ROB retire inhibit, full flush, frontend redirect, commit trace trap bit를 만든다. synchronous exception이 interrupt보다 우선하고, interrupt는 ROB가 instruction boundary까지 drain된 뒤 수락한다. WFI retire와 MRET/FENCE.I redirect는 rename commit/recovery가 같은 edge에서 충돌하지 않도록 한 cycle pending redirect로 수행한다. WFI는 legal privilege 검사 뒤 sleep하며 locally enabled interrupt로 wake하고 global eligibility가 맞으면 trap을 수행한다. 향후 독립 `rv_trap_controller`로 분리할 때 이 port 의미와 priority를 유지한다.
+`rv_trap_controller`는 ROB head exception/PC/cause/tval과 ROB empty, CSR interrupt pending/cause, CSR trap ready/vector를 입력으로 받는다. retire 입력은 dual `retire_fire/next_pc`와 lane0의 MRET/WFI/FENCE.I 분류이며, `mret_pc`와 `wfi_wake`도 입력이다. 출력은 CSR trap request의 PC/cause/tval/interrupt/next-PC, architectural redirect valid/PC, redirect-pending, architectural-next-PC, WFI sleep 상태다. synchronous exception이 interrupt보다 우선하고, interrupt는 ROB가 instruction boundary까지 drain된 뒤 수락한다. WFI retire와 MRET/FENCE.I redirect는 rename commit/recovery가 같은 edge에서 충돌하지 않도록 한 cycle pending redirect로 수행한다. WFI는 legal privilege 검사 뒤 sleep하며 locally enabled interrupt로 wake하고 global eligibility가 맞으면 trap을 수행한다. controller assertion은 interrupt의 ROB-empty 수락, synchronous exception 우선순위, pending redirect 중 trap 억제를 검사한다.
 
 ### 15.35 FENCE/FENCE.I controller exact interface
 
-baseline fence controller는 `rv_backend`와 `rv_lsu_cluster.memory_idle_o` 경계로 구현되어 있다. ROB-head FENCE/FENCE.I request, sequence와 next PC를 받고, LSU의 committed store-buffer empty, load outstanding 없음, direct device transaction 없음 조건에서 destination 없는 completion을 만든다. FENCE.I retire 뒤 frontend full flush/next-PC redirect를 발생시킨다. 향후 독립 `rv_fence_controller`는 `request_valid_i`, `request_is_fence_i`, `request_is_fence_i_i`, predecessor/successor mask, sequence, next PC와 `lq_empty_i`, `sq_empty_i`, `store_buffer_empty_i`, `load_outstanding_i`, `d_fabric_idle_i`, `i_fabric_idle_i`를 입력으로 받고 `request_ready_o`, completion, `frontend_flush_valid_o`, `frontend_redirect_pc_o`를 출력한다.
+`rv_fence_controller`는 ROB-head FENCE/FENCE.I request, predecessor/successor mask, sequence와 next PC를 받고, `lsu_memory_idle_i`와 `i_fabric_idle_i` 조건에서 destination 없는 completion을 만든다. 현재 cacheless baseline에서 LSU memory-idle은 older load 완료, SQ→store-buffer 이동, committed store drain, direct device transaction 완료를 모두 포함한다. FENCE.I completion은 frontend flush-required와 redirect PC도 생성하며, 실제 architectural redirect는 해당 instruction이 retire된 뒤 trap controller의 한-cycle redirect 경로로 발생한다. predecessor/successor mask는 향후 cache/coherent fabric의 선택적 ordering을 위해 interface에 보존하지만 초기 구현은 보수적으로 모든 memory class를 drain한다.
 
 baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝난 후 완료한다. FENCE.I도 같은 조건을 기다리고 fetch queue/outstanding epoch를 폐기한 뒤 fence 다음 PC에서 refetch한다. 초기 ITIM에 I-cache는 없으므로 cache invalidate port는 0개지만 향후 `icache_invalidate_valid/ready` hook을 추가할 위치를 controller boundary로 고정한다. fence는 단일 serializing uop이며 younger memory/CSR issue를 차단한다.
 
@@ -1862,3 +1862,4 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | v1.3.8 | 실행 가능한 Boot ROM image가 ITIM mtvec, MSIE/MIE 설정 후 WFI에 진입하도록 구성. directed Host AXI BFM이 ITIM/DTIM/HostIF 접근과 unmapped DECERR를 확인하고, 마지막 CLINT MSIP write 뒤 ITIM vector instruction retire까지 통과. DPI-C ELF parser/자동 loader는 다음 구현 범위로 유지 |
 | v1.4.0 | unified RV32F bit-level executor와 3-source PRF/FP writeback/ROB precise-fflags commit 경로, 2-wide BTB·gshare·RAS predictor와 resolve/commit recovery 경로, ELF32/64 RISC-V DPI parser와 16-beat Host AXI loader/HostIF/MSIP/test top을 통합. 사용자 요청에 따라 신규 구조 전체는 아직 미검증이며 다음 revision에서 일괄 검증·보완 |
 | v1.4.1 | `HAS_C/HAS_F/HAS_SMODE`를 SoC→core→backend→decoder/CSR까지 parameter 전달하고, dual-issue 실제 8R PRF 포트 상수를 정렬. 구현 우선 정책에 따라 검증은 전체 구조 완료 후 일괄 수행 |
+| v1.5.0 | trap/interrupt/WFI/post-commit redirect와 FENCE/FENCE.I drain 조건을 각각 `rv_trap_controller`, `rv_fence_controller`로 분리하고 backend에 통합. 1차 RTL 구조를 완료 상태로 동결하되 사용자 요청에 따라 compile/simulation sign-off는 후속 단계로 연기 |

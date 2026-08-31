@@ -974,9 +974,11 @@ module rv_backend #(
         system_completion_exception;
   exception_code_e system_completion_cause;
   logic [XLEN-1:0] system_completion_tval;
-  logic [XLEN-1:0] system_redirect_target_q, architectural_next_pc_q;
+  logic [XLEN-1:0] architectural_next_pc_q;
   logic architectural_redirect_valid;
   logic [XLEN-1:0] architectural_redirect_pc;
+  logic fence_completion_valid;
+  logic [ROB_SEQ_WIDTH-1:0] fence_completion_sequence;
 
   assign head_is_csr_instruction = rob_head_valid &&
     (rob_head_instruction[6:0] == 7'b1110011) &&
@@ -1029,28 +1031,6 @@ module rv_backend #(
                        !csr_illegal;
   assign csr_commit = retire_fire[0] && retire_is_csr;
 
-  // Synchronous exception wins over an interrupt. Interrupts are accepted
-  // after the ROB drains to an instruction boundary; an older post-commit
-  // xRET/FENCE.I/WFI redirect wins over both for its one pending cycle.
-  always_comb begin
-    csr_trap_valid = 1'b0;
-    csr_trap_is_interrupt = 1'b0;
-    csr_trap_pc = rob_trap_pc;
-    csr_trap_tval = rob_trap_tval;
-    csr_trap_next_pc = architectural_next_pc_q;
-    csr_trap_cause = 6'(rob_trap_cause);
-    if (!system_redirect_pending_q && rob_trap_valid) begin
-      csr_trap_valid = 1'b1;
-    end else if (!system_redirect_pending_q && rob_empty &&
-                 csr_interrupt_pending) begin
-      csr_trap_valid = 1'b1;
-      csr_trap_is_interrupt = 1'b1;
-      csr_trap_pc = architectural_next_pc_q;
-      csr_trap_tval = '0;
-      csr_trap_cause = csr_interrupt_cause;
-    end
-  end
-
   rv_csr_file #(
     .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(HAS_SMODE), .PMP_ENTRIES(8),
     .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
@@ -1085,6 +1065,39 @@ module rv_backend #(
     .pmpaddr_o(csr_pmpaddr)
   );
 
+  rv_trap_controller #(
+    .XLEN(XLEN), .RESET_VECTOR(RESET_VECTOR)
+  ) u_trap_controller (
+    .clk_i, .rst_ni,
+    .rob_trap_valid_i(rob_trap_valid),
+    .rob_trap_pc_i(rob_trap_pc),
+    .rob_trap_cause_i(rob_trap_cause),
+    .rob_trap_tval_i(rob_trap_tval),
+    .rob_empty_i(rob_empty),
+    .interrupt_pending_i(csr_interrupt_pending),
+    .interrupt_cause_i(csr_interrupt_cause),
+    .csr_trap_valid_o(csr_trap_valid),
+    .csr_trap_ready_i(csr_trap_ready),
+    .csr_trap_pc_o(csr_trap_pc),
+    .csr_trap_cause_o(csr_trap_cause),
+    .csr_trap_tval_o(csr_trap_tval),
+    .csr_trap_is_interrupt_o(csr_trap_is_interrupt),
+    .csr_trap_next_pc_o(csr_trap_next_pc),
+    .csr_trap_vector_i(csr_trap_vector),
+    .retire_fire_i(retire_fire),
+    .retire_next_pc_i(retire_next_pc),
+    .retire_is_mret_i(retire_is_mret),
+    .retire_is_wfi_i(retire_is_wfi),
+    .retire_is_fence_i_i(retire_is_fence_i),
+    .mret_pc_i(csr_mret_pc),
+    .wfi_wake_i(csr_wfi_wake),
+    .architectural_redirect_valid_o(architectural_redirect_valid),
+    .architectural_redirect_pc_o(architectural_redirect_pc),
+    .redirect_pending_o(system_redirect_pending_q),
+    .architectural_next_pc_o(architectural_next_pc_q),
+    .wfi_sleep_o(wfi_sleep_q)
+  );
+
   always_comb begin
     effective_data_privilege = current_privilege;
     if ((current_privilege == PRIV_M) && csr_mstatus[17])
@@ -1094,10 +1107,30 @@ module rv_backend #(
   assign pmpcfg_o = csr_pmpcfg;
   assign pmpaddr_o = csr_pmpaddr;
 
+  rv_fence_controller #(
+    .XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH)
+  ) u_fence_controller (
+    .request_valid_i(head_special_request),
+    .request_is_fence_i(head_is_fence),
+    .request_is_fence_i_i(head_is_fence_i),
+    .predecessor_i(rob_head_instruction[27:24]),
+    .successor_i(rob_head_instruction[23:20]),
+    .sequence_i(rob_head_sequence),
+    .next_pc_i(rob_head_pc +
+      ((rob_head_instruction_length == INST_LEN_16) ? XLEN'(2) : XLEN'(4))),
+    .lsu_memory_idle_i(lsu_memory_idle),
+    .i_fabric_idle_i(1'b1),
+    .request_ready_o(),
+    .completion_valid_o(fence_completion_valid),
+    .completion_sequence_o(fence_completion_sequence),
+    .frontend_flush_required_o(),
+    .frontend_redirect_pc_o()
+  );
+
   always_comb begin
     system_completion_valid = head_special_request;
-    if ((head_is_fence || head_is_fence_i) && !lsu_memory_idle)
-      system_completion_valid = 1'b0;
+    if (head_is_fence || head_is_fence_i)
+      system_completion_valid = fence_completion_valid;
     system_completion_exception = 1'b0;
     system_completion_cause = EXC_ILLEGAL_INSTRUCTION;
     system_completion_tval = '0;
@@ -1119,45 +1152,6 @@ module rv_backend #(
       system_completion_tval = XLEN'(rob_head_instruction);
     end
     system_completion_fire = system_completion_valid && source_ready[10];
-  end
-
-  assign architectural_redirect_valid = system_redirect_pending_q ||
-                                         csr_trap_valid;
-  assign architectural_redirect_pc = system_redirect_pending_q ?
-    system_redirect_target_q : csr_trap_vector;
-
-  always_ff @(posedge clk_i) begin
-    if (!rst_ni) begin
-      system_redirect_pending_q <= 1'b0;
-      system_redirect_target_q <= RESET_VECTOR;
-      architectural_next_pc_q <= RESET_VECTOR;
-      wfi_sleep_q <= 1'b0;
-    end else begin
-      if (system_redirect_pending_q)
-        system_redirect_pending_q <= 1'b0;
-
-      if (retire_fire[0] && retire_is_mret) begin
-        system_redirect_pending_q <= 1'b1;
-        system_redirect_target_q <= csr_mret_pc;
-      end else if (retire_fire[0] &&
-                   (retire_is_fence_i || retire_is_wfi)) begin
-        system_redirect_pending_q <= 1'b1;
-        system_redirect_target_q <= retire_next_pc[0];
-      end
-
-      if (retire_fire[1])
-        architectural_next_pc_q <= retire_next_pc[1];
-      else if (retire_fire[0])
-        architectural_next_pc_q <= retire_next_pc[0];
-      if (csr_trap_valid && csr_trap_ready)
-        architectural_next_pc_q <= csr_trap_vector;
-
-      if (retire_fire[0] && retire_is_wfi)
-        wfi_sleep_q <= 1'b1;
-      if ((wfi_sleep_q && csr_wfi_wake) ||
-          (csr_trap_valid && csr_trap_ready))
-        wfi_sleep_q <= 1'b0;
-    end
   end
 
   always_comb begin
@@ -1224,7 +1218,8 @@ module rv_backend #(
       source_exception_tval[5+lsu_source]=lsu_completion_tval[lsu_source];
     end
     source_valid[10]=system_completion_valid;
-    source_sequence[10]=rob_head_sequence;
+    source_sequence[10]=(head_is_fence || head_is_fence_i) ?
+      fence_completion_sequence : rob_head_sequence;
     source_dst_valid[10]=head_is_csr_instruction && !csr_illegal &&
       rob_head_writes_dst;
     source_dst_class[10]=head_is_csr_instruction ? rob_head_dst_class : REG_NONE;

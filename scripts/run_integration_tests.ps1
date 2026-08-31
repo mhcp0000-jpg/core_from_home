@@ -51,6 +51,8 @@ $sources = @(
   "rtl/backend/rv_branch_recovery.sv",
   "rtl/backend/rv_csr_file.sv",
   "rtl/backend/rv_pmp.sv",
+  "rtl/backend/rv_trap_controller.sv",
+  "rtl/backend/rv_fence_controller.sv",
   "rtl/backend/rv_backend.sv",
   "tb/unit/rv_backend_int_tb.sv"
 )
