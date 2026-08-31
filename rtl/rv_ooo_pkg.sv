@@ -148,8 +148,10 @@ package rv_ooo_pkg;
     logic       is_call;
     logic       is_return;
     logic [63:0] target;
-    logic [9:0] global_history;
-    logic [6:0] btb_index;
+    logic [10:0] global_history;
+    logic [7:0] btb_index;
+    logic [3:0] ras_pointer;
+    logic [4:0] ras_count;
   } prediction_meta_t;
 
   typedef struct packed {

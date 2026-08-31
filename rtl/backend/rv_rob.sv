@@ -44,6 +44,7 @@ module rv_rob #(
   input  rv_ooo_pkg::exception_code_e [COMPLETE_PORTS-1:0]
                                                    complete_exception_cause_i,
   input  logic [COMPLETE_PORTS-1:0][XLEN-1:0]   complete_exception_tval_i,
+  input  logic [COMPLETE_PORTS-1:0][4:0]        complete_fflags_i,
   input  logic [COMPLETE_PORTS-1:0]             complete_branch_mispredict_i,
   input  logic [COMPLETE_PORTS-1:0][XLEN-1:0]   complete_branch_target_i,
 
@@ -70,6 +71,7 @@ module rv_rob #(
   output logic [1:0]                            retire_is_load_o,
   output logic [1:0][LQ_INDEX_WIDTH-1:0]        retire_lq_index_o,
   output logic [1:0][SQ_INDEX_WIDTH-1:0]        retire_sq_index_o,
+  output logic [1:0][4:0]                       retire_fflags_o,
 
   output logic                                  head_valid_o,
   output logic                                  head_complete_o,
@@ -122,6 +124,7 @@ module rv_rob #(
     logic                         exception_valid;
     exception_code_e              exception_cause;
     logic [XLEN-1:0]              exception_tval;
+    logic [4:0]                   fflags;
     logic                         branch_mispredict;
     logic [XLEN-1:0]              branch_target;
   } rob_entry_t;
@@ -224,6 +227,7 @@ module rv_rob #(
     retire_is_load_o             = '0;
     retire_lq_index_o            = '0;
     retire_sq_index_o            = '0;
+    retire_fflags_o              = '0;
 
     if (count_q != 0) begin
       retire_sequence_o[0]           = entries_q[head_q].sequence_id;
@@ -244,6 +248,7 @@ module rv_rob #(
       retire_is_load_o[0]            = entries_q[head_q].is_load;
       retire_lq_index_o[0]           = entries_q[head_q].lq_index;
       retire_sq_index_o[0]           = entries_q[head_q].sq_index;
+      retire_fflags_o[0]             = entries_q[head_q].fflags;
     end
     if (count_q > 1) begin
       retire_sequence_o[1]           = entries_q[head_plus_one].sequence_id;
@@ -268,6 +273,7 @@ module rv_rob #(
       retire_is_load_o[1]            = entries_q[head_plus_one].is_load;
       retire_lq_index_o[1]           = entries_q[head_plus_one].lq_index;
       retire_sq_index_o[1]           = entries_q[head_plus_one].sq_index;
+      retire_fflags_o[1]             = entries_q[head_plus_one].fflags;
     end
 
     trap_valid_o    = (count_q != 0) && entries_q[head_q].valid &&
@@ -346,6 +352,7 @@ module rv_rob #(
               if (entries_q[entry].valid &&
                   (entries_q[entry].sequence_id == complete_sequence_i[port])) begin
                 entries_q[entry].complete <= 1'b1;
+                entries_q[entry].fflags <= complete_fflags_i[port];
                 if (complete_exception_valid_i[port]) begin
                   entries_q[entry].exception_valid <= 1'b1;
                   entries_q[entry].exception_cause <=
@@ -376,6 +383,7 @@ module rv_rob #(
             if (entries_q[entry].valid &&
                 (entries_q[entry].sequence_id == complete_sequence_i[port])) begin
               entries_q[entry].complete <= 1'b1;
+              entries_q[entry].fflags <= complete_fflags_i[port];
               if (complete_exception_valid_i[port]) begin
                 entries_q[entry].exception_valid <= 1'b1;
                 entries_q[entry].exception_cause <=
@@ -443,6 +451,7 @@ module rv_rob #(
               alloc_exception_cause_i[lane];
             entries_q[alloc_index_o[lane]].exception_tval <=
               alloc_exception_tval_i[lane];
+            entries_q[alloc_index_o[lane]].fflags <= '0;
             entries_q[alloc_index_o[lane]].branch_mispredict <= 1'b0;
             entries_q[alloc_index_o[lane]].branch_target <= '0;
           end

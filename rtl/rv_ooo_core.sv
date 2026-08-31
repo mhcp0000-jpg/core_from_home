@@ -82,6 +82,16 @@ module rv_ooo_core #(
 
   logic                          redirect_valid;
   logic [XLEN-1:0]               redirect_pc;
+  logic                          bp_resolve_valid;
+  logic [XLEN-1:0]               bp_resolve_pc, bp_resolve_target;
+  logic [31:0]                   bp_resolve_instruction;
+  inst_len_e                     bp_resolve_inst_len;
+  logic                          bp_resolve_taken, bp_resolve_mispredict;
+  prediction_meta_t              bp_resolve_prediction;
+  logic [1:0]                    bp_commit_valid, bp_commit_taken;
+  logic [1:0][XLEN-1:0]          bp_commit_pc;
+  logic [1:0][31:0]              bp_commit_instruction;
+  inst_len_e [1:0]               bp_commit_inst_len;
   privilege_e                    current_privilege;
   logic [7:0][7:0]               pmpcfg;
   logic [7:0][PADDR_WIDTH-3:0]   pmpaddr;
@@ -133,6 +143,19 @@ module rv_ooo_core #(
     .rst_ni,
     .redirect_valid_i     (redirect_valid),
     .redirect_pc_i        (redirect_pc),
+    .predictor_resolve_valid_i(bp_resolve_valid),
+    .predictor_resolve_pc_i(bp_resolve_pc),
+    .predictor_resolve_instruction_i(bp_resolve_instruction),
+    .predictor_resolve_inst_len_i(bp_resolve_inst_len),
+    .predictor_resolve_taken_i(bp_resolve_taken),
+    .predictor_resolve_target_i(bp_resolve_target),
+    .predictor_resolve_mispredict_i(bp_resolve_mispredict),
+    .predictor_resolve_prediction_i(bp_resolve_prediction),
+    .predictor_commit_valid_i(bp_commit_valid),
+    .predictor_commit_pc_i(bp_commit_pc),
+    .predictor_commit_instruction_i(bp_commit_instruction),
+    .predictor_commit_inst_len_i(bp_commit_inst_len),
+    .predictor_commit_taken_i(bp_commit_taken),
     .fetch_valid_o        (fe_valid),
     .fetch_ready_i        (fe_ready),
     .fetch_pc_o           (fe_pc),
@@ -263,7 +286,20 @@ module rv_ooo_core #(
     .trace_trap_o,
     .current_privilege_o (current_privilege),
     .pmpcfg_o            (pmpcfg),
-    .pmpaddr_o           (pmpaddr)
+    .pmpaddr_o           (pmpaddr),
+    .bp_resolve_valid_o  (bp_resolve_valid),
+    .bp_resolve_pc_o     (bp_resolve_pc),
+    .bp_resolve_instruction_o(bp_resolve_instruction),
+    .bp_resolve_inst_len_o(bp_resolve_inst_len),
+    .bp_resolve_taken_o  (bp_resolve_taken),
+    .bp_resolve_target_o (bp_resolve_target),
+    .bp_resolve_mispredict_o(bp_resolve_mispredict),
+    .bp_resolve_prediction_o(bp_resolve_prediction),
+    .bp_commit_valid_o   (bp_commit_valid),
+    .bp_commit_pc_o      (bp_commit_pc),
+    .bp_commit_instruction_o(bp_commit_instruction),
+    .bp_commit_inst_len_o(bp_commit_inst_len),
+    .bp_commit_taken_o   (bp_commit_taken)
   );
 
   logic unused_ifu_pmp;

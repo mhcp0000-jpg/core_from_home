@@ -19,6 +19,7 @@ rtl/soc/rv_soc_top.sv
 rtl/rv_ooo_pkg.sv
 rtl/frontend/rv_c_expander.sv
 rtl/frontend/rv_fetch_queue.sv
+rtl/frontend/rv_branch_predictor.sv
 rtl/backend/rv_decode2.sv
 rtl/backend/rv_lsq_order_check.sv
 rtl/backend/rv_lsu_pipe.sv
@@ -33,6 +34,7 @@ rtl/backend/rv_int_alu.sv
 rtl/backend/rv_branch_unit.sv
 rtl/backend/rv_multiplier.sv
 rtl/backend/rv_divider.sv
+rtl/backend/rv_fpu.sv
 rtl/backend/rv_writeback_arbiter.sv
 rtl/backend/rv_branch_recovery.sv
 rtl/backend/rv_exec_result_buffer.sv

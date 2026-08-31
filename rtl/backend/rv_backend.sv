@@ -56,7 +56,20 @@ module rv_backend #(
   output logic [1:0] trace_trap_o,
   output rv_ooo_pkg::privilege_e current_privilege_o,
   output logic [7:0][7:0] pmpcfg_o,
-  output logic [7:0][PADDR_WIDTH-3:0] pmpaddr_o
+  output logic [7:0][PADDR_WIDTH-3:0] pmpaddr_o,
+  output logic bp_resolve_valid_o,
+  output logic [XLEN-1:0] bp_resolve_pc_o,
+  output logic [31:0] bp_resolve_instruction_o,
+  output rv_ooo_pkg::inst_len_e bp_resolve_inst_len_o,
+  output logic bp_resolve_taken_o,
+  output logic [XLEN-1:0] bp_resolve_target_o,
+  output logic bp_resolve_mispredict_o,
+  output rv_ooo_pkg::prediction_meta_t bp_resolve_prediction_o,
+  output logic [1:0] bp_commit_valid_o,
+  output logic [1:0][XLEN-1:0] bp_commit_pc_o,
+  output logic [1:0][31:0] bp_commit_instruction_o,
+  output rv_ooo_pkg::inst_len_e [1:0] bp_commit_inst_len_o,
+  output logic [1:0] bp_commit_taken_o
 );
   import rv_ooo_pkg::*;
 
@@ -69,7 +82,7 @@ module rv_backend #(
   localparam int unsigned ROB_COUNT_WIDTH = $clog2(ROB_ENTRIES + 1);
   localparam int unsigned LQ_WIDTH = $clog2(LQ_ENTRIES);
   localparam int unsigned SQ_WIDTH = $clog2(SQ_ENTRIES);
-  localparam int unsigned WB_SOURCES = 10;
+  localparam int unsigned WB_SOURCES = 11;
   localparam int unsigned WB_PORTS = 4;
   localparam int unsigned EXEC_PORTS = 5;
   localparam int unsigned SEQ_SPACE = 1 << ROB_SEQ_WIDTH;
@@ -188,6 +201,8 @@ module rv_backend #(
   logic [1:0][PHYS_TAG_WIDTH-1:0] retire_dst_phys, retire_stale_phys;
   logic [1:0][SQ_WIDTH-1:0] retire_sq_index;
   logic [1:0][LQ_WIDTH-1:0] retire_lq_index;
+  logic [1:0][4:0] retire_fflags;
+  logic [2:0] csr_frm;
   logic rob_head_valid, rob_head_complete;
   logic [ROB_SEQ_WIDTH-1:0] rob_head_sequence;
   logic [XLEN-1:0] rob_head_pc;
@@ -300,11 +315,11 @@ module rv_backend #(
     .int_free_count_o(), .fp_free_count_o()
   );
 
-  // PRFs: four execution reads plus two trace-only retirement reads.
-  logic [5:0][PHYS_TAG_WIDTH-1:0] int_read_addr, fp_read_addr;
-  logic [5:0][XLEN-1:0] int_read_data;
-  logic [5:0][31:0] fp_read_data;
-  logic [5:0] int_read_ready, fp_read_ready;
+  // PRFs: three operands for each issue candidate plus two retirement probes.
+  logic [7:0][PHYS_TAG_WIDTH-1:0] int_read_addr, fp_read_addr;
+  logic [7:0][XLEN-1:0] int_read_data;
+  logic [7:0][31:0] fp_read_data;
+  logic [7:0] int_read_ready, fp_read_ready;
   logic [5:0][PHYS_TAG_WIDTH-1:0] int_query_addr, fp_query_addr;
   logic [5:0] int_query_ready, fp_query_ready;
   logic [1:0] int_wb_valid, fp_wb_valid, int_alloc_valid, fp_alloc_valid;
@@ -339,7 +354,7 @@ module rv_backend #(
 
   rv_phys_regfile #(
     .DATA_WIDTH(XLEN), .PHYS_REGS(INT_PHYS_REGS),
-    .TAG_WIDTH(PHYS_TAG_WIDTH), .READ_PORTS(6), .QUERY_PORTS(6),
+    .TAG_WIDTH(PHYS_TAG_WIDTH), .READ_PORTS(8), .QUERY_PORTS(6),
     .WRITE_PORTS(2), .ALLOC_PORTS(2), .INITIAL_MAPPED_REGS(32),
     .ZERO_REGISTER(1'b1)
   ) u_int_prf (
@@ -352,7 +367,7 @@ module rv_backend #(
   );
   rv_phys_regfile #(
     .DATA_WIDTH(32), .PHYS_REGS(FP_PHYS_REGS), .TAG_WIDTH(PHYS_TAG_WIDTH),
-    .READ_PORTS(6), .QUERY_PORTS(6), .WRITE_PORTS(2), .ALLOC_PORTS(2),
+    .READ_PORTS(8), .QUERY_PORTS(6), .WRITE_PORTS(2), .ALLOC_PORTS(2),
     .INITIAL_MAPPED_REGS(32), .ZERO_REGISTER(1'b0)
   ) u_fp_prf (
     .clk_i, .rst_ni, .read_addr_i(fp_read_addr), .read_data_o(fp_read_data),
@@ -538,33 +553,40 @@ module rv_backend #(
   );
 
   // Four asynchronous PRF reads cover two integer-class candidates.
-  logic [1:0][XLEN-1:0] cand_operand0, cand_operand1;
+  logic [1:0][XLEN-1:0] cand_operand0, cand_operand1, cand_operand2;
   always_comb begin
     for (int unsigned candidate=0; candidate<2; candidate++) begin
-      int_read_addr[candidate*2]=cand_src_phys[candidate][0];
-      int_read_addr[candidate*2+1]=cand_src_phys[candidate][1];
-      fp_read_addr[candidate*2]=cand_src_phys[candidate][0];
-      fp_read_addr[candidate*2+1]=cand_src_phys[candidate][1];
+      int_read_addr[candidate*3]=cand_src_phys[candidate][0];
+      int_read_addr[candidate*3+1]=cand_src_phys[candidate][1];
+      int_read_addr[candidate*3+2]=cand_src_phys[candidate][2];
+      fp_read_addr[candidate*3]=cand_src_phys[candidate][0];
+      fp_read_addr[candidate*3+1]=cand_src_phys[candidate][1];
+      fp_read_addr[candidate*3+2]=cand_src_phys[candidate][2];
       case(cand_src_class[candidate][0])
-        REG_INT:cand_operand0[candidate]=int_read_data[candidate*2];
-        REG_FP:cand_operand0[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*2]};
+        REG_INT:cand_operand0[candidate]=int_read_data[candidate*3];
+        REG_FP:cand_operand0[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3]};
         default:cand_operand0[candidate]='0;
       endcase
       case(cand_src_class[candidate][1])
-        REG_INT:cand_operand1[candidate]=int_read_data[candidate*2+1];
-        REG_FP:cand_operand1[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*2+1]};
+        REG_INT:cand_operand1[candidate]=int_read_data[candidate*3+1];
+        REG_FP:cand_operand1[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3+1]};
         default:cand_operand1[candidate]='0;
       endcase
+      case(cand_src_class[candidate][2])
+        REG_INT:cand_operand2[candidate]=int_read_data[candidate*3+2];
+        REG_FP:cand_operand2[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3+2]};
+        default:cand_operand2[candidate]='0;
+      endcase
     end
-    int_read_addr[4]=retire_dst_phys[0];
-    int_read_addr[5]=head_is_csr_instruction ? rob_head_src0_phys :
+    int_read_addr[6]=retire_dst_phys[0];
+    int_read_addr[7]=head_is_csr_instruction ? rob_head_src0_phys :
                                                retire_dst_phys[1];
-    fp_read_addr[4]=retire_dst_phys[0]; fp_read_addr[5]=retire_dst_phys[1];
+    fp_read_addr[6]=retire_dst_phys[0]; fp_read_addr[7]=retire_dst_phys[1];
   end
 
   // Global issue selection with FU-specific backpressure folded into masks.
   logic [1:0] fast_req_ready, lsu_issue_ready;
-  logic mul_req_ready, div_req_ready;
+  logic mul_req_ready, div_req_ready, fpu_req_ready;
   logic [1:0][4:0] effective_mask;
   always_comb begin
     effective_mask='0;
@@ -581,6 +603,7 @@ module rv_backend #(
           effective_mask[candidate][2]=cand_port_mask[candidate][2]&&lsu_issue_ready[0];
           effective_mask[candidate][3]=cand_port_mask[candidate][3]&&lsu_issue_ready[1];
         end
+        FU_FP:effective_mask[candidate][4]=cand_port_mask[candidate][4]&&fpu_req_ready;
         default:effective_mask[candidate]='0;
       endcase
       if (serial_barrier_valid_q[0] &&
@@ -609,11 +632,14 @@ module rv_backend #(
   // Route selected candidate payloads onto logical execution ports.
   logic [4:0][ROB_SEQ_WIDTH-1:0] port_sequence;
   fu_class_e [4:0] port_fu;
-  logic [4:0][XLEN-1:0] port_pc,port_operand0,port_operand1,port_immediate;
+  logic [4:0][XLEN-1:0] port_pc,port_operand0,port_operand1,port_operand2,
+                         port_immediate;
+  logic [4:0][31:0] port_instruction;
   logic [4:0][15:0] port_operation;
   logic [4:0] port_dst_valid,port_use_pc,port_use_immediate,port_word;
   logic [4:0] port_mem_unsigned;
   logic [4:0][2:0] port_mem_size;
+  logic [4:0][2:0] port_rounding;
   logic [4:0][LQ_WIDTH-1:0] port_lq_index;
   logic [4:0][SQ_WIDTH-1:0] port_sq_index;
   reg_class_e [4:0] port_dst_class;
@@ -622,9 +648,10 @@ module rv_backend #(
   prediction_meta_t [4:0] port_prediction;
   always_comb begin
     port_sequence='0;port_fu='0;port_pc='0;port_operand0='0;
-    port_operand1='0;port_immediate='0;port_operation='0;port_dst_valid='0;
+    port_operand1='0;port_operand2='0;port_immediate='0;port_instruction='0;
+    port_operation='0;port_dst_valid='0;
     port_use_pc='0;port_use_immediate='0;port_word='0;port_mem_unsigned='0;
-    port_mem_size='0;port_lq_index='0;port_sq_index='0;
+    port_mem_size='0;port_rounding='0;port_lq_index='0;port_sq_index='0;
     port_dst_class='0;port_dst_phys='0;
     port_len='0;port_prediction='0;
     for(int unsigned port=0;port<5;port++) if(port_valid[port]) begin
@@ -633,6 +660,8 @@ module rv_backend #(
       port_pc[port]=cand_pc[port_candidate[port]];
       port_operand0[port]=cand_operand0[port_candidate[port]];
       port_operand1[port]=cand_operand1[port_candidate[port]];
+      port_operand2[port]=cand_operand2[port_candidate[port]];
+      port_instruction[port]=cand_instruction[port_candidate[port]];
       port_immediate[port]=cand_immediate[port_candidate[port]];
       port_operation[port]=cand_operation[port_candidate[port]];
       port_dst_valid[port]=cand_dst_valid[port_candidate[port]];
@@ -644,6 +673,7 @@ module rv_backend #(
       port_len[port]=cand_len[port_candidate[port]];
       port_prediction[port]=cand_prediction[port_candidate[port]];
       port_mem_size[port]=cand_mem_size[port_candidate[port]];
+      port_rounding[port]=cand_rounding[port_candidate[port]];
       port_mem_unsigned[port]=cand_mem_unsigned[port_candidate[port]];
       port_lq_index[port]=cand_lq_index[port_candidate[port]];
       port_sq_index[port]=cand_sq_index[port_candidate[port]];
@@ -767,8 +797,44 @@ module rv_backend #(
     .flush_sequence_i(flush_sequence),.result_valid_o(div_result_valid),
     .result_ready_i(div_result_ready),.result_o(div_result_data),
     .result_rob_sequence_o(div_result_sequence),
-    .result_destination_valid_o(div_result_dst_valid),
-    .result_destination_phys_o(div_result_dst_phys));
+     .result_destination_valid_o(div_result_dst_valid),
+     .result_destination_phys_o(div_result_dst_phys));
+
+  // One RV32F cluster accepts one operation per cycle.  Every completion,
+  // including fflags, remains speculative until its ROB entry retires.
+  logic fpu_result_valid, fpu_result_ready, fpu_result_dst_valid;
+  logic fpu_result_exception;
+  logic [ROB_SEQ_WIDTH-1:0] fpu_result_sequence;
+  reg_class_e fpu_result_dst_class;
+  logic [PHYS_TAG_WIDTH-1:0] fpu_result_dst_phys;
+  logic [XLEN-1:0] fpu_result_data, fpu_result_tval;
+  logic [4:0] fpu_result_fflags;
+  exception_code_e fpu_result_cause;
+  rv_fpu #(
+    .XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
+    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(3)
+  ) u_fpu (
+    .clk_i, .rst_ni,
+    .request_valid_i(port_valid[4] && (port_fu[4] == FU_FP)),
+    .request_ready_o(fpu_req_ready), .instruction_i(port_instruction[4]),
+    .operand_a_i(port_operand0[4]), .operand_b_i(port_operand1[4]),
+    .operand_c_i(port_operand2[4]), .rounding_mode_i(port_rounding[4]),
+    .frm_i(csr_frm), .sequence_i(port_sequence[4]),
+    .destination_valid_i(port_dst_valid[4]),
+    .destination_class_i(port_dst_class[4]),
+    .destination_phys_i(port_dst_phys[4]),
+    .flush_valid_i(flush_valid), .flush_all_i(flush_all),
+    .flush_sequence_i(flush_sequence), .result_valid_o(fpu_result_valid),
+    .result_ready_i(fpu_result_ready),
+    .result_sequence_o(fpu_result_sequence),
+    .result_destination_valid_o(fpu_result_dst_valid),
+    .result_destination_class_o(fpu_result_dst_class),
+    .result_destination_phys_o(fpu_result_dst_phys),
+    .result_data_o(fpu_result_data), .result_fflags_o(fpu_result_fflags),
+    .result_exception_valid_o(fpu_result_exception),
+    .result_exception_cause_o(fpu_result_cause),
+    .result_exception_tval_o(fpu_result_tval)
+  );
 
   // Two address-generation pipes feed one age-ordered LSQ. Loads may forward
   // from the youngest older SQ/SB entry; stores become externally visible only
@@ -898,8 +964,9 @@ module rv_backend #(
   logic [5:0] csr_trap_cause, csr_interrupt_cause;
   logic csr_mret_ready, csr_mret_illegal, csr_wfi_illegal, csr_wfi_wake;
   logic [XLEN-1:0] csr_mret_pc, csr_mstatus, csr_mtvec, csr_mepc;
-  logic [2:0] csr_frm;
   logic [4:0] csr_fflags;
+  logic [4:0] commit_fflags;
+  logic commit_fflags_valid;
   logic system_completion_valid, system_completion_fire,
         system_completion_exception;
   exception_code_e system_completion_cause;
@@ -937,8 +1004,12 @@ module rv_backend #(
       default: head_csr_cmd = CSR_CMD_NONE;
     endcase
     head_csr_operand = rob_head_instruction[14] ?
-      XLEN'(rob_head_instruction[19:15]) : int_read_data[5];
+      XLEN'(rob_head_instruction[19:15]) : int_read_data[7];
   end
+
+  assign commit_fflags = (retire_fire[0] ? retire_fflags[0] : 5'b0) |
+                         (retire_fire[1] ? retire_fflags[1] : 5'b0);
+  assign commit_fflags_valid = |commit_fflags;
 
   assign retire_is_csr = retire_valid[0] &&
     (retire_instruction[0][6:0] == 7'b1110011) &&
@@ -1003,7 +1074,8 @@ module rv_backend #(
     .interrupt_pending_o(csr_interrupt_pending),
     .interrupt_cause_o(csr_interrupt_cause),
     .retire_count_i({1'b0,retire_fire[0]} + {1'b0,retire_fire[1]}),
-    .fflags_accrue_valid_i(1'b0), .fflags_accrue_i('0),
+    .fflags_accrue_valid_i(commit_fflags_valid),
+    .fflags_accrue_i(commit_fflags),
     .flush_all_i(flush_valid && flush_all), .privilege_o(current_privilege),
     .mstatus_o(csr_mstatus), .mtvec_o(csr_mtvec), .mepc_o(csr_mepc),
     .frm_o(csr_frm), .fflags_o(csr_fflags), .pmpcfg_o(csr_pmpcfg),
@@ -1043,7 +1115,7 @@ module rv_backend #(
       system_completion_exception = 1'b1;
       system_completion_tval = XLEN'(rob_head_instruction);
     end
-    system_completion_fire = system_completion_valid && source_ready[9];
+    system_completion_fire = system_completion_valid && source_ready[10];
   end
 
   assign architectural_redirect_valid = system_redirect_pending_q ||
@@ -1095,26 +1167,32 @@ module rv_backend #(
     source_valid[1]=fast_result_valid[1];
     source_valid[2]=mul_result_valid;
     source_valid[3]=div_result_valid;
+    source_valid[4]=fpu_result_valid;
     source_sequence[0]=fast_result_sequence[0];
     source_sequence[1]=fast_result_sequence[1];
     source_sequence[2]=mul_result_sequence;
     source_sequence[3]=div_result_sequence;
+    source_sequence[4]=fpu_result_sequence;
     source_dst_valid[0]=fast_result_dst_valid[0];
     source_dst_valid[1]=fast_result_dst_valid[1];
     source_dst_valid[2]=mul_result_dst_valid;
     source_dst_valid[3]=div_result_dst_valid;
+    source_dst_valid[4]=fpu_result_dst_valid;
     source_dst_class[0]=fast_result_dst_class[0];
     source_dst_class[1]=fast_result_dst_class[1];
     source_dst_class[2]=REG_INT;
     source_dst_class[3]=REG_INT;
+    source_dst_class[4]=fpu_result_dst_class;
     source_dst_phys[0]=fast_result_dst_phys[0];
     source_dst_phys[1]=fast_result_dst_phys[1];
     source_dst_phys[2]=mul_result_dst_phys;
     source_dst_phys[3]=div_result_dst_phys;
+    source_dst_phys[4]=fpu_result_dst_phys;
     source_data[0]=fast_result_data[0];
     source_data[1]=fast_result_data[1];
     source_data[2]=mul_result_data;
     source_data[3]=div_result_data;
+    source_data[4]=fpu_result_data;
     source_exception[0]=fast_result_exception[0];
     source_exception[1]=fast_result_exception[1];
     source_exception_cause[0]=fast_result_cause[0];
@@ -1127,30 +1205,35 @@ module rv_backend #(
     source_branch_target[0]=fast_result_target[0];
     source_fflags[1]=fast_result_fflags[1];
     source_fflags[0]=fast_result_fflags[0];
+    source_exception[4]=fpu_result_exception;
+    source_exception_cause[4]=fpu_result_cause;
+    source_exception_tval[4]=fpu_result_tval;
+    source_fflags[4]=fpu_result_fflags;
     for(int unsigned lsu_source=0;lsu_source<5;lsu_source++) begin
-      source_valid[4+lsu_source]=lsu_completion_valid[lsu_source];
-      source_sequence[4+lsu_source]=lsu_completion_sequence[lsu_source];
-      source_dst_valid[4+lsu_source]=lsu_completion_dst_valid[lsu_source];
-      source_dst_class[4+lsu_source]=lsu_completion_dst_class[lsu_source];
-      source_dst_phys[4+lsu_source]=lsu_completion_dst_phys[lsu_source];
-      source_data[4+lsu_source]=lsu_completion_data[lsu_source];
-      source_exception[4+lsu_source]=lsu_completion_exception[lsu_source];
-      source_exception_cause[4+lsu_source]=lsu_completion_cause[lsu_source];
-      source_exception_tval[4+lsu_source]=lsu_completion_tval[lsu_source];
+      source_valid[5+lsu_source]=lsu_completion_valid[lsu_source];
+      source_sequence[5+lsu_source]=lsu_completion_sequence[lsu_source];
+      source_dst_valid[5+lsu_source]=lsu_completion_dst_valid[lsu_source];
+      source_dst_class[5+lsu_source]=lsu_completion_dst_class[lsu_source];
+      source_dst_phys[5+lsu_source]=lsu_completion_dst_phys[lsu_source];
+      source_data[5+lsu_source]=lsu_completion_data[lsu_source];
+      source_exception[5+lsu_source]=lsu_completion_exception[lsu_source];
+      source_exception_cause[5+lsu_source]=lsu_completion_cause[lsu_source];
+      source_exception_tval[5+lsu_source]=lsu_completion_tval[lsu_source];
     end
-    source_valid[9]=system_completion_valid;
-    source_sequence[9]=rob_head_sequence;
-    source_dst_valid[9]=head_is_csr_instruction && !csr_illegal &&
+    source_valid[10]=system_completion_valid;
+    source_sequence[10]=rob_head_sequence;
+    source_dst_valid[10]=head_is_csr_instruction && !csr_illegal &&
       rob_head_writes_dst;
-    source_dst_class[9]=head_is_csr_instruction ? rob_head_dst_class : REG_NONE;
-    source_dst_phys[9]=rob_head_dst_phys;
-    source_data[9]=csr_rdata;
-    source_exception[9]=system_completion_exception;
-    source_exception_cause[9]=system_completion_cause;
-    source_exception_tval[9]=system_completion_tval;
+    source_dst_class[10]=head_is_csr_instruction ? rob_head_dst_class : REG_NONE;
+    source_dst_phys[10]=rob_head_dst_phys;
+    source_data[10]=csr_rdata;
+    source_exception[10]=system_completion_exception;
+    source_exception_cause[10]=system_completion_cause;
+    source_exception_tval[10]=system_completion_tval;
     fast_result_ready=source_ready[1:0];mul_result_ready=source_ready[2];
     div_result_ready=source_ready[3];
-    lsu_completion_ready=source_ready[8:4];
+    fpu_result_ready=source_ready[4];
+    lsu_completion_ready=source_ready[9:5];
   end
 
   rv_writeback_arbiter #(.XLEN(XLEN),.SOURCE_COUNT(WB_SOURCES),
@@ -1203,6 +1286,7 @@ module rv_backend #(
     .complete_exception_valid_i(complete_exception),
     .complete_exception_cause_i(complete_cause),
     .complete_exception_tval_i(complete_tval),
+    .complete_fflags_i(complete_fflags),
     .complete_branch_mispredict_i(complete_mispredict),
     .complete_branch_target_i(complete_target),
     .live_query_sequence_i(source_sequence),.live_query_valid_o(source_live),
@@ -1217,7 +1301,8 @@ module rv_backend #(
     .retire_destination_phys_o(retire_dst_phys),
     .retire_stale_phys_o(retire_stale_phys),.retire_is_store_o(retire_is_store),
     .retire_is_load_o(retire_is_load),.retire_lq_index_o(retire_lq_index),
-    .retire_sq_index_o(retire_sq_index),.head_valid_o(rob_head_valid),
+    .retire_sq_index_o(retire_sq_index),.retire_fflags_o(retire_fflags),
+    .head_valid_o(rob_head_valid),
     .head_complete_o(rob_head_complete),
     .head_sequence_o(rob_head_sequence),.head_pc_o(rob_head_pc),
     .head_instruction_o(rob_head_instruction),
@@ -1236,10 +1321,37 @@ module rv_backend #(
   // Branch sequence metadata allows one-time checkpoint restore/release.
   logic branch_valid_q[0:SEQ_SPACE-1],branch_resolved_q[0:SEQ_SPACE-1];
   logic [CP_WIDTH-1:0] branch_cp_q[0:SEQ_SPACE-1];
+  logic [XLEN-1:0] branch_pc_q[0:SEQ_SPACE-1];
+  logic [31:0] branch_instruction_q[0:SEQ_SPACE-1];
+  inst_len_e branch_inst_len_q[0:SEQ_SPACE-1];
+  prediction_meta_t branch_prediction_q[0:SEQ_SPACE-1];
+  logic branch_actual_taken_q[0:SEQ_SPACE-1];
+  logic [XLEN-1:0] branch_actual_target_q[0:SEQ_SPACE-1];
   logic branch_resolve_valid,branch_resolve_live,branch_resolve_drop;
   assign branch_resolve_valid=fast_result_valid[0]&&
     branch_valid_q[fast_result_sequence[0]]&&!branch_resolved_q[fast_result_sequence[0]];
   assign branch_resolve_live=source_live[0];
+  always_comb begin
+    bp_resolve_valid_o = branch_resolve_valid && branch_resolve_live;
+    bp_resolve_pc_o = branch_pc_q[fast_result_sequence[0]];
+    bp_resolve_instruction_o = branch_instruction_q[fast_result_sequence[0]];
+    bp_resolve_inst_len_o = branch_inst_len_q[fast_result_sequence[0]];
+    bp_resolve_taken_o = branch_actual_taken_q[fast_result_sequence[0]];
+    bp_resolve_target_o = branch_actual_target_q[fast_result_sequence[0]];
+    bp_resolve_mispredict_o = fast_result_mispredict[0];
+    bp_resolve_prediction_o = branch_prediction_q[fast_result_sequence[0]];
+    bp_commit_valid_o = '0;
+    bp_commit_pc_o = retire_pc;
+    bp_commit_instruction_o = retire_instruction;
+    bp_commit_inst_len_o = retire_instruction_length;
+    bp_commit_taken_o = '0;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      bp_commit_valid_o[lane] = retire_fire[lane] &&
+        branch_valid_q[retire_sequence[lane]];
+      bp_commit_taken_o[lane] =
+        branch_actual_taken_q[retire_sequence[lane]];
+    end
+  end
   rv_branch_recovery #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
     .CHECKPOINT_ID_WIDTH(CP_WIDTH)) u_recovery(
     .trap_redirect_valid_i(architectural_redirect_valid),
@@ -1269,6 +1381,12 @@ module rv_backend #(
       for(int unsigned seq_index=0;seq_index<SEQ_SPACE;seq_index++) begin
         branch_valid_q[seq_index]<=1'b0;branch_resolved_q[seq_index]<=1'b0;
         branch_cp_q[seq_index]<='0;
+        branch_pc_q[seq_index]<='0;
+        branch_instruction_q[seq_index]<='0;
+        branch_inst_len_q[seq_index]<=INST_LEN_NONE;
+        branch_prediction_q[seq_index]<='0;
+        branch_actual_taken_q[seq_index]<=1'b0;
+        branch_actual_target_q[seq_index]<='0;
       end
       for(int unsigned checkpoint=0;checkpoint<BR_CHECKPOINTS;checkpoint++)
         cp_sequence_q[checkpoint]<='0;
@@ -1277,10 +1395,18 @@ module rv_backend #(
         branch_valid_q[rob_alloc_sequence[lane]]<=cp_save[lane];
         branch_resolved_q[rob_alloc_sequence[lane]]<=1'b0;
         branch_cp_q[rob_alloc_sequence[lane]]<=cp_save_id[lane];
+        branch_pc_q[rob_alloc_sequence[lane]]<=dec_pc[lane];
+        branch_instruction_q[rob_alloc_sequence[lane]]<=dec_instruction[lane];
+        branch_inst_len_q[rob_alloc_sequence[lane]]<=dec_len[lane];
+        branch_prediction_q[rob_alloc_sequence[lane]]<=dec_prediction[lane];
         if(cp_save[lane])cp_sequence_q[cp_save_id[lane]]<=rob_alloc_sequence[lane];
       end
       if(branch_resolve_valid&&branch_resolve_live)
         branch_resolved_q[fast_result_sequence[0]]<=1'b1;
+      if (port_valid[0] && (port_fu[0] == FU_BRANCH) && fast_req_ready[0]) begin
+        branch_actual_taken_q[port_sequence[0]] <= branch_taken;
+        branch_actual_target_q[port_sequence[0]] <= branch_target;
+      end
     end
   end
 
@@ -1347,8 +1473,8 @@ module rv_backend #(
     trace_rd_o=retire_dst_arch;trace_rd_write_o=retire_fire&retire_writes_dst;
     trace_rd_wdata_o='0;trace_trap_o='0;
     for(int unsigned lane=0;lane<2;lane++) case(retire_dst_class[lane])
-      REG_INT:trace_rd_wdata_o[lane]=int_read_data[4+lane];
-      REG_FP:trace_rd_wdata_o[lane]={{(XLEN-32){1'b0}},fp_read_data[4+lane]};
+      REG_INT:trace_rd_wdata_o[lane]=int_read_data[6+lane];
+      REG_FP:trace_rd_wdata_o[lane]={{(XLEN-32){1'b0}},fp_read_data[6+lane]};
       default:trace_rd_wdata_o[lane]='0;
     endcase
     if(rob_trap_valid) begin
