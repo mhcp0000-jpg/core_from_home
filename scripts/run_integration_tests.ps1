@@ -41,6 +41,7 @@ $sources = @(
   "rtl/backend/rv_branch_unit.sv",
   "rtl/backend/rv_multiplier.sv",
   "rtl/backend/rv_divider.sv",
+  "rtl/backend/rv_fpu.sv",
   "rtl/backend/rv_lsu_pipe.sv",
   "rtl/backend/rv_lsq.sv",
   "rtl/backend/rv_store_buffer.sv",
