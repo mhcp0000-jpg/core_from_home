@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Implementation baseline v1.5.0 (RTL structure complete, verification deferred) |
+| 상태 | Verification baseline v1.6.0 (directed ELF PASS, ISA differential pending) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-08-31)는 **RV32IMFC 1차 RTL 구조 구현 완료, 일괄 검증 전**이다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. trap/interrupt/WFI/post-commit redirect와 FENCE/FENCE.I drain은 각각 독립 controller로 분리했다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. v1.3.8까지의 integer/LSU/CSR/trap/PMP/directed boot 회귀는 통과했지만, v1.4.0 이후 신규 FPU·predictor·DPI 및 v1.5.0 controller 분리는 사용자 요청에 따라 아직 실행 검증하지 않았다. 따라서 구현 완료는 RTL 구조 경계를 뜻하며 sign-off가 아니다. 다음 단계에서 compile/elaboration, unit, core integration, SoC ELF boot, ISA 및 differential 검증을 일괄 수행하고 발견 결함을 보완한다.
+현재 구현 상태(2026-08-31)는 **RV32IMFC 1차 RTL 통합 후 directed verification 진행 중**이다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. 현재 parser/elaboration, 단위 12종, backend OoO 통합, directed SoC boot, DPI ELF end-to-end와 24-instruction RV32IMF architectural commit 비교가 통과했다. 검증 중 발견한 FPU issue 차단 잔존 코드, Host AXI 32-bit narrow register write, Windows DPI source path 및 frontend/FPU 조합 ready-loop를 수정했다. 단, C 전 범위, 모든 CSR/FENCE/privilege 조합, random long-run 및 Spike/Sail differential과 riscv-arch-test는 아직 남아 있으므로 ISA sign-off 상태는 아니다.
 
 ## 1. 목적과 성능 포지션
 
@@ -1199,6 +1199,8 @@ CLINT는 response backpressure를 내부 한 entry로 유지한다. `msip` reset
 | `host_event_kind_o`, `host_event_data_o` | output | tohost/exit/console event |
 | `trace_valid_o[1:0]` | output | dual commit trace valid |
 | `trace_pc_o`, `trace_instr_o` | output | retire PC/instruction |
+| `trace_rd_write_o`, `trace_rd_fp_o`, `trace_rd_o`, `trace_rd_wdata_o` | output | architectural INT/FP destination write record |
+| `trace_trap_o`, `trace_cause_o`, `trace_tval_o` | output | precise trap marker, cause, trap value |
 
 top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral instance까지 전달한다. package default를 하위 module에서 다시 참조해 top override를 잃는 연결은 금지한다.
 
@@ -1330,10 +1332,12 @@ baseline Xbar는 다음 규칙을 지킨다.
 | `host_event_kind_o`, `host_event_data_o` | output | tohost/exit/console event payload |
 | `trace_valid_o[1:0]` | output | dual in-order retire valid |
 | `trace_pc_o`, `trace_instr_o` | output | retire PC/instruction |
+| `trace_rd_write_o`, `trace_rd_fp_o`, `trace_rd_o`, `trace_rd_wdata_o` | output | committed register write; `rd_fp=1`이면 FP namespace |
+| `trace_trap_o`, `trace_cause_o[1:0][5:0]`, `trace_tval_o` | output | synchronous/interrupt trap record |
 
 주소/크기, AXI ID 폭, `CLOCK_HZ/TIMEBASE_HZ`, `HAS_SMODE`, `BOOTROM_INIT_FILE`은 top parameter로 노출된다. 모든 region override는 map check, Xbar, inbound bridge, Fabric 및 peripheral까지 동일하게 전달해야 한다. D inbound bridge는 DTIM을 normal memory, CLINT를 device로 구분한다. PLIC의 `seip_o`는 `HAS_SMODE=1`에서 생성되지만 초기 M/U core에는 아직 연결하지 않고 향후 S-mode interrupt input hook으로 남긴다.
 
-현재 통합 top은 predictor 기반 frontend, RV32IMFC backend, dual D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, recovery redirect와 retire trace를 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 실행 가능한 Boot ROM과 directed BFM 경로에 더해 별도 `rv_soc_dpi_tb`가 `rv_host_dpi`를 Host AXI slave ingress에 연결한다. 이 문장의 “연결”은 v1.4.0 구조 상태를 뜻하며, 신규 FPU/predictor/DPI 동작의 sign-off는 Section 18 일괄 검증 뒤에만 선언한다.
+현재 통합 top은 predictor 기반 frontend, RV32IMFC backend, dual D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, recovery redirect와 retire trace를 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 실행 가능한 Boot ROM과 directed BFM 경로에 더해 별도 `rv_soc_dpi_tb`가 `rv_host_dpi`를 Host AXI slave ingress에 연결한다. FPU/DPI 동작은 directed ELF로 확인했지만 predictor random stress와 전체 ISA differential sign-off는 Section 18의 후속 검증 항목이다.
 
 ### 15.23 `rv_rename2` exact interface와 상태 전이
 
@@ -1748,7 +1752,20 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 - PLIC priority/enable/threshold/claim/complete와 source0=0 검증
 - `rv_soc_top_tb`: Host AXI→BootROM/ITIM/DTIM/CLINT/HostIF 왕복과 unmapped DECERR 검증
 
-현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재와 실제 U-mode ELF 부트 시나리오는 아직 미완료다.
+현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재는 M-mode RV32IMF self-check ELF에서 exit(0)까지 통과했으며, U-mode ELF와 full C/CSR/FENCE test image는 후속 범위다.
+
+### 18.5 v1.6.0 실행 결과와 commit 비교 계약
+
+| Gate | 실행 산출물 | 2026-08-31 결과 |
+|---|---|---|
+| parse/elaboration | `python scripts/check_rtl.py` | RV32/RV64/PADDR34/relocated SoC 및 TB elaboration PASS |
+| unit | `scripts/run_unit_tests.ps1` | decoder, divider, FPU, fetch queue, LSU, SB, LSQ, WB, recovery, result buffer, CSR, PMP 12종 PASS |
+| backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, LSU/CSR/PMP directed PASS |
+| SoC directed boot | `scripts/run_soc_boot_test.ps1` | Boot ROM/Host AXI/ITIM/DTIM/HostIF/CLINT MSIP PASS |
+| DPI ELF | `scripts/run_soc_elf_test.ps1` | PT_LOAD→mailbox→MSIP→ITIM→HostIF exit(0) PASS |
+| architectural trace | `scripts/verify_rv32_smoke_trace.ps1` | payload 24 instructions, INT writes 16, FP writes 3, dual-commit cycles 8 exact-match PASS |
+
+`rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. CSV 한 행은 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval`을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. smoke verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction 및 INT/FP write 값을 exact-match한다.
 
 ## 19. Clock/reset/DFT 원칙
 
@@ -1863,3 +1880,4 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | v1.4.0 | unified RV32F bit-level executor와 3-source PRF/FP writeback/ROB precise-fflags commit 경로, 2-wide BTB·gshare·RAS predictor와 resolve/commit recovery 경로, ELF32/64 RISC-V DPI parser와 16-beat Host AXI loader/HostIF/MSIP/test top을 통합. 사용자 요청에 따라 신규 구조 전체는 아직 미검증이며 다음 revision에서 일괄 검증·보완 |
 | v1.4.1 | `HAS_C/HAS_F/HAS_SMODE`를 SoC→core→backend→decoder/CSR까지 parameter 전달하고, dual-issue 실제 8R PRF 포트 상수를 정렬. 구현 우선 정책에 따라 검증은 전체 구조 완료 후 일괄 수행 |
 | v1.5.0 | trap/interrupt/WFI/post-commit redirect와 FENCE/FENCE.I drain 조건을 각각 `rv_trap_controller`, `rv_fence_controller`로 분리하고 backend에 통합. 1차 RTL 구조를 완료 상태로 동결하되 사용자 요청에 따라 compile/simulation sign-off는 후속 단계로 연기 |
+| v1.6.0 | 일괄 검증 착수. FPU/branch-predictor 조합 ready-loop, backend의 잔존 FP issue 차단, DPI Host AXI narrow-write와 Windows make 경로를 수정. ROB retire CSV에 INT/FP destination 및 trap cause/tval을 추가하고, self-contained RV32IMF ELF/exit-code 검사/24-instruction architectural trace exact-match를 구축. parse/elaboration, unit 12종, backend, directed boot, DPI ELF가 통과했으나 full ISA differential은 계속 진행 |

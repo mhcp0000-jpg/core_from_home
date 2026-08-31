@@ -3,7 +3,12 @@ param(
   [string]$ElfPath,
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
-  [string]$BuildRoot = "C:\rv_build\soc_elf"
+  [string]$BuildRoot = "C:\rv_build\soc_elf",
+  [string]$TracePath = "",
+  [ValidateRange(1, 32)]
+  [int]$BuildJobs = 4,
+  [ValidateRange(1, 1000000000)]
+  [int]$TimeoutCycles = 2000000
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +37,7 @@ if (!$drive) { throw "No unused drive letter is available." }
 $sources = Get-Content -LiteralPath (Join-Path $repoRoot "rtl\filelist.f") |
   Where-Object { $_.Trim() -and !$_.Trim().StartsWith("#") }
 $sources += "tb/dpi/rv_host_dpi.sv"
+$sources += "tb/dpi/rv_commit_trace_logger.sv"
 $sources += "tb/dpi/rv_soc_dpi_tb.sv"
 $sources += "tb/dpi/elf_loader.cpp"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
@@ -41,12 +47,16 @@ Copy-Item -LiteralPath $resolvedElf -Destination $stagedElf -Force
 try {
   & subst $drive $repoRoot
   if ($LASTEXITCODE -ne 0) { throw "Failed to map $repoRoot to $drive." }
-  $mappedRoot = "$drive\"
-  $mappedSources = $sources | ForEach-Object { Join-Path $mappedRoot $_ }
+  # Verilator records C++ source paths verbatim in the generated GNU makefile.
+  # Forward slashes are required because make treats Windows backslashes as escapes.
+  $mappedSources = $sources | ForEach-Object {
+    "$drive/" + ($_ -replace '\\', '/')
+  }
   $oldVerilatorRoot = $env:VERILATOR_ROOT
   try {
     $env:VERILATOR_ROOT = $VerilatorRoot
     & $verilator --cc --exe --timing --main -DSYNTHESIS -Wno-fatal `
+      -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC `
       --top-module rv_soc_dpi_tb --Mdir $BuildRoot @mappedSources
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }
   } finally {
@@ -56,14 +66,24 @@ try {
   $oldPath = $env:PATH
   try {
     $env:PATH = (Join-Path $W64DevkitRoot "bin") + ";" + $oldPath
-    & $make -C $BuildRoot -f Vrv_soc_dpi_tb.mk CXX=g++ CC=gcc LINK=g++
+    & $make -j $BuildJobs -C $BuildRoot -f Vrv_soc_dpi_tb.mk `
+      CXX=g++ CC=gcc LINK=g++
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC C++ build failed." }
   } finally {
     $env:PATH = $oldPath
   }
 
   $simulation = Join-Path $BuildRoot "Vrv_soc_dpi_tb.exe"
-  & $simulation "+elf=$stagedElf"
+  $simulationArgs = @("+elf=$stagedElf", "+timeout_cycles=$TimeoutCycles")
+  if ($TracePath) {
+    $resolvedTrace = [System.IO.Path]::GetFullPath($TracePath)
+    $traceDirectory = Split-Path -Parent $resolvedTrace
+    if ($traceDirectory) {
+      New-Item -ItemType Directory -Force -Path $traceDirectory | Out-Null
+    }
+    $simulationArgs += "+trace_file=$resolvedTrace"
+  }
+  & $simulation @simulationArgs
   if ($LASTEXITCODE -ne 0) { throw "DPI ELF SoC simulation failed." }
 } finally {
   if ($drive) { & subst $drive /d | Out-Null }

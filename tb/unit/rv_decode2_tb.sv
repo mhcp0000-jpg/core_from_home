@@ -138,6 +138,19 @@ module rv_decode2_tb;
     if ((uop_fu[0] != FU_MUL) || (uop_port_mask[0] != 5'b00010))
       $fatal(1, "MUL decode failed");
 
+    drive32(32'hf006_00d3); // FMV.W.X f1,x12
+    if ((uop_fu[0] != FU_FP) || (uop_src_class[0][0] != REG_INT) ||
+        (uop_src_arch[0][0] != 12) || (uop_dst_class[0] != REG_FP) ||
+        (uop_dst_arch[0] != 1) || !uop_writes_dst[0] ||
+        uop_exception_valid[0])
+      $fatal(1, "FMV.W.X decode failed");
+
+    drive32(32'h0020_8153); // FADD.S f2,f1,f2,rne
+    if ((uop_fu[0] != FU_FP) || (uop_src_class[0][0] != REG_FP) ||
+        (uop_src_class[0][1] != REG_FP) || (uop_dst_class[0] != REG_FP) ||
+        uop_exception_valid[0])
+      $fatal(1, "FADD.S decode failed");
+
     drive32(32'h0000_100f); // FENCE.I
     if (!uop_is_fence_i[0] || uop_exception_valid[0])
       $fatal(1, "FENCE.I decode failed");

@@ -279,7 +279,12 @@ module rv_branch_predictor #(
       prediction_meta_o[lane].taken = prediction_taken_o[lane];
       prediction_meta_o[lane].target = 64'(prediction_target_o[lane]);
 
-      if (prediction_fire_i[lane]) begin
+      // Build the second lane's prediction from the first lane's predicted
+      // path, independent of downstream ready. Architectural speculative
+      // state is still updated only by prediction_fire_i in always_ff below.
+      // Keeping the query cone ready-independent avoids a frontend
+      // valid->ready->prediction combinational loop.
+      if (query_valid_i[lane]) begin
         if (query_conditional[lane])
           history_work = history_shift(history_work, prediction_taken_o[lane]);
         if (query_call[lane]) begin

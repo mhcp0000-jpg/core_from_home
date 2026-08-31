@@ -69,8 +69,11 @@ module rv_ooo_core #(
   output logic [1:0][31:0]             trace_instr_o,
   output logic [1:0][4:0]              trace_rd_o,
   output logic [1:0]                   trace_rd_write_o,
+  output logic [1:0]                   trace_rd_fp_o,
   output logic [1:0][XLEN-1:0]         trace_rd_wdata_o,
-  output logic [1:0]                   trace_trap_o
+  output logic [1:0]                   trace_trap_o,
+  output logic [1:0][5:0]              trace_cause_o,
+  output logic [1:0][XLEN-1:0]         trace_tval_o
 );
 
   import rv_ooo_pkg::*;
@@ -288,8 +291,11 @@ module rv_ooo_core #(
     .trace_instr_o,
     .trace_rd_o,
     .trace_rd_write_o,
+    .trace_rd_fp_o,
     .trace_rd_wdata_o,
     .trace_trap_o,
+    .trace_cause_o,
+    .trace_tval_o,
     .current_privilege_o (current_privilege),
     .pmpcfg_o            (pmpcfg),
     .pmpaddr_o           (pmpaddr),

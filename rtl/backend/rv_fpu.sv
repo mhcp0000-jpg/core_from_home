@@ -64,7 +64,8 @@ module rv_fpu #(
   } pipe_payload_t;
 
   logic [PIPE_STAGES-1:0] valid_q;
-  pipe_payload_t payload_q [0:PIPE_STAGES-1];
+  pipe_payload_t [PIPE_STAGES-1:0] payload_q;
+  pipe_payload_t result_payload;
   logic [PIPE_STAGES-1:0] stage_ready;
   fp_calc_t request_calc;
   logic [2:0] effective_rm;
@@ -765,25 +766,29 @@ module rv_fpu #(
     request_illegal_rm = effective_rm > 3'b100;
     request_calc = execute_fp(instruction_i, operand_a_i, operand_b_i,
                               operand_c_i, effective_rm);
+  end
 
+  // Keep the elastic-ready cone independent from the request arithmetic.
+  // This prevents a false issue->request-data->ready combinational loop when
+  // the FPU is connected to the global issue and writeback arbiters.
+  always_comb begin
     stage_ready[PIPE_STAGES-1] = !valid_q[PIPE_STAGES-1] || result_ready_i;
     for (integer stage = PIPE_STAGES-2; stage >= 0; stage--)
       stage_ready[stage] = !valid_q[stage] || stage_ready[stage+1];
     request_ready_o = stage_ready[0];
-
-    result_valid_o = valid_q[PIPE_STAGES-1];
-    result_sequence_o = payload_q[PIPE_STAGES-1].sequence_id;
-    result_destination_valid_o =
-      payload_q[PIPE_STAGES-1].destination_valid;
-    result_destination_class_o =
-      payload_q[PIPE_STAGES-1].destination_class;
-    result_destination_phys_o = payload_q[PIPE_STAGES-1].destination_phys;
-    result_data_o = payload_q[PIPE_STAGES-1].data;
-    result_fflags_o = payload_q[PIPE_STAGES-1].flags;
-    result_exception_valid_o = payload_q[PIPE_STAGES-1].exception_valid;
-    result_exception_cause_o = payload_q[PIPE_STAGES-1].exception_cause;
-    result_exception_tval_o = payload_q[PIPE_STAGES-1].exception_tval;
   end
+
+  assign result_payload = payload_q[PIPE_STAGES-1];
+  assign result_valid_o = valid_q[PIPE_STAGES-1];
+  assign result_sequence_o = result_payload.sequence_id;
+  assign result_destination_valid_o = result_payload.destination_valid;
+  assign result_destination_class_o = result_payload.destination_class;
+  assign result_destination_phys_o = result_payload.destination_phys;
+  assign result_data_o = result_payload.data;
+  assign result_fflags_o = result_payload.flags;
+  assign result_exception_valid_o = result_payload.exception_valid;
+  assign result_exception_cause_o = result_payload.exception_cause;
+  assign result_exception_tval_o = result_payload.exception_tval;
 
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin

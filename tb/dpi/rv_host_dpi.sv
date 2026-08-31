@@ -69,13 +69,14 @@ module rv_host_dpi #(
 
   task automatic axi_write_burst(
     input logic [ADDR_WIDTH-1:0] address,
-    input int unsigned beat_count
+    input int unsigned beat_count,
+    input logic [2:0] transfer_size
   );
     logic address_done;
     host_axi_m.aw_id = next_id_q;
     host_axi_m.aw_addr = address;
     host_axi_m.aw_len = beat_count-1;
-    host_axi_m.aw_size = AXI_SIZE;
+    host_axi_m.aw_size = transfer_size;
     host_axi_m.aw_burst = 2'b01;
     host_axi_m.aw_prot = 3'b001;
     host_axi_m.aw_cache = 4'b0011;
@@ -112,15 +113,15 @@ module rv_host_dpi #(
     input logic [ADDR_WIDTH-1:0] address,
     input logic [31:0] value
   );
-    logic [ADDR_WIDTH-1:0] aligned_address;
     int unsigned lane_offset;
-    aligned_address = address & ~(ADDR_WIDTH'(DATA_BYTES-1));
     lane_offset = address[$clog2(DATA_BYTES)-1:0];
     burst_data[0] = '0;
     burst_strobe[0] = '0;
     burst_data[0][lane_offset*8 +: 32] = value;
     burst_strobe[0][lane_offset +: 4] = 4'hf;
-    axi_write_burst(aligned_address, 1);
+    // AXI narrow transfers retain the addressed byte offset while WSTRB
+    // identifies the active lanes of the 64-bit data bus.
+    axi_write_burst(address, 1, 3'd2);
   endtask
 
   task automatic load_segment(input int segment_index);
@@ -163,7 +164,7 @@ module rv_host_dpi #(
         end
         beat_count++;
       end
-      axi_write_burst(ADDR_WIDTH'(current_beat), beat_count);
+      axi_write_burst(ADDR_WIDTH'(current_beat), beat_count, AXI_SIZE[2:0]);
       if (load_failed_o) return;
       current_beat += beat_count*DATA_BYTES;
     end

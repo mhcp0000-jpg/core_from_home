@@ -36,7 +36,14 @@ module rv_soc_top #(
   output logic [31:0]                   host_event_data_o,
   output logic [1:0]                    trace_valid_o,
   output logic [1:0][XLEN-1:0]          trace_pc_o,
-  output logic [1:0][31:0]              trace_instr_o
+  output logic [1:0][31:0]              trace_instr_o,
+  output logic [1:0][4:0]               trace_rd_o,
+  output logic [1:0]                    trace_rd_write_o,
+  output logic [1:0]                    trace_rd_fp_o,
+  output logic [1:0][XLEN-1:0]          trace_rd_wdata_o,
+  output logic [1:0]                    trace_trap_o,
+  output logic [1:0][5:0]               trace_cause_o,
+  output logic [1:0][XLEN-1:0]          trace_tval_o
 );
 
   localparam int unsigned LOCAL_MEM_ID_WIDTH = 6;
@@ -79,10 +86,6 @@ module rv_soc_top #(
   logic                       meip;
   logic                       seip;
   logic [63:0]                mtime;
-  logic [1:0][4:0]            trace_rd;
-  logic [1:0]                 trace_rd_write;
-  logic [1:0][XLEN-1:0]       trace_rd_wdata;
-  logic [1:0]                 trace_trap;
 
   rv_local_mem_if #(
     .ID_WIDTH      (LOCAL_MEM_ID_WIDTH),
@@ -196,10 +199,13 @@ module rv_soc_top #(
     .trace_valid_o,
     .trace_pc_o,
     .trace_instr_o,
-    .trace_rd_o       (trace_rd),
-    .trace_rd_write_o (trace_rd_write),
-    .trace_rd_wdata_o (trace_rd_wdata),
-    .trace_trap_o     (trace_trap)
+    .trace_rd_o,
+    .trace_rd_write_o,
+    .trace_rd_fp_o,
+    .trace_rd_wdata_o,
+    .trace_trap_o,
+    .trace_cause_o,
+    .trace_tval_o
   );
 
   assign lsu0_bus.req_valid     = dmem_req_valid[0];

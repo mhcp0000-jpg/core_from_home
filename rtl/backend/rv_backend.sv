@@ -55,8 +55,11 @@ module rv_backend #(
   output logic [1:0][31:0] trace_instr_o,
   output logic [1:0][4:0] trace_rd_o,
   output logic [1:0] trace_rd_write_o,
+  output logic [1:0] trace_rd_fp_o,
   output logic [1:0][XLEN-1:0] trace_rd_wdata_o,
   output logic [1:0] trace_trap_o,
+  output logic [1:0][5:0] trace_cause_o,
+  output logic [1:0][XLEN-1:0] trace_tval_o,
   output rv_ooo_pkg::privilege_e current_privilege_o,
   output logic [7:0][7:0] pmpcfg_o,
   output logic [7:0][PADDR_WIDTH-3:0] pmpaddr_o,
@@ -170,9 +173,10 @@ module rv_backend #(
       executable[lane] = dec_valid[lane] &&
         ((dec_fu[lane] == FU_INT) || (dec_fu[lane] == FU_BRANCH) ||
          (dec_fu[lane] == FU_MUL) || (dec_fu[lane] == FU_DIV) ||
-         (dec_fu[lane] == FU_LOAD) || (dec_fu[lane] == FU_STORE));
+         (dec_fu[lane] == FU_LOAD) || (dec_fu[lane] == FU_STORE) ||
+         (dec_fu[lane] == FU_FP));
       // CSR/system/fence operations execute only when they reach the ROB
-      // head. FP remains illegal until the FP cluster is attached.
+      // head. All ordinary execution classes, including FP, enter the IQ.
       if (dec_valid[lane] && !dec_exception_valid[lane] &&
           !executable[lane] && (dec_fu[lane] != FU_CSR) &&
           (dec_fu[lane] != FU_FENCE)) begin
@@ -1469,20 +1473,30 @@ module rv_backend #(
       flush_valid&&flush_all;
     trace_valid_o=retire_fire;trace_pc_o=retire_pc;trace_instr_o=retire_instruction;
     trace_rd_o=retire_dst_arch;trace_rd_write_o=retire_fire&retire_writes_dst;
-    trace_rd_wdata_o='0;trace_trap_o='0;
-    for(int unsigned lane=0;lane<2;lane++) case(retire_dst_class[lane])
-      REG_INT:trace_rd_wdata_o[lane]=int_read_data[6+lane];
-      REG_FP:trace_rd_wdata_o[lane]={{(XLEN-32){1'b0}},fp_read_data[6+lane]};
-      default:trace_rd_wdata_o[lane]='0;
-    endcase
+    trace_rd_wdata_o='0;trace_rd_fp_o='0;trace_trap_o='0;
+    trace_cause_o='0;trace_tval_o='0;
+    for(int unsigned lane=0;lane<2;lane++) begin
+      case(retire_dst_class[lane])
+        REG_INT:trace_rd_wdata_o[lane]=int_read_data[6+lane];
+        REG_FP:begin
+          trace_rd_wdata_o[lane]={{(XLEN-32){1'b0}},fp_read_data[6+lane]};
+          trace_rd_fp_o[lane]=trace_rd_write_o[lane];
+        end
+        default:trace_rd_wdata_o[lane]='0;
+      endcase
+    end
     if(rob_trap_valid) begin
       trace_valid_o=2'b01;trace_pc_o[0]=rob_trap_pc;
       trace_instr_o[0]=retire_instruction[0];trace_rd_o[0]='0;
-      trace_rd_write_o[0]=1'b0;trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
+      trace_rd_write_o[0]=1'b0;trace_rd_fp_o[0]=1'b0;
+      trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
+      trace_cause_o[0]=csr_trap_cause;trace_tval_o[0]=rob_trap_tval;
     end else if(csr_trap_valid && csr_trap_is_interrupt) begin
       trace_valid_o=2'b01;trace_pc_o[0]=architectural_next_pc_q;
       trace_instr_o[0]='0;trace_rd_o[0]='0;
-      trace_rd_write_o[0]=1'b0;trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
+      trace_rd_write_o[0]=1'b0;trace_rd_fp_o[0]=1'b0;
+      trace_rd_wdata_o[0]='0;trace_trap_o[0]=1'b1;
+      trace_cause_o[0]=csr_trap_cause;trace_tval_o[0]='0;
     end
   end
 

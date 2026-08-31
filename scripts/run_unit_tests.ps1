@@ -48,6 +48,14 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_fpu_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_fpu.sv",
+      "tb/unit/rv_fpu_tb.sv"
+    )
+  },
+  @{
     Top = "rv_fetch_queue_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",

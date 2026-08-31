@@ -13,6 +13,13 @@ module rv_soc_top_tb;
   logic [1:0] trace_valid;
   logic [1:0][31:0] trace_pc;
   logic [1:0][31:0] trace_instr;
+  logic [1:0][4:0] trace_rd;
+  logic [1:0] trace_rd_write;
+  logic [1:0] trace_rd_fp;
+  logic [1:0][31:0] trace_rd_wdata;
+  logic [1:0] trace_trap;
+  logic [1:0][5:0] trace_cause;
+  logic [1:0][31:0] trace_tval;
   logic saw_boot_wfi;
   logic saw_itim_vector;
 
@@ -80,7 +87,14 @@ module rv_soc_top_tb;
     .host_event_data_o  (host_event_data),
     .trace_valid_o      (trace_valid),
     .trace_pc_o         (trace_pc),
-    .trace_instr_o      (trace_instr)
+    .trace_instr_o      (trace_instr),
+    .trace_rd_o         (trace_rd),
+    .trace_rd_write_o   (trace_rd_write),
+    .trace_rd_fp_o      (trace_rd_fp),
+    .trace_rd_wdata_o   (trace_rd_wdata),
+    .trace_trap_o       (trace_trap),
+    .trace_cause_o      (trace_cause),
+    .trace_tval_o       (trace_tval)
   );
 
   always_ff @(posedge clk) begin
