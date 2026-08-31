@@ -24,9 +24,11 @@ package rv_ooo_pkg;
   localparam int unsigned FPU_CLUSTER_COUNT   = 1;
   localparam int unsigned FP_FMA_PIPE_COUNT   = 1;
   localparam int unsigned FP_DIVSQRT_COUNT    = 1;
-  localparam int unsigned INT_PRF_READ_PORTS  = 4;
+  // Three source operands per two issue candidates plus two retire probes.
+  localparam int unsigned INT_PRF_READ_PORTS  = 8;
   localparam int unsigned INT_PRF_WRITE_PORTS = 2;
-  localparam int unsigned FP_PRF_READ_PORTS   = 4;
+  // Three FP source operands per two issue candidates plus two retire probes.
+  localparam int unsigned FP_PRF_READ_PORTS   = 8;
   localparam int unsigned FP_PRF_WRITE_PORTS  = 2;
 
   typedef enum logic [2:0] {
