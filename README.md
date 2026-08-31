@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer와 D-memory response도 통합되어 conservative memory ordering, store-to-load forwarding, commit 이후 store visibility, branch recovery를 실행 시뮬레이션으로 검증합니다. commit-time CSR, M/U privilege state, precise exception/interrupt, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry OFF/TOR/NA4/NAPOT PMP R/W/X checker도 IFU/dual-LSU에 통합됐습니다. FPU datapath, predictor, Boot ROM 실행 image와 DPI ELF loader/BFM은 아직 남아 있으므로 전체 RV32IMFC software를 부팅하는 완료 단계는 아닙니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader 경계를 포함합니다. 현재 단계는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer와 D-memory response도 통합되어 conservative memory ordering, store-to-load forwarding, commit 이후 store visibility, branch recovery를 실행 시뮬레이션으로 검증합니다. commit-time CSR, M/U privilege state, precise exception/interrupt, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry OFF/TOR/NA4/NAPOT PMP R/W/X checker도 IFU/dual-LSU에 통합됐습니다. 실행 가능한 Boot ROM은 `mtvec=ITIM_BASE`, MSIE/MIE 설정 뒤 WFI에 진입하며, SystemVerilog Host AXI BFM으로 ITIM/DTIM을 적재하고 CLINT MSIP를 발생시켜 ITIM 벡터 명령 retire까지 확인했습니다. FPU datapath, branch predictor와 DPI-C ELF parser/자동 loader는 아직 남아 있으므로 전체 RV32IMFC software를 부팅하는 완료 단계는 아닙니다.
 
 ## 문서
 
@@ -59,6 +59,14 @@ powershell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1
 ```
 
 Icarus 회귀는 decoder/C expander, divider, fetch queue, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer, CSR/privilege/trap 상태 전이와 PMP mode/priority/permission을 검증합니다.
+
+Boot ROM→WFI→Host AXI ITIM/DTIM 적재→CLINT MSIP→ITIM vector 실행 흐름은 다음으로 확인할 수 있습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_soc_boot_test.ps1
+```
+
+현재 구현 단계에서는 남은 코어 구조를 먼저 완성하고, 이후 단위·통합·ISA 회귀를 한 번에 수행해 부족한 부분을 보완합니다. 따라서 각 신규 모듈 커밋은 통합 검증 전까지 구조 구현 체크포인트로 취급합니다.
 `-DSYNTHESIS`는 Icarus가 지원하지 않는 SVA 구문만 제외하며 RTL 데이터 경로는
 동일하게 시뮬레이션합니다.
 

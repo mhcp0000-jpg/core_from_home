@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Implementation baseline v1.3.7 (PMP enforcement checkpoint) |
+| 상태 | Implementation baseline v1.3.8 (executable SoC boot checkpoint) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -31,12 +31,12 @@
 | Initial memory | ITIM/DTIM 각 128 KiB, 2-bank × 64-bit, bank별 1R1W |
 | SoC fabric | D local fabric 3 initiators, I local fabric, AXI4 main crossbar |
 | Interrupt | CLINT-compatible MSIP/MTIMER, PLIC 32 sources/1 M context |
-| Boot/test | Boot ROM WFI → DPI ELF load → AXI CLINT MSIP write → ITIM vector |
+| Boot/test | Boot ROM WFI → Host AXI load → AXI CLINT MSIP write → ITIM vector; DPI ELF 자동화 예정 |
 | RV64 확장 | `XLEN`, W-op decode, 64-bit LSU/CSR, Sv39 hook 분리 |
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-08-31)는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**이다. address/package와 공용 interface, map/decode/static check, 1R1W SRAM, 2-bank TIM, CLINT, I/D-Fabric, local↔AXI bridge, Main AXI Xbar, PLIC, Boot ROM, HostIF 및 이들을 연결한 `rv_soc_top` RTL이 존재한다. frontend는 single-outstanding sequential block fetch, 64-byte queue, 16/32-bit dual align과 stale-epoch drop까지 기능 RTL이다. backend는 C expander/RV32·RV64 decoder, dual-lane RAT/RRAT/free list, ROB, unified IQ와 global 2-wide issue, INT/FP PRF, ALU 2개, branch, multiplier, iterative divider, writeback arbiter와 checkpoint branch recovery를 실제로 연결한다. dual LSU cluster도 AGU 2개, LQ/SQ, committed-store buffer와 두 D-memory port를 연결하여 unknown older-store/load stall, youngest full-cover store-to-load forwarding, partial/data-wait stall, killed-outstanding tombstone, normal-store commit 후 drain과 precise device-store response를 구현한다. `rv_csr_file`과 backend head controller는 CSR evaluation/commit 분리, M/U privilege state, machine CSR/counter/FCSR/PMP configuration storage, precise synchronous trap와 machine interrupt, direct/vectored mtvec, MRET, WFI, FENCE/FENCE.I serialization을 구현한다. 8-entry `rv_pmp`는 OFF/TOR/NA4/NAPOT, lower-index priority, full-access coverage, R/W/X와 lock/M-mode 규칙을 구현하고 IFU 1개 및 LSU AGU 2개 경로에 연결된다. MPRV/MPP는 LSU effective privilege에 반영되며 denied access는 외부 request 없이 precise access fault가 된다. 수락된 device store는 younger branch flush로 중복 발행되지 않는다. Verilator 통합 회귀는 integer/LSU/CSR/trap 항목에 더해 MPRV=U PMP-denied load/store의 외부 비가시성을 통과했다. 기본 RV32/PADDR34, 재배치 주소/RV64 top은 parse/elaboration을 통과한다. 단, predictor는 sequential stub이고 FPU datapath, Boot ROM 실행 image, DPI ELF loader/BFM은 아직 Contract/Partial 단계이므로 전체 RV32IMFC software를 부팅하는 단계는 아니다. HDD의 `Implemented/Partial/Contract` 표기를 확인하지 않고 계획된 기능을 완료 RTL로 간주하면 안 된다.
+현재 구현 상태(2026-08-31)는 **M0 완료, M1/M2/M3/M4 기능 통합 진행 중**이다. address/package와 공용 interface, map/decode/static check, 1R1W SRAM, 2-bank TIM, CLINT, I/D-Fabric, local↔AXI bridge, Main AXI Xbar, PLIC, Boot ROM, HostIF 및 이들을 연결한 `rv_soc_top` RTL이 존재한다. frontend는 single-outstanding sequential block fetch, 64-byte queue, 16/32-bit dual align과 stale-epoch drop까지 기능 RTL이다. backend는 C expander/RV32·RV64 decoder, dual-lane RAT/RRAT/free list, ROB, unified IQ와 global 2-wide issue, INT/FP PRF, ALU 2개, branch, multiplier, iterative divider, writeback arbiter와 checkpoint branch recovery를 실제로 연결한다. dual LSU cluster도 AGU 2개, LQ/SQ, committed-store buffer와 두 D-memory port를 연결하여 unknown older-store/load stall, youngest full-cover store-to-load forwarding, partial/data-wait stall, killed-outstanding tombstone, normal-store commit 후 drain과 precise device-store response를 구현한다. `rv_csr_file`과 backend head controller는 CSR evaluation/commit 분리, M/U privilege state, machine CSR/counter/FCSR/PMP configuration storage, precise synchronous trap와 machine interrupt, direct/vectored mtvec, MRET, WFI, FENCE/FENCE.I serialization을 구현한다. 8-entry `rv_pmp`는 OFF/TOR/NA4/NAPOT, lower-index priority, full-access coverage, R/W/X와 lock/M-mode 규칙을 구현하고 IFU 1개 및 LSU AGU 2개 경로에 연결된다. MPRV/MPP는 LSU effective privilege에 반영되며 denied access는 외부 request 없이 precise access fault가 된다. 실행 가능한 Boot ROM image와 SystemVerilog Host AXI BFM은 WFI 대기, ITIM/DTIM 적재, HostIF 접근, CLINT MSIP, ITIM vector retire까지 연결한다. 기존 Verilator 통합 회귀는 integer/LSU/CSR/trap/PMP와 이 directed SoC boot 흐름을 통과했다. 기본 RV32/PADDR34, 재배치 주소/RV64 top도 parse/elaboration을 통과했다. 단, predictor는 sequential stub이고 FPU datapath와 DPI-C ELF parser/자동 loader는 아직 Contract/Partial 단계이므로 임의 RV32IMFC ELF를 부팅하는 단계는 아니다. 이후 신규 구조는 먼저 연결을 완성한 뒤 통합 검증 단계에서 일괄 보완한다. HDD의 `Implemented/Partial/Contract` 표기를 확인하지 않고 계획된 기능을 완료 RTL로 간주하면 안 된다.
 
 ## 1. 목적과 성능 포지션
 
@@ -1043,7 +1043,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_axi_to_local_bridge` | Implemented | single clock, sync active-low reset | target window, device attribute, max burst |
 | `rv_axi_error_slave`, `rv_axi_xbar` | Implemented | single clock, sync active-low reset | local/Xbar ID width, 전 region map |
 | `rv_plic`, `rv_bootrom`, `rv_hostif` | Implemented | single clock, sync active-low reset | register map, AXI ID width, init image/event |
-| `rv_soc_top` | Partial: interconnect + privileged/PMP core path integrated, FPU/boot flow pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
+| `rv_soc_top` | Partial: interconnect + privileged/PMP core path + directed boot flow integrated; FPU/DPI ELF pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
 | `rv_rename2` | Implemented standalone | core clock/reset | INT/FP physical registers, tag width, branch checkpoints |
 | `rv_rob` | Implemented standalone | core clock/reset | XLEN, 48 entries, sequence width, allocate/complete/retire width |
 | `rv_phys_regfile` | Implemented standalone | core clock/reset | data/tag width, 4R2W, allocation ports, zero-tag option |
@@ -1332,7 +1332,7 @@ baseline Xbar는 다음 규칙을 지킨다.
 
 주소/크기, AXI ID 폭, `CLOCK_HZ/TIMEBASE_HZ`, `HAS_SMODE`, `BOOTROM_INIT_FILE`은 top parameter로 노출된다. 모든 region override는 map check, Xbar, inbound bridge, Fabric 및 peripheral까지 동일하게 전달해야 한다. D inbound bridge는 DTIM을 normal memory, CLINT를 device로 구분한다. PLIC의 `seip_o`는 `HAS_SMODE=1`에서 생성되지만 초기 M/U core에는 아직 연결하지 않고 향후 S-mode interrupt input hook으로 남긴다.
 
-현재 통합 top은 frontend의 sequential instruction fetch와 backend의 integer/branch/M/dual-LSU 실행, D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, redirect와 retire trace를 실제로 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 다만 Boot ROM 실행 image/DPI loader와 FPU가 없으므로 boot-flow 및 전체 RV32IMFC software 완료로 간주하지 않는다.
+현재 통합 top은 frontend의 sequential instruction fetch와 backend의 integer/branch/M/dual-LSU 실행, D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, redirect와 retire trace를 실제로 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 실행 가능한 Boot ROM과 directed SystemVerilog Host AXI BFM으로 WFI 대기, ITIM/DTIM 적재, HostIF 접근, CLINT MSIP, ITIM vector retire까지 연결되었다. 다만 DPI-C ELF parser/자동 loader와 FPU가 없으므로 임의 ELF 및 전체 RV32IMFC software 완료로 간주하지 않는다.
 
 ### 15.23 `rv_rename2` exact interface와 상태 전이
 
@@ -1685,6 +1685,10 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 
 ## 18. 검증 전략
 
+### 18.0 구현 단계와 검증 단계 분리
+
+현재 개발 방침은 **전체 코어 구조 완성 우선, 통합 검증 후 일괄 보완**이다. FPU, predictor, DPI ELF/Host 경계까지 기능 RTL을 연결하는 동안에는 매 모듈 추가마다 전체 회귀를 반복하지 않는다. 이 기간의 커밋은 interface·state ownership·데이터흐름을 고정하는 implementation checkpoint이며 sign-off를 의미하지 않는다. 구조 완성 선언 후 compile/elaboration, unit, core integration, SoC boot, ISA directed/random 및 reference-model differential 순서로 검증하고 발견된 결함을 HDD 상태표와 함께 갱신한다.
+
 ### 18.1 검증 레이어
 
 1. 단위: C expander, decoder, ALU/M/D/FPU, free list, ROB, age select, LSU forwarding
@@ -1745,7 +1749,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 - PLIC priority/enable/threshold/claim/complete와 source0=0 검증
 - `rv_soc_top_tb`: Host AXI→BootROM/ITIM/DTIM/CLINT/HostIF 왕복과 unmapped DECERR 검증
 
-현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. Boot ROM image/DPI와 실제 U-mode fetch 부트 시나리오는 아직 미완료다.
+현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재와 실제 U-mode ELF 부트 시나리오는 아직 미완료다.
 
 ## 19. Clock/reset/DFT 원칙
 
@@ -1856,3 +1860,4 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | v1.3.5 | decoder→rename/ROB/IQ/PRF→ALU/BRU/MUL/DIV→writeback/commit를 통합하고 checkpoint branch recovery를 연결. dual LSU cluster와 D-memory response를 backend에 연결해 SQ/SB youngest forwarding, commit-only store visibility, precise device store, dual independent load를 Verilator 통합 회귀로 검증. CSR/FPU/PMP/DPI는 후속 구현으로 명시 |
 | v1.3.6 | commit-time `rv_csr_file`, M/U privilege, machine CSR/counter/FCSR/PMP-config storage, precise exception/interrupt, direct/vectored mtvec, MRET/WFI/FENCE/FENCE.I와 `mtime`/interrupt 연결을 backend에 통합. 수락된 MMIO store의 younger-flush 생존 규칙을 수정하고 CSR/WFI/MSIP/MRET/ECALL 통합 회귀를 추가. PMP permission checker, FPU, Boot image/DPI는 후속 범위로 유지 |
 | v1.3.7 | `PADDR_WIDTH-2` PMP address storage, OFF/TOR/NA4/NAPOT lower-index checker, R/W/X/lock/M-mode 및 MPRV rules를 구현. IFU denied-fetch local fault adapter와 dual-AGU access-fault path를 연결하고 PMP-denied load/store의 precise trap 및 외부 request 0건을 회귀로 검증 |
+| v1.3.8 | 실행 가능한 Boot ROM image가 ITIM mtvec, MSIE/MIE 설정 후 WFI에 진입하도록 구성. directed Host AXI BFM이 ITIM/DTIM/HostIF 접근과 unmapped DECERR를 확인하고, 마지막 CLINT MSIP write 뒤 ITIM vector instruction retire까지 통과. DPI-C ELF parser/자동 loader는 다음 구현 범위로 유지 |

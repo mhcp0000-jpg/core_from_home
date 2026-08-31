@@ -13,6 +13,8 @@ module rv_soc_top_tb;
   logic [1:0] trace_valid;
   logic [1:0][31:0] trace_pc;
   logic [1:0][31:0] trace_instr;
+  logic saw_boot_wfi;
+  logic saw_itim_vector;
 
   logic aw_valid;
   logic [3:0] aw_id;
@@ -63,7 +65,7 @@ module rv_soc_top_tb;
   end
 
   rv_soc_top #(
-    .BOOTROM_INIT_FILE ("tb/data/bootrom_test.hex")
+    .BOOTROM_INIT_FILE ("tb/data/bootrom_wait.hex")
   ) u_dut (
     .clk_i                (clk),
     .rst_ni               (rst_n),
@@ -80,6 +82,21 @@ module rv_soc_top_tb;
     .trace_pc_o         (trace_pc),
     .trace_instr_o      (trace_instr)
   );
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      saw_boot_wfi <= 1'b0;
+      saw_itim_vector <= 1'b0;
+    end else begin
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (trace_valid[lane] && (trace_instr[lane] == 32'h1050_0073))
+          saw_boot_wfi <= 1'b1;
+        if (trace_valid[lane] && (trace_pc[lane] == ITIM_BASE_ADDR) &&
+            (trace_instr[lane] == 32'h0010_0313))
+          saw_itim_vector <= 1'b1;
+      end
+    end
+  end
 
   task automatic axi_write(
     input logic [3:0] id,
@@ -175,18 +192,31 @@ module rv_soc_top_tb;
     rst_n = 1'b1;
     wait (soc_ready);
 
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while (!saw_boot_wfi && (timeout < 1000)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!saw_boot_wfi)
+        $fatal(1, "Boot ROM did not configure CSRs and retire WFI");
+    end
+
     axi_read(4'h1, BOOTROM_BASE_ADDR, 3'd3, read_data, response);
     if ((response != AXI_RESP_OKAY) ||
-        (read_data != 64'h0123_4567_89ab_cdef))
+        (read_data != 64'h3052_9073_8000_02b7))
       $fatal(1, "Host-to-BootROM path failed");
 
-    axi_write(4'h2, ITIM_BASE_ADDR + 32'h20, 3'd3,
-              64'h1111_2222_3333_4444, 8'hff, response);
+    // Host loads the first ITIM handler beat while the core is asleep. The
+    // handler writes x6=1 and then loops in place.
+    axi_write(4'h2, ITIM_BASE_ADDR, 3'd3,
+              64'h0000_006f_0010_0313, 8'hff, response);
     if (response != AXI_RESP_OKAY)
       $fatal(1, "Host-to-ITIM write failed");
-    axi_read(4'h3, ITIM_BASE_ADDR + 32'h20, 3'd3, read_data, response);
+    axi_read(4'h3, ITIM_BASE_ADDR, 3'd3, read_data, response);
     if ((response != AXI_RESP_OKAY) ||
-        (read_data != 64'h1111_2222_3333_4444))
+        (read_data != 64'h0000_006f_0010_0313))
       $fatal(1, "Host-to-ITIM readback failed");
 
     axi_write(4'h4, DTIM_BASE_ADDR + 32'h28, 3'd3,
@@ -196,22 +226,35 @@ module rv_soc_top_tb;
         (read_data != 64'haaaa_5555_dead_beef))
       $fatal(1, "Host-to-DTIM readback failed");
 
-    axi_write(4'h6, CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 3'd2,
-              64'h0000_0000_0000_0001, 8'h0f, response);
-    axi_read(4'h7, CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 3'd2,
-             read_data, response);
-    if ((response != AXI_RESP_OKAY) || !read_data[0])
-      $fatal(1, "Host-to-CLINT MSIP path failed");
-
-    axi_write(4'h8, HOSTIF_BASE_ADDR + HOSTIF_BOOT_ENTRY_OFF, 3'd2,
+    axi_write(4'h6, HOSTIF_BASE_ADDR + HOSTIF_BOOT_ENTRY_OFF, 3'd2,
               64'h8000_0100_0000_0000, 8'hf0, response);
     if ((response != AXI_RESP_OKAY) ||
         (host_boot_entry != 32'h8000_0100))
       $fatal(1, "Host-to-HostIF BOOT_ENTRY path failed");
 
-    axi_read(4'h9, 32'hde00_0000, 3'd3, read_data, response);
+    axi_read(4'h7, 32'hde00_0000, 3'd3, read_data, response);
     if (response != AXI_RESP_DECERR)
       $fatal(1, "Unmapped access did not return DECERR");
+
+    // The interrupt is deliberately the final Host write. This is the boot
+    // contract: all ELF/TIM/mailbox writes have completed before wake-up.
+    axi_write(4'h8, CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 3'd2,
+              64'h0000_0000_0000_0001, 8'h0f, response);
+    axi_read(4'h9, CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 3'd2,
+             read_data, response);
+    if ((response != AXI_RESP_OKAY) || !read_data[0])
+      $fatal(1, "Host-to-CLINT MSIP path failed");
+
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while (!saw_itim_vector && (timeout < 1000)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!saw_itim_vector)
+        $fatal(1, "MSIP did not wake WFI and execute the ITIM vector");
+    end
 
     $display("rv_soc_top_tb PASS");
     $finish;
