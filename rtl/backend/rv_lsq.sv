@@ -525,14 +525,18 @@ module rv_lsq #(
       for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
         logic flush_entry;
         logic response_same_cycle;
+        logic response_replay_same_cycle;
         flush_entry = lq_valid_q[entry] &&
           (flush_all_i || sequence_after(lq_sequence_q[entry],
                                          flush_sequence_i));
         response_same_cycle = 1'b0;
+        response_replay_same_cycle = 1'b0;
         for (int unsigned lane = 0; lane < 2; lane++) begin
           if (load_response_valid_i[lane] &&
-              (load_response_index_i[lane] == LQ_INDEX_WIDTH'(entry)))
+              (load_response_index_i[lane] == LQ_INDEX_WIDTH'(entry))) begin
             response_same_cycle = 1'b1;
+            response_replay_same_cycle = load_response_replay_i[lane];
+          end
         end
         if (flush_entry) begin
           if (lq_issued_q[entry] && !lq_completed_q[entry] &&
@@ -542,6 +546,21 @@ module rv_lsq #(
             lq_valid_q[entry] <= 1'b0;
             lq_killed_q[entry] <= 1'b0;
             lq_issued_q[entry] <= 1'b0;
+          end
+        end else if (lq_valid_q[entry] && response_same_cycle) begin
+          // A branch recovery may coincide with a response belonging to an
+          // older load that survives the recovery boundary.  The fabric has
+          // already completed the ready/valid handshake, so dropping this
+          // update would leave the LQ entry permanently outstanding and stop
+          // retirement at that load.
+          if (lq_killed_q[entry]) begin
+            lq_valid_q[entry] <= 1'b0;
+            lq_killed_q[entry] <= 1'b0;
+          end else if (response_replay_same_cycle) begin
+            lq_issued_q[entry] <= 1'b0;
+          end else begin
+            lq_issued_q[entry] <= 1'b0;
+            lq_completed_q[entry] <= 1'b1;
           end
         end
       end

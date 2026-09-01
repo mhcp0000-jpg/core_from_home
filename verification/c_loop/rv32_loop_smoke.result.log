@@ -1,0 +1,13 @@
+C LOOP ELF VERIFICATION PASS
+Toolchain            : xPack RISC-V GCC 15.2.0-1
+ISA / ABI            : rv32imfc_zicsr_zifencei / ilp32f
+Integer output       : 8, 1, 26, 21, 0, 41, 40, 21
+Integer sum          : 158
+FP output            : 8.75, 2.5, 28.25, 24.0, 3.75, 45.5, 45.25, 27.0
+FP sum               : 185.0f (0x43390000)
+Observed host event  : 0x009e00b9
+Observed host exit   : 0
+Payload commits      : 357
+FP register commits  : 68
+Lane-1 commits       : 121
+Payload traps        : 0

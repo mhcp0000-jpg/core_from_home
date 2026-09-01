@@ -1,0 +1,12 @@
+80000000 T _start
+80000022 T main
+80000154 t expected_fp
+80000174 t expected_integer
+80020000 d fp_input
+80020020 d integer_input
+80020040 B __bss_start
+80020040 B result_signature
+80020054 b fp_output
+80020074 b integer_output
+80020094 B __bss_end
+8003fff0 B __stack_top

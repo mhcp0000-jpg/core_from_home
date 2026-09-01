@@ -104,11 +104,18 @@ module rv_c_expander #(
             instruction_o = enc_i(imm12, rs1_prime, 3'b010, rd_prime,
                                     7'b0000011);
           end
-          3'b011: begin // C.LD (RV64)
-            imm12 = {4'b0, compressed_i[6:5], compressed_i[12:10], 3'b000};
-            instruction_o = enc_i(imm12, rs1_prime, 3'b011, rd_prime,
-                                    7'b0000011);
-            illegal_o = (XLEN != 64);
+          3'b011: begin // C.FLW (RV32) / C.LD (RV64)
+            if (XLEN == 32) begin
+              imm12 = {5'b0, compressed_i[5], compressed_i[12:10],
+                       compressed_i[6], 2'b00};
+              instruction_o = enc_i(imm12, rs1_prime, 3'b010, rd_prime,
+                                      7'b0000111);
+            end else begin
+              imm12 = {4'b0, compressed_i[6:5], compressed_i[12:10],
+                       3'b000};
+              instruction_o = enc_i(imm12, rs1_prime, 3'b011, rd_prime,
+                                      7'b0000011);
+            end
           end
           3'b110: begin // C.SW
             imm12 = {5'b0, compressed_i[5], compressed_i[12:10],
@@ -116,11 +123,18 @@ module rv_c_expander #(
             instruction_o = enc_s(imm12, rs2_prime, rs1_prime, 3'b010,
                                     7'b0100011);
           end
-          3'b111: begin // C.SD (RV64)
-            imm12 = {4'b0, compressed_i[6:5], compressed_i[12:10], 3'b000};
-            instruction_o = enc_s(imm12, rs2_prime, rs1_prime, 3'b011,
-                                    7'b0100011);
-            illegal_o = (XLEN != 64);
+          3'b111: begin // C.FSW (RV32) / C.SD (RV64)
+            if (XLEN == 32) begin
+              imm12 = {5'b0, compressed_i[5], compressed_i[12:10],
+                       compressed_i[6], 2'b00};
+              instruction_o = enc_s(imm12, rs2_prime, rs1_prime, 3'b010,
+                                      7'b0100111);
+            end else begin
+              imm12 = {4'b0, compressed_i[6:5], compressed_i[12:10],
+                       3'b000};
+              instruction_o = enc_s(imm12, rs2_prime, rs1_prime, 3'b011,
+                                      7'b0100011);
+            end
           end
           default: illegal_o = 1'b1;
         endcase
@@ -251,11 +265,19 @@ module rv_c_expander #(
             instruction_o = enc_i(imm12, 5'd2, 3'b010, rd_rs1, 7'b0000011);
             illegal_o = (rd_rs1 == 0);
           end
-          3'b011: begin // C.LDSP (RV64)
-            imm12 = {3'b0, compressed_i[4:2], compressed_i[12],
-                     compressed_i[6:5], 3'b000};
-            instruction_o = enc_i(imm12, 5'd2, 3'b011, rd_rs1, 7'b0000011);
-            illegal_o = (XLEN != 64) || (rd_rs1 == 0);
+          3'b011: begin // C.FLWSP (RV32) / C.LDSP (RV64)
+            if (XLEN == 32) begin
+              imm12 = {4'b0, compressed_i[3:2], compressed_i[12],
+                       compressed_i[6:4], 2'b00};
+              instruction_o = enc_i(imm12, 5'd2, 3'b010, rd_rs1,
+                                      7'b0000111);
+            end else begin
+              imm12 = {3'b0, compressed_i[4:2], compressed_i[12],
+                       compressed_i[6:5], 3'b000};
+              instruction_o = enc_i(imm12, 5'd2, 3'b011, rd_rs1,
+                                      7'b0000011);
+              illegal_o = (rd_rs1 == 0);
+            end
           end
           3'b100: begin
             if (!compressed_i[12]) begin
@@ -286,10 +308,18 @@ module rv_c_expander #(
             imm12 = {4'b0, compressed_i[8:7], compressed_i[12:9], 2'b00};
             instruction_o = enc_s(imm12, rs2, 5'd2, 3'b010, 7'b0100011);
           end
-          3'b111: begin // C.SDSP (RV64)
-            imm12 = {3'b0, compressed_i[9:7], compressed_i[12:10], 3'b000};
-            instruction_o = enc_s(imm12, rs2, 5'd2, 3'b011, 7'b0100011);
-            illegal_o = (XLEN != 64);
+          3'b111: begin // C.FSWSP (RV32) / C.SDSP (RV64)
+            if (XLEN == 32) begin
+              imm12 = {4'b0, compressed_i[8:7], compressed_i[12:9],
+                       2'b00};
+              instruction_o = enc_s(imm12, rs2, 5'd2, 3'b010,
+                                      7'b0100111);
+            end else begin
+              imm12 = {3'b0, compressed_i[9:7], compressed_i[12:10],
+                       3'b000};
+              instruction_o = enc_s(imm12, rs2, 5'd2, 3'b011,
+                                      7'b0100011);
+            end
           end
           default: illegal_o = 1'b1;
         endcase

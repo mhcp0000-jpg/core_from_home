@@ -363,6 +363,24 @@ module rv_issue_queue #(
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
         if (valid_q[entry] && sequence_after(sequence_q[entry], flush_sequence_i))
           valid_q[entry] <= 1'b0;
+        else if (valid_q[entry]) begin
+          // Results from older instructions may write back in the same cycle
+          // as a younger-branch recovery.  Preserve those wakeups for IQ
+          // entries that survive the recovery boundary.
+          for (int unsigned source = 0; source < 3; source++) begin
+            if (src_used_q[entry][source]) begin
+              case (source)
+                0: if (tag_wakes(src0_class_q[entry], src_phys_q[entry][source]))
+                     src_ready_q[entry][source] <= 1'b1;
+                1: if (tag_wakes(src1_class_q[entry], src_phys_q[entry][source]))
+                     src_ready_q[entry][source] <= 1'b1;
+                default:
+                  if (tag_wakes(src2_class_q[entry], src_phys_q[entry][source]))
+                    src_ready_q[entry][source] <= 1'b1;
+              endcase
+            end
+          end
+        end
       end
     end else begin
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin

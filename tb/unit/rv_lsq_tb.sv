@@ -435,6 +435,35 @@ module rv_lsq_tb;
       $fatal(1, "Killed outstanding response did not reclaim tombstone");
 
     reset_dut();
+    dispatch_single_load(8'd50);
+    saved_lq0 = saved_lq1;
+    update_single_load(8'd50);
+    load_candidate_ready = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    load_candidate_ready = '0;
+    // A younger-branch recovery must not discard a same-cycle response for
+    // this older, surviving load.
+    flush_valid = 1'b1;
+    flush_all = 1'b0;
+    flush_sequence = 8'd50;
+    load_response_index[0] = saved_lq0;
+    load_response_valid = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    flush_valid = 1'b0;
+    load_response_valid = '0;
+    load_commit_valid = 2'b01;
+    load_commit_sequence[0] = 8'd50;
+    load_commit_index[0] = saved_lq0;
+    #1;
+    if (!load_commit_ready[0] || load_outstanding)
+      $fatal(1, "Surviving same-cycle load response was lost on flush");
+    @(posedge clk);
+    @(negedge clk);
+    load_commit_valid = '0;
+
+    reset_dut();
     @(negedge clk);
     dispatch_valid = 2'b01;
     dispatch_is_store = 2'b01;

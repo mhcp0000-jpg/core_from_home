@@ -114,6 +114,32 @@ module rv_decode2_tb;
     if (c32_illegal || (c32_out != 32'h0010_0073))
       $fatal(1, "C.EBREAK expansion failed");
 
+    c32_in = 16'h621c; // C.FLW f15,0(x12)
+    c64_in = 16'h621c; // C.LD x15,0(x12)
+    #1;
+    if (c32_illegal || (c32_out != 32'h0006_2787))
+      $fatal(1, "RV32 C.FLW expansion failed");
+    if (c64_illegal || (c64_out != 32'h0006_3783))
+      $fatal(1, "RV64 C.LD expansion failed");
+
+    c32_in = 16'he39c; // C.FSW f15,0(x15)
+    c64_in = 16'he39c; // C.SD x15,0(x15)
+    #1;
+    if (c32_illegal || (c32_out != 32'h00f7_a027))
+      $fatal(1, "RV32 C.FSW expansion failed");
+    if (c64_illegal || (c64_out != 32'h00f7_b023))
+      $fatal(1, "RV64 C.SD expansion failed");
+
+    c32_in = 16'h60b2; // C.FLWSP f1,12(sp)
+    #1;
+    if (c32_illegal || (c32_out != 32'h00c1_2087))
+      $fatal(1, "RV32 C.FLWSP expansion failed");
+
+    c32_in = 16'hea0a; // C.FSWSP f2,20(sp)
+    #1;
+    if (c32_illegal || (c32_out != 32'h0021_2a27))
+      $fatal(1, "RV32 C.FSWSP expansion failed");
+
     drive32(32'h0020_81b3); // ADD x3,x1,x2
     if ((uop_fu[0] != FU_INT) || (uop_operation[0] != 16'(ALU_ADD)) ||
         (uop_port_mask[0] != 5'b00011) ||

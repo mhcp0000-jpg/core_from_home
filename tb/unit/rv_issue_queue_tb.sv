@@ -294,6 +294,32 @@ module rv_issue_queue_tb;
         (candidate_sequence[0] != 8'd22))
       $fatal(1, "Issue queue younger flush failed");
 
+    candidate_accept = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    dispatch_valid = 2'b01;
+    dispatch_sequence[0] = 8'd30;
+    dispatch_src_used[0][0] = 1'b1;
+    dispatch_src_class[0][0] = REG_INT;
+    dispatch_src_phys[0][0] = 7'd9;
+    dispatch_src_ready[0][0] = 1'b0;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    flush_younger = 1'b1;
+    flush_sequence = 8'd30;
+    writeback_valid[0] = 1'b1;
+    writeback_class[0] = REG_INT;
+    writeback_phys[0] = 7'd9;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    #1;
+    if ((candidate_valid != 2'b01) ||
+        (candidate_sequence[0] != 8'd30))
+      $fatal(1, "Surviving IQ entry lost same-cycle flush wakeup");
+
     $display("rv_issue_queue_tb PASS");
     $finish;
   end

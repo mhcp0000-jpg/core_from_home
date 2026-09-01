@@ -111,6 +111,71 @@ module rv_soc_dpi_tb;
       end
       begin
         repeat (timeout_cycles) @(posedge clk);
+        $display("TIMEOUT backend rob=%0d iq=%0d dec_valid=%b resources_ready=%b dispatch=%b rename_ready=%b branch_ready=%b lsq_ready=%b checkpoints=%b",
+                 u_dut.u_core.u_backend.rob_count,
+                 u_dut.u_core.u_backend.iq_count,
+                 u_dut.u_core.u_backend.dec_valid,
+                 u_dut.u_core.u_backend.dispatch_resources_ready,
+                 u_dut.u_core.u_backend.dispatch_fire,
+                 u_dut.u_core.u_backend.rename_can_accept,
+                 u_dut.u_core.u_backend.branch_capacity_ok,
+                 u_dut.u_core.u_backend.lsq_dispatch_ready,
+                 u_dut.u_core.u_backend.cp_valid);
+        $display("TIMEOUT rob_head valid=%b complete=%b seq=%0d pc=%08h instr=%08h",
+                 u_dut.u_core.u_backend.rob_head_valid,
+                 u_dut.u_core.u_backend.rob_head_complete,
+                 u_dut.u_core.u_backend.rob_head_sequence,
+                 u_dut.u_core.u_backend.rob_head_pc,
+                 u_dut.u_core.u_backend.rob_head_instruction);
+        $display("TIMEOUT retire valid=%b ready=%b fire=%b load=%b lq_index=%0d/%0d seq=%0d/%0d",
+                 u_dut.u_core.u_backend.retire_valid,
+                 u_dut.u_core.u_backend.retire_ready,
+                 u_dut.u_core.u_backend.retire_fire,
+                 u_dut.u_core.u_backend.retire_is_load,
+                 u_dut.u_core.u_backend.retire_lq_index[0],
+                 u_dut.u_core.u_backend.retire_lq_index[1],
+                 u_dut.u_core.u_backend.retire_sequence[0],
+                 u_dut.u_core.u_backend.retire_sequence[1]);
+        $display("TIMEOUT lsu lq=%0d sq=%0d load_outstanding=%b store_buffer_empty=%b",
+                 u_dut.u_core.u_backend.u_lsu_cluster.lq_count,
+                 u_dut.u_core.u_backend.u_lsu_cluster.sq_count,
+                 u_dut.u_core.u_backend.u_lsu_cluster.load_outstanding,
+                 u_dut.u_core.u_backend.store_buffer_empty);
+        $display("TIMEOUT lq valid=%b addr=%b issued=%b complete=%b",
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_valid_q,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_valid_q,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_issued_q,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_completed_q);
+        $display("TIMEOUT sq valid=%b addr=%b data=%b",
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_valid_q,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_address_valid_q,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_data_valid_q);
+        $display("TIMEOUT dmem req_valid=%b req_ready=%b rsp_valid=%b rsp_ready=%b rsp_id=%h/%h",
+                 u_dut.u_core.u_backend.dmem_req_valid_o,
+                 u_dut.u_core.u_backend.dmem_req_ready_i,
+                 u_dut.u_core.u_backend.dmem_rsp_valid_i,
+                 u_dut.u_core.u_backend.dmem_rsp_ready_o,
+                 u_dut.u_core.u_backend.dmem_rsp_id_i[0],
+                 u_dut.u_core.u_backend.dmem_rsp_id_i[1]);
+        $display("TIMEOUT completion valid=%b ready=%b source_valid=%b source_ready=%b",
+                 u_dut.u_core.u_backend.lsu_completion_valid,
+                 u_dut.u_core.u_backend.lsu_completion_ready,
+                 u_dut.u_core.u_backend.source_valid,
+                 u_dut.u_core.u_backend.source_ready);
+        $display("TIMEOUT d_fabric busy=%b source=%0d/%0d/%0d accepted_id=%h/%h/%h",
+                 u_dut.u_d_fabric.busy_q,
+                 u_dut.u_d_fabric.source_q[0],
+                 u_dut.u_d_fabric.source_q[1],
+                 u_dut.u_d_fabric.source_q[2],
+                 u_dut.u_d_fabric.accepted_id_q[0],
+                 u_dut.u_d_fabric.accepted_id_q[1],
+                 u_dut.u_d_fabric.accepted_id_q[2]);
+        $display("TIMEOUT d_fabric bank_valid=%b bank_owner=%0d/%0d pulse=%b buffer=%b",
+                 u_dut.u_d_fabric.bank_read_valid,
+                 u_dut.u_d_fabric.bank_read_owner_q[0],
+                 u_dut.u_d_fabric.bank_read_owner_q[1],
+                 u_dut.u_d_fabric.pulse_valid,
+                 u_dut.u_d_fabric.rsp_buffer_valid_q);
         $fatal(1, "DPI SoC simulation timeout");
       end
     join_none
