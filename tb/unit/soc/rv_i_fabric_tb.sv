@@ -74,7 +74,9 @@ module rv_i_fabric_tb;
     end
   end
 
-  rv_i_fabric u_dut (
+  rv_i_fabric #(
+    .BOOTROM_INIT_FILE ("tb/fixtures/bootrom/bootrom_test.hex")
+  ) u_dut (
     .clk_i          (clk),
     .rst_ni         (rst_n),
     .if_req_valid_i (if_req_valid),
@@ -202,13 +204,34 @@ module rv_i_fabric_tb;
         (if_rsp_data[63:0] != 64'h1111_2222_3333_4444))
       $fatal(1, "ITIM same-row read/write bypass failed");
 
+    outbound_count_before = outbound_request_count;
     fetch_block(BOOTROM_BASE_ADDR, 4'h5, 4'h9,
                 fetch_response_data, fetch_response_code);
     if ((fetch_response_code != AXI_RESP_OKAY) ||
+        (fetch_response_data !=
+         128'hfedc_ba98_7654_3210_0123_4567_89ab_cdef) ||
+        (outbound_request_count != outbound_count_before))
+      $fatal(1, "Boot ROM fetch did not stay on I-local path");
+
+    xbar_transfer(6'h05, BOOTROM_BASE_ADDR, 1'b0, '0,
+                  x_response_data, x_response_code);
+    if ((x_response_code != AXI_RESP_OKAY) ||
+        (x_response_data != 64'h0123_4567_89ab_cdef))
+      $fatal(1, "I-Fabric inbound Boot ROM read failed");
+
+    xbar_transfer(6'h06, BOOTROM_BASE_ADDR, 1'b1,
+                  64'hffff_ffff_ffff_ffff,
+                  x_response_data, x_response_code);
+    if (x_response_code == AXI_RESP_OKAY)
+      $fatal(1, "I-Fabric allowed an inbound Boot ROM write");
+
+    fetch_block(PLIC_BASE_ADDR, 4'h7, 4'hb,
+                fetch_response_data, fetch_response_code);
+    if ((fetch_response_code != AXI_RESP_OKAY) ||
         (fetch_response_data[63:0] !=
-         {32'hfeed_cafe, BOOTROM_BASE_ADDR}) ||
+         {32'hfeed_cafe, PLIC_BASE_ADDR}) ||
         (fetch_response_data[127:64] !=
-         {32'hfeed_cafe, BOOTROM_BASE_ADDR + 8}))
+         {32'hfeed_cafe, PLIC_BASE_ADDR + 8}))
       $fatal(1, "non-local two-beat fetch assembly failed");
 
     fetch_block(ITIM_BASE_ADDR + 4, 4'h6, 4'ha,
@@ -217,7 +240,7 @@ module rv_i_fabric_tb;
       $fatal(1, "misaligned IFU block request was not rejected");
 
     outbound_count_before = outbound_request_count;
-    xbar_transfer(6'h07, DTIM_BASE_ADDR, 1'b0, '0,
+    xbar_transfer(6'h08, DTIM_BASE_ADDR, 1'b0, '0,
                   x_response_data, x_response_code);
     if ((x_response_code == AXI_RESP_OKAY) ||
         (outbound_request_count != outbound_count_before))

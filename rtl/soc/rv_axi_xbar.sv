@@ -127,7 +127,9 @@ module rv_axi_xbar #(
 
   function automatic soc_target_e decode_address(input logic [31:0] address);
     if (addr_in_region(address, ITIM_BASE_ADDR,
-                       size_kb_to_bytes(ITIM_SIZE_KB)))
+                       size_kb_to_bytes(ITIM_SIZE_KB)) ||
+        addr_in_region(address, BOOTROM_BASE_ADDR,
+                       size_kb_to_bytes(BOOTROM_SIZE_KB)))
       return SOC_TARGET_I_LOCAL;
     if (addr_in_region(address, DTIM_BASE_ADDR,
                        size_kb_to_bytes(DTIM_SIZE_KB)) ||
@@ -137,9 +139,6 @@ module rv_axi_xbar #(
     if (addr_in_region(address, PLIC_BASE_ADDR,
                        size_kb_to_bytes(PLIC_SIZE_KB)))
       return SOC_TARGET_PLIC;
-    if (addr_in_region(address, BOOTROM_BASE_ADDR,
-                       size_kb_to_bytes(BOOTROM_SIZE_KB)))
-      return SOC_TARGET_BOOTROM;
     if (addr_in_region(address, HOSTIF_BASE_ADDR,
                        size_kb_to_bytes(HOSTIF_SIZE_KB)))
       return SOC_TARGET_HOSTIF;

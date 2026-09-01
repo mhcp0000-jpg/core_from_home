@@ -96,12 +96,12 @@ package rv_soc_pkg;
   } mem_replay_reason_e;
 
   typedef enum logic [2:0] {
-    SOC_TARGET_I_LOCAL,
-    SOC_TARGET_D_LOCAL,
-    SOC_TARGET_PLIC,
-    SOC_TARGET_BOOTROM,
-    SOC_TARGET_HOSTIF,
-    SOC_TARGET_ERROR
+    SOC_TARGET_I_LOCAL  = 3'd0,
+    SOC_TARGET_D_LOCAL  = 3'd1,
+    SOC_TARGET_PLIC     = 3'd2,
+    SOC_TARGET_HOSTIF   = 3'd3,
+    SOC_TARGET_RESERVED = 3'd4,
+    SOC_TARGET_ERROR    = 3'd5
   } soc_target_e;
 
   typedef enum logic [1:0] {

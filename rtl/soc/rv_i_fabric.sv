@@ -1,6 +1,9 @@
 module rv_i_fabric #(
-  parameter logic [31:0] ITIM_BASE_ADDR = rv_soc_pkg::ITIM_BASE_ADDR,
-  parameter int unsigned ITIM_SIZE_KB   = rv_soc_pkg::ITIM_SIZE_KB,
+  parameter logic [31:0] BOOTROM_BASE_ADDR = rv_soc_pkg::BOOTROM_BASE_ADDR,
+  parameter int unsigned BOOTROM_SIZE_KB   = rv_soc_pkg::BOOTROM_SIZE_KB,
+  parameter string BOOTROM_INIT_FILE       = "",
+  parameter logic [31:0] ITIM_BASE_ADDR    = rv_soc_pkg::ITIM_BASE_ADDR,
+  parameter int unsigned ITIM_SIZE_KB      = rv_soc_pkg::ITIM_SIZE_KB,
   parameter int unsigned CORE_MAX_GRANTS = 8,
   localparam longint unsigned ITIM_SIZE_BYTES = ITIM_SIZE_KB * 1024,
   localparam int unsigned ITIM_BANK_ROWS = ITIM_SIZE_BYTES / 16,
@@ -27,6 +30,11 @@ module rv_i_fabric #(
 
   import rv_soc_pkg::*;
 
+  rv_local_mem_if bootrom_bus (
+    .clk_i,
+    .rst_ni
+  );
+
   localparam int unsigned STREAK_WIDTH =
     (CORE_MAX_GRANTS < 2) ? 1 : $clog2(CORE_MAX_GRANTS + 1);
 
@@ -52,8 +60,10 @@ module rv_i_fabric #(
   logic [3:0] if_epoch_q;
   logic [31:0] if_addr_q;
   logic if_local_candidate;
+  logic if_bootrom_candidate;
   logic [31:0] if_itim_offset;
   logic if_local_accept;
+  logic if_bootrom_accept;
   logic if_nonlocal_accept;
   logic if_error_accept;
   logic local_if_read_pending_q;
@@ -71,14 +81,17 @@ module rv_i_fabric #(
   logic xbar_busy_q;
   logic [5:0] xbar_id_q;
   logic xbar_itim_hit;
+  logic xbar_bootrom_hit;
   logic [31:0] xbar_itim_offset;
   logic xbar_bad_access;
   logic xbar_request_active;
   logic xbar_read_candidate;
   logic xbar_read_accept;
   logic xbar_write_accept;
+  logic xbar_bootrom_accept;
   logic xbar_error_accept;
   logic xbar_read_pending_q;
+  logic xbar_bootrom_pending_q;
   logic xbar_write_ack_q;
   logic xbar_error_valid_q;
   logic xbar_pulse_valid;
@@ -90,8 +103,13 @@ module rv_i_fabric #(
   axi_resp_e xbar_rsp_buffer_resp_q;
 
   outbound_state_e outbound_state_q;
+  logic if_path_bootrom_q;
   logic [63:0] outbound_low_data_q;
   axi_resp_e outbound_resp_q;
+  logic fetch_path_req_ready;
+  logic fetch_path_rsp_valid;
+  logic [63:0] fetch_path_rsp_data;
+  axi_resp_e fetch_path_rsp_resp;
 
   function automatic logic local_access_aligned(
     input logic [31:0] address,
@@ -107,34 +125,49 @@ module rv_i_fabric #(
   always_comb begin
     if_local_candidate = addr_in_region(if_req_addr_i, ITIM_BASE_ADDR,
                                          size_kb_to_bytes(ITIM_SIZE_KB));
+    if_bootrom_candidate = addr_in_region(if_req_addr_i, BOOTROM_BASE_ADDR,
+                                           size_kb_to_bytes(BOOTROM_SIZE_KB));
     if_itim_offset = if_req_addr_i - ITIM_BASE_ADDR;
     xbar_itim_hit = addr_in_region(xbar_in_bus.req_addr, ITIM_BASE_ADDR,
                                     size_kb_to_bytes(ITIM_SIZE_KB));
+    xbar_bootrom_hit = addr_in_region(xbar_in_bus.req_addr,
+                                      BOOTROM_BASE_ADDR,
+                                      size_kb_to_bytes(BOOTROM_SIZE_KB));
     xbar_itim_offset = xbar_in_bus.req_addr - ITIM_BASE_ADDR;
-    xbar_bad_access = !xbar_itim_hit ||
+    xbar_bad_access = !(xbar_itim_hit || xbar_bootrom_hit) ||
                       !local_access_aligned(xbar_in_bus.req_addr,
                                             xbar_in_bus.req_size) ||
                       (xbar_in_bus.req_write &&
                        !xbar_in_bus.req_committed);
     xbar_request_active = xbar_in_bus.req_valid && !xbar_busy_q;
-    xbar_read_candidate = xbar_request_active && !xbar_bad_access &&
-                          !xbar_in_bus.req_write;
+    xbar_read_candidate = xbar_request_active && xbar_itim_hit &&
+                          !xbar_bad_access && !xbar_in_bus.req_write;
 
     if_req_ready_o   = 1'b0;
     if_local_accept  = 1'b0;
+    if_bootrom_accept = 1'b0;
     if_nonlocal_accept = 1'b0;
     if_error_accept  = 1'b0;
     xbar_read_accept = 1'b0;
     xbar_write_accept = 1'b0;
+    xbar_bootrom_accept = 1'b0;
     xbar_error_accept = 1'b0;
     xbar_in_bus.req_ready = 1'b0;
 
-    // Inbound writes use the independent bank write port and therefore do not
-    // block an IFU read. Inbound read and 128-bit IFU read compete for read ports.
+    // ITIM inbound writes use the independent bank write port and therefore do
+    // not block an IFU ITIM read. Boot ROM is a single local request/response
+    // target, so IFU reset fetch and Xbar inbound access are serialized there.
     if (xbar_request_active && xbar_bad_access) begin
       xbar_in_bus.req_ready = 1'b1;
       xbar_error_accept = 1'b1;
-    end else if (xbar_request_active && xbar_in_bus.req_write) begin
+    end else if (xbar_request_active && xbar_bootrom_hit &&
+                 (outbound_state_q == OUT_IDLE) &&
+                 !if_bootrom_accept) begin
+      xbar_in_bus.req_ready = bootrom_bus.req_ready;
+      xbar_bootrom_accept = xbar_in_bus.req_valid &&
+                            bootrom_bus.req_ready;
+    end else if (xbar_request_active && xbar_itim_hit &&
+                 xbar_in_bus.req_write) begin
       xbar_in_bus.req_ready = 1'b1;
       xbar_write_accept = 1'b1;
     end
@@ -149,13 +182,19 @@ module rv_i_fabric #(
           if_req_ready_o  = 1'b1;
           if_local_accept = 1'b1;
         end
+      end else if (if_bootrom_candidate) begin
+        if ((outbound_state_q == OUT_IDLE) && !xbar_busy_q &&
+            !xbar_request_active) begin
+          if_req_ready_o    = 1'b1;
+          if_bootrom_accept = 1'b1;
+        end
       end else if (outbound_state_q == OUT_IDLE) begin
         if_req_ready_o     = 1'b1;
         if_nonlocal_accept = 1'b1;
       end
     end
 
-    if (xbar_read_candidate && !if_local_accept) begin
+    if (xbar_read_candidate && xbar_itim_hit && !if_local_accept) begin
       xbar_in_bus.req_ready = 1'b1;
       xbar_read_accept = 1'b1;
     end
@@ -206,6 +245,16 @@ module rv_i_fabric #(
     .write_strb_i  (bank_write_strb)
   );
 
+  rv_bootrom_local #(
+    .BASE_ADDR (BOOTROM_BASE_ADDR),
+    .SIZE_KB   (BOOTROM_SIZE_KB),
+    .INIT_FILE (BOOTROM_INIT_FILE)
+  ) u_bootrom_local (
+    .clk_i,
+    .rst_ni,
+    .bus (bootrom_bus)
+  );
+
   assign local_if_rsp_valid = local_if_read_pending_q &&
                               bank_read_valid[0] && bank_read_valid[1];
   assign local_if_rsp_data  = {bank_read_data[1], bank_read_data[0]};
@@ -233,8 +282,9 @@ module rv_i_fabric #(
   end
 
   always_comb begin
-    outbound_bus.req_valid     = (outbound_state_q == OUT_REQ_LO) ||
-                                 (outbound_state_q == OUT_REQ_HI);
+    outbound_bus.req_valid     = !if_path_bootrom_q &&
+                                 ((outbound_state_q == OUT_REQ_LO) ||
+                                  (outbound_state_q == OUT_REQ_HI));
     outbound_bus.req_id        = (outbound_state_q == OUT_REQ_HI) ?
                                  6'd1 : 6'd0;
     outbound_bus.req_addr      = if_addr_q +
@@ -247,17 +297,74 @@ module rv_i_fabric #(
     outbound_bus.req_rob_seq   = '0;
     outbound_bus.req_committed = 1'b0;
     outbound_bus.req_device    = 1'b0;
-    outbound_bus.rsp_ready     = (outbound_state_q == OUT_WAIT_LO) ||
-                                 (outbound_state_q == OUT_WAIT_HI);
+    outbound_bus.rsp_ready     = !if_path_bootrom_q &&
+                                 ((outbound_state_q == OUT_WAIT_LO) ||
+                                  (outbound_state_q == OUT_WAIT_HI));
+
+    bootrom_bus.req_valid     = 1'b0;
+    bootrom_bus.req_id        = '0;
+    bootrom_bus.req_addr      = '0;
+    bootrom_bus.req_write     = 1'b0;
+    bootrom_bus.req_size      = 3'd3;
+    bootrom_bus.req_wdata     = '0;
+    bootrom_bus.req_wstrb     = '0;
+    bootrom_bus.req_priv      = PRIV_M;
+    bootrom_bus.req_rob_seq   = '0;
+    bootrom_bus.req_committed = 1'b0;
+    bootrom_bus.req_device    = 1'b0;
+    bootrom_bus.rsp_ready     = 1'b0;
+
+    if (if_path_bootrom_q &&
+        ((outbound_state_q == OUT_REQ_LO) ||
+         (outbound_state_q == OUT_REQ_HI))) begin
+      bootrom_bus.req_valid = 1'b1;
+      bootrom_bus.req_id    = (outbound_state_q == OUT_REQ_HI) ?
+                              6'd1 : 6'd0;
+      bootrom_bus.req_addr  = if_addr_q +
+                              ((outbound_state_q == OUT_REQ_HI) ? 8 : 0);
+    end else if (xbar_request_active && xbar_bootrom_hit &&
+                 !xbar_bad_access && (outbound_state_q == OUT_IDLE)) begin
+      bootrom_bus.req_valid     = xbar_in_bus.req_valid;
+      bootrom_bus.req_id        = xbar_in_bus.req_id;
+      bootrom_bus.req_addr      = xbar_in_bus.req_addr;
+      bootrom_bus.req_write     = xbar_in_bus.req_write;
+      bootrom_bus.req_size      = xbar_in_bus.req_size;
+      bootrom_bus.req_wdata     = xbar_in_bus.req_wdata;
+      bootrom_bus.req_wstrb     = xbar_in_bus.req_wstrb;
+      bootrom_bus.req_priv      = xbar_in_bus.req_priv;
+      bootrom_bus.req_rob_seq   = xbar_in_bus.req_rob_seq;
+      bootrom_bus.req_committed = xbar_in_bus.req_committed;
+      bootrom_bus.req_device    = xbar_in_bus.req_device;
+    end
+
+    if (if_path_bootrom_q &&
+        ((outbound_state_q == OUT_WAIT_LO) ||
+         (outbound_state_q == OUT_WAIT_HI)))
+      bootrom_bus.rsp_ready = 1'b1;
+    else if (xbar_bootrom_pending_q && !xbar_rsp_buffer_valid_q)
+      bootrom_bus.rsp_ready = 1'b1;
+
+    fetch_path_req_ready = if_path_bootrom_q ? bootrom_bus.req_ready :
+                                                   outbound_bus.req_ready;
+    fetch_path_rsp_valid = if_path_bootrom_q ? bootrom_bus.rsp_valid :
+                                                   outbound_bus.rsp_valid;
+    fetch_path_rsp_data  = if_path_bootrom_q ? bootrom_bus.rsp_rdata :
+                                                   outbound_bus.rsp_rdata;
+    fetch_path_rsp_resp  = if_path_bootrom_q ? bootrom_bus.rsp_resp :
+                                                   outbound_bus.rsp_resp;
   end
 
   always_comb begin
     xbar_pulse_valid = xbar_error_valid_q || xbar_write_ack_q ||
                        (xbar_read_pending_q &&
-                        (bank_read_valid[0] || bank_read_valid[1]));
+                        (bank_read_valid[0] || bank_read_valid[1])) ||
+                       (xbar_bootrom_pending_q && bootrom_bus.rsp_valid);
     xbar_pulse_data = '0;
     xbar_pulse_resp = xbar_error_valid_q ? AXI_RESP_SLVERR : AXI_RESP_OKAY;
-    if (xbar_read_pending_q) begin
+    if (xbar_bootrom_pending_q && bootrom_bus.rsp_valid) begin
+      xbar_pulse_data = bootrom_bus.rsp_rdata;
+      xbar_pulse_resp = bootrom_bus.rsp_resp;
+    end else if (xbar_read_pending_q) begin
       if (bank_read_valid[0])
         xbar_pulse_data = bank_read_data[0];
       else if (bank_read_valid[1])
@@ -298,6 +405,7 @@ module rv_i_fabric #(
       xbar_busy_q               <= 1'b0;
       xbar_id_q                 <= '0;
       xbar_read_pending_q       <= 1'b0;
+      xbar_bootrom_pending_q    <= 1'b0;
       xbar_write_ack_q          <= 1'b0;
       xbar_error_valid_q        <= 1'b0;
       xbar_rsp_buffer_valid_q   <= 1'b0;
@@ -305,6 +413,7 @@ module rv_i_fabric #(
       xbar_rsp_buffer_data_q    <= '0;
       xbar_rsp_buffer_resp_q    <= AXI_RESP_OKAY;
       outbound_state_q          <= OUT_IDLE;
+      if_path_bootrom_q         <= 1'b0;
       outbound_low_data_q       <= '0;
       outbound_resp_q           <= AXI_RESP_OKAY;
     end else begin
@@ -354,6 +463,11 @@ module rv_i_fabric #(
         xbar_busy_q <= 1'b1;
         xbar_id_q   <= xbar_in_bus.req_id;
       end
+      if (xbar_bootrom_accept)
+        xbar_bootrom_pending_q <= 1'b1;
+      if (xbar_bootrom_pending_q && bootrom_bus.rsp_valid &&
+          bootrom_bus.rsp_ready)
+        xbar_bootrom_pending_q <= 1'b0;
       if (xbar_pulse_valid && !xbar_rsp_buffer_valid_q) begin
         if (xbar_in_bus.rsp_ready) begin
           xbar_busy_q <= 1'b0;
@@ -371,37 +485,39 @@ module rv_i_fabric #(
 
       case (outbound_state_q)
         OUT_IDLE: begin
-          if (if_nonlocal_accept) begin
+          if (if_bootrom_accept || if_nonlocal_accept) begin
             outbound_state_q <= OUT_REQ_LO;
             outbound_resp_q  <= AXI_RESP_OKAY;
+            if_path_bootrom_q <= if_bootrom_accept;
           end
         end
         OUT_REQ_LO: begin
-          if (outbound_bus.req_valid && outbound_bus.req_ready)
+          if (fetch_path_req_ready)
             outbound_state_q <= OUT_WAIT_LO;
         end
         OUT_WAIT_LO: begin
-          if (outbound_bus.rsp_valid && outbound_bus.rsp_ready) begin
-            outbound_low_data_q <= outbound_bus.rsp_rdata;
-            if (outbound_bus.rsp_resp != AXI_RESP_OKAY)
-              outbound_resp_q <= outbound_bus.rsp_resp;
+          if (fetch_path_rsp_valid) begin
+            outbound_low_data_q <= fetch_path_rsp_data;
+            if (fetch_path_rsp_resp != AXI_RESP_OKAY)
+              outbound_resp_q <= fetch_path_rsp_resp;
             outbound_state_q <= OUT_REQ_HI;
           end
         end
         OUT_REQ_HI: begin
-          if (outbound_bus.req_valid && outbound_bus.req_ready)
+          if (fetch_path_req_ready)
             outbound_state_q <= OUT_WAIT_HI;
         end
         OUT_WAIT_HI: begin
-          if (outbound_bus.rsp_valid && outbound_bus.rsp_ready) begin
+          if (fetch_path_rsp_valid) begin
             if_rsp_buffer_valid_q <= 1'b1;
             if_rsp_buffer_id_q    <= if_id_q;
             if_rsp_buffer_epoch_q <= if_epoch_q;
-            if_rsp_buffer_data_q  <= {outbound_bus.rsp_rdata,
+            if_rsp_buffer_data_q  <= {fetch_path_rsp_data,
                                       outbound_low_data_q};
-            if_rsp_buffer_resp_q  <= (outbound_bus.rsp_resp != AXI_RESP_OKAY) ?
-                                     outbound_bus.rsp_resp : outbound_resp_q;
+            if_rsp_buffer_resp_q  <= (fetch_path_rsp_resp != AXI_RESP_OKAY) ?
+                                     fetch_path_rsp_resp : outbound_resp_q;
             outbound_state_q <= OUT_IDLE;
+            if_path_bootrom_q <= 1'b0;
           end
         end
         default: outbound_state_q <= OUT_IDLE;
@@ -410,13 +526,27 @@ module rv_i_fabric #(
   end
 
 `ifndef SYNTHESIS
-  property p_outbound_never_targets_itim;
+  property p_outbound_never_targets_i_local;
     @(posedge clk_i) disable iff (!rst_ni)
       outbound_bus.req_valid |->
       !addr_in_region(outbound_bus.req_addr, ITIM_BASE_ADDR,
-                      size_kb_to_bytes(ITIM_SIZE_KB));
+                      size_kb_to_bytes(ITIM_SIZE_KB)) &&
+      !addr_in_region(outbound_bus.req_addr, BOOTROM_BASE_ADDR,
+                      size_kb_to_bytes(BOOTROM_SIZE_KB));
   endproperty
-  assert property (p_outbound_never_targets_itim);
+  assert property (p_outbound_never_targets_i_local);
+
+  property p_bootrom_fetch_uses_local_path;
+    @(posedge clk_i) disable iff (!rst_ni)
+      if_path_bootrom_q |-> !outbound_bus.req_valid;
+  endproperty
+  assert property (p_bootrom_fetch_uses_local_path);
+
+  property p_bootrom_has_single_owner;
+    @(posedge clk_i) disable iff (!rst_ni)
+      if_path_bootrom_q |-> !xbar_bootrom_pending_q;
+  endproperty
+  assert property (p_bootrom_has_single_owner);
 
   property p_local_fetch_is_block_aligned;
     @(posedge clk_i) disable iff (!rst_ni)

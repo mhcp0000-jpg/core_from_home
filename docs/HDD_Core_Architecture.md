@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Verification baseline v1.9.1 (fixed orthogonal SoC/core diagrams, GCC C/ASM loop PASS) |
+| 상태 | Verification baseline v1.9.2 (Boot ROM I-local routing, explicit AXI bridge paths) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -101,76 +101,20 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 
 [![RV OoO Core SoC architecture](diagrams/soc-architecture.svg)](diagrams/soc-architecture.svg)
 
-<details>
-<summary>논리 연결 원본(Mermaid) 보기</summary>
+그림은 선이 되돌아가거나 교차하지 않도록 같은 물리 module을 두 관점으로 나누어 표현한다. 위쪽 A 패널은 Xbar를 사용하지 않는 core-local fast path이고, 아래쪽 B 패널의 `I-Fabric OUT/IN`, `D-Fabric OUT/IN`은 각각 위 패널에 표시한 동일한 `rv_i_fabric`, `rv_d_fabric`의 outbound/inbound port를 뜻한다. `I-Fabric`과 `I-Arbiter`는 직렬로 연결된 별도 RTL module이 아니다. `rv_i_fabric` module 안에 I-Arbiter, 주소 decode, response mux, Boot ROM과 ITIM 연결이 들어 있다. D 쪽도 같은 방식으로 `rv_d_fabric` 안에 D-Arbiter가 있다.
 
-```mermaid
-flowchart TB
-    subgraph INIT["AXI initiators"]
-      direction LR
-      IFU["Core IFU<br/>128-bit fetch interface"]
-      LSU0["Core LSU0<br/>local request port"]
-      LSU1["Core LSU1<br/>local request port"]
-      DPI["DPI Host / debugger<br/>ELF loader + AXI BFM"]
-    end
+대표 요청 경로는 다음과 같다.
 
-    subgraph LOCAL["Low-latency local paths"]
-      direction LR
-      IFAB["I local fabric<br/>IFU route + inbound arbitration"]
-      DFAB["D local fabric<br/>LSU0 + LSU1 + inbound arbitration"]
-    end
+| 요청 | 왼쪽에서 오른쪽으로 읽는 실제 경로 |
+|---|---|
+| IFU reset fetch | `IFU → rv_i_fabric(I-Arbiter) → u_bootrom_local` |
+| IFU normal ITIM fetch | `IFU → rv_i_fabric(I-Arbiter) → u_itim` |
+| Host ELF write to ITIM | `DPI Host(M2) → u_main_xbar(S0) → u_i_inbound_bridge → rv_i_fabric.xbar_in_bus → I-Arbiter → u_itim` |
+| LSU data access to ITIM | `LSU → rv_d_fabric OUT → u_d_outbound_bridge(M1) → u_main_xbar(S0) → u_i_inbound_bridge → rv_i_fabric → u_itim` |
+| LSU local DTIM/CLINT | `LSU0/1 → rv_d_fabric(D-Arbiter) → u_dtim 또는 u_clint` |
+| Host access to DTIM/CLINT | `DPI Host(M2) → u_main_xbar(S1) → u_d_inbound_bridge → rv_d_fabric → u_dtim 또는 u_clint` |
 
-    subgraph MAIN["Main AXI4 interconnect"]
-      XBAR["AXI4 crossbar<br/>32-bit address / 64-bit data<br/>3 masters / 6 targets"]
-    end
-
-    subgraph LOCAL_TARGETS["Tightly integrated targets"]
-      direction LR
-      ITIM["ITIM 128 KiB<br/>2 banks x 64-bit 1R1W<br/>0x8000_0000"]
-      DTIM["DTIM 128 KiB<br/>2 banks x 64-bit 1R1W<br/>0x8002_0000"]
-      CLINT["CLINT<br/>MSIP + MTIME/MTIMECMP<br/>0x0020_0000<br/>MSIP/MTIP to core"]
-    end
-
-    subgraph AXI_TARGETS["Main AXI targets"]
-      direction LR
-      PLIC["S2 PLIC<br/>0x0C00_0000<br/>external IRQ in / MEIP to core"]
-      BOOT["S3 Boot ROM<br/>0x0000_1000<br/>reset vector"]
-      HOSTIF["S4 HostIF<br/>0x1000_0000<br/>signature/console/exit to DPI"]
-      ERR["S5 default error slave<br/>DECERR"]
-    end
-
-    IFU --> IFAB
-    LSU0 --> DFAB
-    LSU1 --> DFAB
-    DPI -->|"M2 Host AXI"| XBAR
-
-    IFAB -->|"ITIM hit"| ITIM
-    DFAB -->|"DTIM hit"| DTIM
-    DFAB -->|"CLINT hit"| CLINT
-    IFAB -->|"M0: non-ITIM via local-to-AXI bridge"| XBAR
-    DFAB -->|"M1: non-DTIM/CLINT via local-to-AXI bridge"| XBAR
-
-    XBAR -->|"S0: AXI-to-local bridge / I inbound"| ITIM
-    XBAR -->|"S1: AXI-to-local bridge / D inbound"| DTIM
-    XBAR -->|"S1: AXI-to-local bridge / D inbound"| CLINT
-    XBAR --> PLIC
-    XBAR --> BOOT
-    XBAR --> HOSTIF
-    XBAR --> ERR
-
-    classDef core fill:#e8f2ff,stroke:#2563eb,color:#111827;
-    classDef local fill:#ecfdf5,stroke:#059669,color:#111827;
-    classDef axi fill:#fff7ed,stroke:#ea580c,color:#111827;
-    classDef external fill:#f5f3ff,stroke:#7c3aed,color:#111827;
-    class IFU,LSU0,LSU1 core;
-    class IFAB,DFAB,ITIM,DTIM,CLINT local;
-    class XBAR,PLIC,BOOT,HOSTIF,ERR axi;
-    class DPI external;
-```
-
-</details>
-
-I/D local fabric은 각각 AXI master outbound port와 AXI slave inbound port를 따로 가진다. 그림의 Xbar S0/S1에서 ITIM/DTIM/CLINT로 향하는 화살표는 가독성을 위해 `AXI-to-local bridge → local fabric inbound arbitration → target`을 하나의 경로로 축약한 것이며, Xbar가 TIM bank에 직접 접속한다는 뜻은 아니다. 코어 자신의 local 주소는 AXI로 내보내기 전에 local decode에서 흡수하므로 `I outbound → I inbound`, `D outbound → D inbound` self-loop는 발생하지 않는다. 반면 LSU가 ITIM을 data로 읽거나 IFU가 DTIM에서 fetch하는 cross-local access는 Main Xbar를 통해 허용한다.
+Main Xbar는 Boot ROM, ITIM, DTIM, CLINT의 native port를 직접 구동하지 않는다. AXI4의 AW/W/B/AR/R channel을 단순한 `rv_local_mem_if` request/response로 바꾸기 위해 S0/S1 뒤에 반드시 `rv_axi_to_local_bridge`가 있다. 반대로 I/D-Fabric에서 non-local 주소로 나가는 local request는 `rv_local_to_axi_bridge`를 거쳐 M0/M1 AXI master transaction이 된다. local address는 Fabric에서 먼저 흡수하므로 outbound→inbound self-loop는 발생하지 않는다.
 
 ### 3.2 코어 내부 microarchitecture
 
@@ -401,8 +345,9 @@ ITIM bank mapping은 64-bit beat 기준으로 `bank = address[3]`, `row = (addre
 
 ### 6.2 I-Arbiter
 
-I local fabric은 IFU request와 Main Xbar inbound access를 ITIM에 연결하고, ITIM/로컬 범위 밖 IFU request를 AXI master로 내보낸다.
+I local fabric은 IFU request와 Main Xbar inbound access를 Boot ROM 또는 ITIM에 연결하고, 두 I-local window 밖의 IFU request만 AXI master로 내보낸다. Boot ROM은 reset fetch latency와 Xbar 의존성을 줄이기 위해 `rv_i_fabric` 내부 local target으로 둔다.
 
+- Boot ROM local port: IFU 128-bit block을 두 64-bit read로 조립한다. Xbar inbound Boot ROM access와는 한 요청씩 serialize하며 write는 SLVERR다.
 - ITIM bank별 read port: IFU fetch와 AXI inbound read가 경쟁한다.
 - ITIM bank별 write port: AXI inbound write가 사용하며 IFU read와 1R1W로 동시 수행할 수 있다.
 - IFU read 우선이 기본이지만 inbound read가 8회 연속 대기하면 한 번 grant하는 bounded fairness를 적용한다.
@@ -912,7 +857,7 @@ AXI invariant:
 - `valid && !ready` 동안 모든 payload는 stable이다.
 - AW를 grant한 write burst는 WLAST까지 해당 slave의 W ownership을 유지한다.
 - 동일 ID response ordering을 보존한다.
-- CLINT/PLIC/HostIF/BootROM은 single-beat transaction만 허용하고 burst에는 SLVERR를 반환한다.
+- CLINT/PLIC/HostIF의 register semantics는 32-bit naturally aligned access를 기준으로 하며 잘못된 접근은 error를 반환한다. Boot ROM은 S0 inbound bridge가 AXI burst를 64-bit local read로 분해하므로 ROM leaf 자체는 AXI channel을 갖지 않는다.
 - unmapped 또는 slave-window를 넘는 burst는 DECERR이며 일부 beat만 side effect를 만들 수 없다.
 
 ### 15.2 Main AXI Xbar
@@ -921,7 +866,7 @@ AXI master port는 정확히 세 개다.
 
 | Master index | Initiator | 용도 |
 |---:|---|---|
-| M0 | I-Arbiter outbound | Boot ROM/non-local instruction fetch |
+| M0 | I-Fabric outbound bridge | Boot ROM/ITIM 이외의 non-local instruction fetch |
 | M1 | D-Arbiter outbound | PLIC/HostIF/ITIM/non-local data access |
 | M2 | DPI Host AXI master | ELF load, memory inspect, CLINT MSIP, peripheral access |
 
@@ -929,18 +874,18 @@ AXI slave port:
 
 | Slave index | Target |
 |---:|---|
-| S0 | I-Arbiter inbound: ITIM window |
+| S0 | I-local inbound bridge: Boot ROM와 ITIM windows |
 | S1 | D-Arbiter inbound: DTIM와 CLINT windows |
 | S2 | PLIC |
-| S3 | Boot ROM |
-| S4 | HostIF register block |
-| S5 | Default error slave |
+| S3 | HostIF register block |
+| S4 | Reserved error slave |
+| S5 | Default/unmapped error slave |
 
 주소 채널은 slave별 round-robin arbitration을 사용하고 Host ELF loading이 진행되는 reset/boot 구간에는 core traffic이 거의 없다는 가정을 둔다. runtime QoS는 I fetch > D demand > Host를 기본으로 하되, 각 slave가 16 grant 이내에 waiting master를 한 번 수용하는 bounded fairness를 가진다.
 
 I/D local fabric은 같은 module 안에 `axi_m` outbound와 `axi_s` inbound를 분리한다. local requester가 자기 local window를 접근하면 outbound로 보내지 않는다. 다음 assertion을 둔다.
 
-- I outbound transaction은 ITIM window를 가질 수 없다.
+- I outbound transaction은 Boot ROM 또는 ITIM window를 가질 수 없다.
 - D outbound transaction은 DTIM/CLINT window를 가질 수 없다.
 - Xbar inbound bridge가 받은 request를 다시 outbound로 보내지 않는다.
 
@@ -997,9 +942,9 @@ DTIM bank별로 read arbiter와 write arbiter를 분리한다. 1R1W이므로 같
 
 ### 15.5 I-Arbiter / I local fabric
 
-I-Arbiter initiator는 IFU fetch와 Main Xbar inbound bridge다. IFU local hit는 두 ITIM read bank를 묶어 128-bit를 반환한다. AXI inbound 64-bit write는 해당 bank write port를 사용하므로 IFU read와 동시에 가능하다. inbound read와 IFU read가 같은 bank에서 충돌하면 IFU를 우선하되 bounded fairness를 적용한다.
+I-Arbiter initiator는 IFU fetch와 Main Xbar S0 뒤의 `u_i_inbound_bridge`다. 두 initiator의 주소를 Boot ROM/ITIM으로 decode하고 응답 ID를 원래 requester로 돌린다. IFU ITIM hit는 두 read bank를 묶어 128-bit를 반환한다. AXI inbound ITIM 64-bit write는 해당 bank write port를 사용하므로 IFU read와 동시에 가능하다. inbound read와 IFU read가 같은 bank에서 충돌하면 IFU를 우선하되 bounded fairness를 적용한다.
 
-IFU가 Boot ROM 또는 다른 executable window를 fetch하면 I outbound AXI master가 2-beat INCR burst로 128-bit block을 만든다. 최대 4 outstanding block과 epoch를 관리한다. AXI response beat error가 하나라도 있으면 block response 전체를 fault로 표시한다.
+IFU Boot ROM hit는 Xbar로 나가지 않는다. `u_bootrom_local`의 64-bit local port를 low/high 두 번 읽어 128-bit block으로 조립한다. 같은 시간 Host/LSU가 S0를 통해 Boot ROM을 읽으면 IFU와 inbound 중 한 요청만 local ROM port를 소유한다. Boot ROM write는 ROM leaf에서 SLVERR로 끝나며 ITIM이나 outbound에 전달되지 않는다. Boot ROM과 ITIM 이외 executable window만 I outbound AXI master가 low/high 두 64-bit transaction으로 읽는다. AXI response 중 하나라도 error이면 block response 전체를 fault로 표시한다.
 
 ### 15.6 ITIM/DTIM SRAM wrapper
 
@@ -1117,12 +1062,12 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 |---|---|
 | `rv_soc_top` | clock/reset, external IRQ vector, Host AXI master port, retire trace |
 | `rv_ooo_core` | IFU block port, dual LSU local ports, MSIP/MTIP/MEIP, debug/trace |
-| `rv_i_fabric` | IFU port, ITIM banks, AXI master outbound, AXI slave inbound |
+| `rv_i_fabric` | IFU port, local Boot ROM/ITIM, local master outbound, Xbar local inbound |
 | `rv_d_fabric` | LSU0/1, DTIM banks, CLINT local port, AXI master outbound, AXI slave inbound |
 | `rv_axi_xbar` | 3 AXI masters, 6 slave routes, ID prefix/response routing |
 | `rv_clint` | local request/response, msip/mtip |
 | `rv_plic` | AXI slave, source vector, meip, optional seip |
-| `rv_bootrom` | AXI read-only slave |
+| `rv_bootrom_local` | `rv_i_fabric` 내부 64-bit read-only local target |
 | `rv_hostif` | AXI slave + DPI event sideband |
 | `rv_sram_1r1w` | native read/write bank interface |
 | `rv_soc_addr_decode` | package/top parameter 기반 Main Xbar target decode |
@@ -1155,11 +1100,11 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented candidate: BTB/gshare/RAS resolve+commit paths, verification pending | core clock/reset | BTB/gshare/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Implemented candidate: RV32IMFC execution/recovery paths integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
-| `rv_i_fabric` | Implemented | single clock, sync active-low reset | ITIM map, fairness bound |
+| `rv_i_fabric` | Implemented | single clock, sync active-low reset | Boot ROM/ITIM map, ROM image, fairness bound |
 | `rv_local_to_axi_bridge` | Implemented | single clock, sync active-low reset | local/AXI ID width, instruction attribute |
 | `rv_axi_to_local_bridge` | Implemented | single clock, sync active-low reset | target window, device attribute, max burst |
 | `rv_axi_error_slave`, `rv_axi_xbar` | Implemented | single clock, sync active-low reset | local/Xbar ID width, 전 region map |
-| `rv_plic`, `rv_bootrom`, `rv_hostif` | Implemented | single clock, sync active-low reset | register map, AXI ID width, init image/event |
+| `rv_bootrom_local`, `rv_plic`, `rv_hostif` | Implemented | single clock, sync active-low reset | local ROM image, register map, AXI ID/event |
 | `rv_soc_top` | Implemented candidate: core/interconnect/privileged/PMP/DPI boot boundary integrated, verification pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
 | `rv_rename2` | Implemented standalone | core clock/reset | INT/FP physical registers, tag width, branch checkpoints |
 | `rv_rob` | Implemented standalone | core clock/reset | XLEN, 48 entries, sequence width, allocate/complete/retire width |
@@ -1251,6 +1196,8 @@ Parameter:
 
 | Parameter | 기본값 | 제약/용도 |
 |---|---:|---|
+| `BOOTROM_BASE_ADDR/BOOTROM_SIZE_KB` | package 값 | I-local read-only window |
+| `BOOTROM_INIT_FILE` | empty string | synthesis/simulation Boot ROM image |
 | `ITIM_BASE_ADDR/ITIM_SIZE_KB` | package 값 | 16-byte 단위 2-bank 분할 |
 | `CORE_MAX_GRANTS` | 8 | 대기 inbound read 전 IFU 연속 grant 상한 |
 
@@ -1262,10 +1209,10 @@ Parameter:
 | `if_rsp_valid/ready` | output/input | block response handshake |
 | `if_rsp_id`, `if_rsp_epoch` | output 4-bit | accepted request metadata 반환 |
 | `if_rsp_data[127:0]`, `if_rsp_resp[1:0]` | output | fetch block와 aggregate response |
-| `xbar_in_bus` | `rv_local_mem_if.target` | Host/Main-Xbar의 ITIM 64-bit read/write |
-| `outbound_bus` | `rv_local_mem_if.requester` | BootROM/non-local instruction fetch의 두 64-bit beat |
+| `xbar_in_bus` | `rv_local_mem_if.target` | S0 inbound bridge에서 들어오는 Boot ROM/ITIM 64-bit access |
+| `outbound_bus` | `rv_local_mem_if.requester` | Boot ROM/ITIM 이외 non-local instruction fetch의 두 64-bit beat |
 
-Local ITIM fetch는 같은 row의 bank0을 `data[63:0]`, bank1을 `data[127:64]`로 묶고 accept 다음 cycle 반환한다. Xbar inbound write는 독립 write port를 사용하므로 IFU read와 동시 가능하며 같은 row이면 write-first data가 fetch에 보인다. inbound read가 기다리면 최대 8번의 IFU local grant 뒤 inbound read를 강제로 선택한다. inbound non-ITIM access는 outbound로 loop하지 않고 SLVERR를 반환한다.
+Local ITIM fetch는 같은 row의 bank0을 `data[63:0]`, bank1을 `data[127:64]`로 묶고 accept 다음 cycle 반환한다. Local Boot ROM fetch는 read-only 64-bit port를 low/high 순서로 두 번 사용한다. Xbar inbound ITIM write는 독립 write port를 사용하므로 IFU ITIM read와 동시 가능하며 같은 row이면 write-first data가 fetch에 보인다. inbound ITIM read가 기다리면 최대 8번의 IFU local grant 뒤 inbound read를 강제로 선택한다. inbound Boot ROM request는 진행 중인 IFU Boot ROM block과 serialize한다. inbound non-I-local access는 outbound로 loop하지 않고 SLVERR를 반환한다.
 
 현재 M1 baseline은 IFU block 한 건만 outstanding으로 처리하며 non-local block을 low/high 두 local beat로 순차 변환한다. 최종 frontend 목표인 최대 4 outstanding은 Main AXI bridge와 ID queue 구현 단계에서 확장한다. 이 제한은 기능 correctness용 구현 상태이며 Section 6의 최종 성능 목표를 변경하지 않는다.
 
@@ -1301,7 +1248,7 @@ CLINT는 response backpressure를 내부 한 entry로 유지한다. `msip` reset
 
 `rv_soc_map_check`는 port가 없는 elaboration-only module이다. 모든 `*_BASE_ADDR`, `*_SIZE_KB`, `BOOT_MTVEC_ADDR` parameter를 받아 zero-size, 4 KiB alignment, address overflow, pairwise overlap, TIM bank divisibility, mtvec range를 `$fatal`로 검사한다.
 
-`rv_soc_addr_decode`는 `addr_i[31:0]` 하나를 받아 `target_o`를 다음 enum 중 하나로 반환하는 combinational module이다: `I_LOCAL`, `D_LOCAL`, `PLIC`, `BOOTROM`, `HOSTIF`, `ERROR`. D local은 DTIM과 CLINT 두 window를 포함한다.
+`rv_soc_addr_decode`는 `addr_i[31:0]` 하나를 받아 `target_o`를 다음 enum 중 하나로 반환하는 combinational module이다: `I_LOCAL`, `D_LOCAL`, `PLIC`, `HOSTIF`, `RESERVED`, `ERROR`. I local은 Boot ROM과 ITIM 두 window를, D local은 DTIM과 CLINT 두 window를 포함한다. enum 값은 Xbar target index와 일치하도록 S0부터 S5까지 명시적으로 지정한다.
 
 `rv_soc_top`의 합성 경계 port는 다음과 같다.
 
@@ -1355,10 +1302,10 @@ top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral i
 |---|---|---|---|
 | `rv_axi_xbar` | `m0_s..m2_s` AXI slave-facing inputs, `s0_m..s5_m` AXI master-facing outputs | parameterized decode | master-prefix ID, AW/W ownership, B/R return route, round-robin fairness |
 | `rv_plic` | AXI4 slave | `source_i[31:1]`, `meip_o`, optional `seip_o` | priority/pending/enable/threshold/claim-complete |
-| `rv_bootrom` | AXI4 read-only slave | optional init image parameter | single/burst read, all write SLVERR |
+| `rv_bootrom_local` | `rv_local_mem_if.target` | optional init image parameter | 64-bit read, all write SLVERR; `rv_i_fabric` 내부 instance |
 | `rv_hostif` | AXI4 slave | DPI console/exit/event sideband | Section 15.9 register semantics |
 
-I-Fabric port는 IFU용 128-bit block channel과 Xbar inbound 64-bit channel을 섞지 않는다. Xbar는 I/D inbound target에 이미 해당 window만 전달해야 하며 bridge도 region을 재검사해 잘못된 route에는 DECERR를 반환한다.
+I-Fabric port는 IFU용 128-bit block channel과 Xbar inbound 64-bit channel을 섞지 않는다. S0 inbound bridge는 Boot ROM/ITIM 두 window를, S1 inbound bridge는 DTIM/CLINT 두 window를 재검사한다. 잘못된 route나 window-crossing burst는 local side effect 없이 error를 반환한다.
 
 ### 15.19 Core 내부 module interface contract index
 
@@ -1399,7 +1346,7 @@ Parameter는 `ADDR_WIDTH=32`, `DATA_WIDTH=64`, `LOCAL_ID_WIDTH=6`, `AXI_ID_WIDTH
 | `local_bus` | `rv_local_mem_if.requester` | I/D Fabric 또는 local peripheral request 구동 |
 | `clk_i`, `rst_ni` | input | single clock/reset |
 
-주 parameter는 `TARGET_BASE_ADDR`, `TARGET_SIZE_KB`, `TARGET_IS_DEVICE`, 선택적인 `SECOND_TARGET_{ENABLE,BASE_ADDR,SIZE_KB,IS_DEVICE}`, `MAX_BURST_BEATS=16`이다. 두 번째 window는 Main Xbar의 D target 하나가 비연속 DTIM/CLINT window를 공유하기 위해 사용한다. 각 burst는 두 window 중 정확히 한 window 안에 완전히 들어가야 하고, beat의 `req_device`는 실제로 선택된 window 속성에서 생성한다. bridge는 한 read 또는 write burst만 처리하고 다음 규칙을 적용한다.
+주 parameter는 `TARGET_BASE_ADDR`, `TARGET_SIZE_KB`, `TARGET_IS_DEVICE`, 선택적인 `SECOND_TARGET_{ENABLE,BASE_ADDR,SIZE_KB,IS_DEVICE}`, `MAX_BURST_BEATS=16`이다. S0 bridge의 두 window는 ITIM/Boot ROM이고 S1 bridge의 두 window는 DTIM/CLINT다. 각 burst는 두 window 중 정확히 한 window 안에 완전히 들어가야 하고, beat의 `req_device`는 실제로 선택된 window 속성에서 생성한다. bridge는 한 read 또는 write burst만 처리하고 다음 규칙을 적용한다.
 
 - AW와 AR이 동시에 valid이면 AW를 accept하고 AR에 backpressure한다. W는 AW metadata를 저장한 뒤에만 받는다.
 - INCR, 1/2/4/8-byte naturally aligned, 최대 16-beat만 정상 transaction이다.
@@ -1419,12 +1366,12 @@ Parameter는 `ADDR_WIDTH=32`, `DATA_WIDTH=64`, `LOCAL_ID_WIDTH=6`, `AXI_ID_WIDTH
 | `m0_s` | `rv_axi4_if.slave`, local ID | I-Fabric outbound bridge |
 | `m1_s` | `rv_axi4_if.slave`, local ID | D-Fabric outbound bridge |
 | `m2_s` | `rv_axi4_if.slave`, local ID | DPI/debug Host master |
-| `s0_m` | `rv_axi4_if.master`, prefixed ID | ITIM/I-Fabric inbound |
+| `s0_m` | `rv_axi4_if.master`, prefixed ID | Boot ROM+ITIM/I-Fabric inbound bridge |
 | `s1_m` | `rv_axi4_if.master`, prefixed ID | DTIM+CLINT/D-Fabric inbound |
 | `s2_m` | `rv_axi4_if.master`, prefixed ID | PLIC |
-| `s3_m` | `rv_axi4_if.master`, prefixed ID | Boot ROM |
-| `s4_m` | `rv_axi4_if.master`, prefixed ID | HostIF |
-| `s5_m` | `rv_axi4_if.master`, prefixed ID | default DECERR slave |
+| `s3_m` | `rv_axi4_if.master`, prefixed ID | HostIF |
+| `s4_m` | `rv_axi4_if.master`, prefixed ID | reserved DECERR slave |
+| `s5_m` | `rv_axi4_if.master`, prefixed ID | default/unmapped DECERR slave |
 
 baseline Xbar는 다음 규칙을 지킨다.
 
@@ -1436,7 +1383,7 @@ baseline Xbar는 다음 규칙을 지킨다.
 
 ### 15.22 `rv_soc_top` exact interface와 실제 연결
 
-`rv_soc_top`은 Core→I/D Fabric→local-to-AXI bridge→Main Xbar와 Xbar→inbound bridge→ITIM/DTIM/CLINT, PLIC, Boot ROM, HostIF, error target을 실제 interface instance로 연결한다. core reset PC는 `BOOTROM_BASE_ADDR`이며 `BOOT_MTVEC_ADDR`는 map check와 Boot ROM software contract에 사용한다.
+`rv_soc_top`은 Core→I/D Fabric→local-to-AXI bridge→Main Xbar와 Xbar→inbound bridge→I/D-Fabric, PLIC, HostIF, error target을 실제 interface instance로 연결한다. Boot ROM은 `rv_i_fabric.u_bootrom_local`이고 ITIM과 함께 I-local target이다. 따라서 core reset fetch는 Xbar를 통과하지 않지만 Host/LSU의 Boot ROM read는 Xbar S0와 `u_i_inbound_bridge`를 통과한다. core reset PC는 `BOOTROM_BASE_ADDR`이며 `BOOT_MTVEC_ADDR`는 map check와 Boot ROM software contract에 사용한다.
 
 | Port | 방향/형식 | 의미 |
 |---|---|---|
@@ -1452,7 +1399,7 @@ baseline Xbar는 다음 규칙을 지킨다.
 | `trace_rd_write_o`, `trace_rd_fp_o`, `trace_rd_o`, `trace_rd_wdata_o` | output | committed register write; `rd_fp=1`이면 FP namespace |
 | `trace_trap_o`, `trace_cause_o[1:0][5:0]`, `trace_tval_o` | output | synchronous/interrupt trap record |
 
-주소/크기, AXI ID 폭, `CLOCK_HZ/TIMEBASE_HZ`, `HAS_SMODE`, `BOOTROM_INIT_FILE`은 top parameter로 노출된다. 모든 region override는 map check, Xbar, inbound bridge, Fabric 및 peripheral까지 동일하게 전달해야 한다. D inbound bridge는 DTIM을 normal memory, CLINT를 device로 구분한다. PLIC의 `seip_o`는 `HAS_SMODE=1`에서 생성되지만 초기 M/U core에는 아직 연결하지 않고 향후 S-mode interrupt input hook으로 남긴다.
+주소/크기, AXI ID 폭, `CLOCK_HZ/TIMEBASE_HZ`, `HAS_SMODE`, `BOOTROM_INIT_FILE`은 top parameter로 노출된다. 모든 region override는 map check, Xbar, inbound bridge, Fabric 및 peripheral까지 동일하게 전달해야 한다. I inbound bridge는 ITIM/Boot ROM을 normal memory window로, D inbound bridge는 DTIM을 normal memory와 CLINT를 device window로 구분한다. PLIC의 `seip_o`는 `HAS_SMODE=1`에서 생성되지만 초기 M/U core에는 아직 연결하지 않고 향후 S-mode interrupt input hook으로 남긴다.
 
 현재 통합 top은 predictor 기반 frontend, RV32IMFC backend, dual D-memory traffic, CSR/privilege/trap/WFI/FENCE/PMP, interrupt/timebase, recovery redirect와 retire trace를 연결한다. CLINT의 MSIP/MTIP와 PLIC MEIP는 CSR interrupt eligibility에 반영되고 `mtime_o`는 `time` CSR source로 전달된다. 실행 가능한 Boot ROM과 directed BFM 경로에 더해 별도 `rv_soc_dpi_tb`가 `rv_host_dpi`를 Host AXI slave ingress에 연결한다. FPU/DPI 동작은 directed ELF로 확인했지만 predictor random stress와 전체 ISA differential sign-off는 Section 18의 후속 검증 항목이다.
 
@@ -2009,3 +1956,4 @@ GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 
 | v1.8.1 | 검증 파일을 역할과 범위가 드러나는 `tb/unit/{frontend,backend,soc}`, `tb/integration/{backend,soc}`, `tb/e2e/dpi`, `tb/fixtures`, `tb/elaboration` 구조로 재배치. 실행 software는 `sw/tests/<case>`, 보존 결과는 `verification/tests/<case>`에서 같은 case 이름을 사용하도록 통일 |
 | v1.9.0 | RTL 연결을 기준으로 Main AXI Xbar·I/D local fabric·TIM/peripheral·DPI Host를 표현한 전체 SoC architecture diagram과, 2-wide frontend·rename/ROB/IQ·5-port/2-grant execution·dual LSU/LSQ·commit/recovery를 표현한 core microarchitecture diagram을 추가 |
 | v1.9.1 | 자동 배치 구조도의 얇고 구불거리는 wire를 대체하기 위해 SoC/core 구조도를 고정 그리드 SVG로 재작성. 4–6 px 배선과 수평·수직만 사용하는 orthogonal route, 라이트/다크 테마, 클릭 시 원본 확대를 적용 |
+| v1.9.2 | Boot ROM을 독립 Xbar S3 AXI slave에서 `rv_i_fabric` 내부 I-local target으로 이동. S0를 Boot ROM+ITIM dual-window inbound bridge로 구성하고 S3=HostIF, S4/S5=error로 재배치. Core-local/Global-AXI 경로를 좌→우 두 패널 구조도로 재작성하고 Host→ITIM/LSU→ITIM 경로와 bridge 역할을 명시 |

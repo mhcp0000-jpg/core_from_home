@@ -122,11 +122,11 @@ module rv_soc_top #(
     (.clk_i, .rst_ni);
   rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) plic_target_axi
     (.clk_i, .rst_ni);
-  rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) bootrom_target_axi
+  rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) reserved_error_axi
     (.clk_i, .rst_ni);
   rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) hostif_target_axi
     (.clk_i, .rst_ni);
-  rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) error_target_axi
+  rv_axi4_if #(.ID_WIDTH(AXI_XBAR_ID_WIDTH)) default_error_axi
     (.clk_i, .rst_ni);
 
   rv_soc_map_check #(
@@ -247,8 +247,11 @@ module rv_soc_top #(
   assign dmem_rsp_replay[1]     = lsu1_bus.rsp_replay;
 
   rv_i_fabric #(
-    .ITIM_BASE_ADDR (ITIM_BASE_ADDR),
-    .ITIM_SIZE_KB   (ITIM_SIZE_KB)
+    .BOOTROM_BASE_ADDR (BOOTROM_BASE_ADDR),
+    .BOOTROM_SIZE_KB   (BOOTROM_SIZE_KB),
+    .BOOTROM_INIT_FILE (BOOTROM_INIT_FILE),
+    .ITIM_BASE_ADDR    (ITIM_BASE_ADDR),
+    .ITIM_SIZE_KB      (ITIM_SIZE_KB)
   ) u_i_fabric (
     .clk_i,
     .rst_ni,
@@ -335,19 +338,23 @@ module rv_soc_top #(
     .s0_m (i_target_axi),
     .s1_m (d_target_axi),
     .s2_m (plic_target_axi),
-    .s3_m (bootrom_target_axi),
-    .s4_m (hostif_target_axi),
-    .s5_m (error_target_axi)
+    .s3_m (hostif_target_axi),
+    .s4_m (reserved_error_axi),
+    .s5_m (default_error_axi)
   );
 
   rv_axi_to_local_bridge #(
-    .AXI_ID_WIDTH     (AXI_XBAR_ID_WIDTH),
-    .LOCAL_ID_WIDTH   (LOCAL_MEM_ID_WIDTH),
-    .ROB_SEQ_WIDTH    (ROB_SEQ_WIDTH),
-    .TARGET_BASE_ADDR (ITIM_BASE_ADDR),
-    .TARGET_SIZE_KB   (ITIM_SIZE_KB),
-    .TARGET_IS_DEVICE (1'b0),
-    .MAX_BURST_BEATS  (16)
+    .AXI_ID_WIDTH            (AXI_XBAR_ID_WIDTH),
+    .LOCAL_ID_WIDTH          (LOCAL_MEM_ID_WIDTH),
+    .ROB_SEQ_WIDTH           (ROB_SEQ_WIDTH),
+    .TARGET_BASE_ADDR        (ITIM_BASE_ADDR),
+    .TARGET_SIZE_KB          (ITIM_SIZE_KB),
+    .TARGET_IS_DEVICE        (1'b0),
+    .SECOND_TARGET_ENABLE    (1'b1),
+    .SECOND_TARGET_BASE_ADDR (BOOTROM_BASE_ADDR),
+    .SECOND_TARGET_SIZE_KB   (BOOTROM_SIZE_KB),
+    .SECOND_TARGET_IS_DEVICE (1'b0),
+    .MAX_BURST_BEATS         (16)
   ) u_i_inbound_bridge (
     .clk_i,
     .rst_ni,
@@ -389,17 +396,6 @@ module rv_soc_top #(
     .seip_o   (seip)
   );
 
-  rv_bootrom #(
-    .BASE_ADDR    (BOOTROM_BASE_ADDR),
-    .SIZE_KB      (BOOTROM_SIZE_KB),
-    .AXI_ID_WIDTH (AXI_XBAR_ID_WIDTH),
-    .INIT_FILE    (BOOTROM_INIT_FILE)
-  ) u_bootrom (
-    .clk_i,
-    .rst_ni,
-    .axi_s (bootrom_target_axi)
-  );
-
   rv_hostif #(
     .BASE_ADDR    (HOSTIF_BASE_ADDR),
     .SIZE_KB      (HOSTIF_SIZE_KB),
@@ -418,10 +414,18 @@ module rv_soc_top #(
 
   rv_axi_error_slave #(
     .ID_WIDTH (AXI_XBAR_ID_WIDTH)
-  ) u_error_target (
+  ) u_reserved_error_target (
     .clk_i,
     .rst_ni,
-    .axi_s (error_target_axi)
+    .axi_s (reserved_error_axi)
+  );
+
+  rv_axi_error_slave #(
+    .ID_WIDTH (AXI_XBAR_ID_WIDTH)
+  ) u_default_error_target (
+    .clk_i,
+    .rst_ni,
+    .axi_s (default_error_axi)
   );
 
   assign soc_ready_o = rst_ni;

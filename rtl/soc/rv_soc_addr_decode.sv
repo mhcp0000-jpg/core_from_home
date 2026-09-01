@@ -21,7 +21,9 @@ module rv_soc_addr_decode #(
   always_comb begin
     target_o = SOC_TARGET_ERROR;
     if (addr_in_region(addr_i, ITIM_BASE_ADDR,
-                       size_kb_to_bytes(ITIM_SIZE_KB)))
+                       size_kb_to_bytes(ITIM_SIZE_KB)) ||
+        addr_in_region(addr_i, BOOTROM_BASE_ADDR,
+                       size_kb_to_bytes(BOOTROM_SIZE_KB)))
       target_o = SOC_TARGET_I_LOCAL;
     else if (addr_in_region(addr_i, DTIM_BASE_ADDR,
                             size_kb_to_bytes(DTIM_SIZE_KB)) ||
@@ -31,9 +33,6 @@ module rv_soc_addr_decode #(
     else if (addr_in_region(addr_i, PLIC_BASE_ADDR,
                             size_kb_to_bytes(PLIC_SIZE_KB)))
       target_o = SOC_TARGET_PLIC;
-    else if (addr_in_region(addr_i, BOOTROM_BASE_ADDR,
-                            size_kb_to_bytes(BOOTROM_SIZE_KB)))
-      target_o = SOC_TARGET_BOOTROM;
     else if (addr_in_region(addr_i, HOSTIF_BASE_ADDR,
                             size_kb_to_bytes(HOSTIF_SIZE_KB)))
       target_o = SOC_TARGET_HOSTIF;
