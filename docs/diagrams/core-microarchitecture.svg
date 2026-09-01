@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1320" role="img" aria-labelledby="title desc">
+  <title id="title">RV32IMFC two-wide out-of-order core microarchitecture</title>
+  <desc id="desc">Orthogonal block diagram from frontend through decode, rename, dispatch, split issue queues, two-wide global issue, integer, memory and floating point execution, LSQ, writeback, ROB, precise commit, recovery, and committed stores.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .group { fill: #f8fafc; stroke: #94a3b8; stroke-width: 2; rx: 14; }
+      .frontend { fill: #e8f2ff; stroke: #2563eb; }
+      .rename { fill: #f5f3ff; stroke: #7c3aed; }
+      .schedule { fill: #fff7ed; stroke: #ea580c; }
+      .execute { fill: #ecfdf5; stroke: #059669; }
+      .retire { fill: #fef2f2; stroke: #dc2626; }
+      .node { stroke-width: 3; rx: 10; }
+      .wire { fill: none; stroke: #334155; stroke-width: 4; stroke-linejoin: round; stroke-linecap: square; marker-end: url(#arrow); }
+      .bus { fill: none; stroke: #334155; stroke-width: 6; stroke-linejoin: round; stroke-linecap: square; }
+      .control { fill: none; stroke: #dc2626; stroke-width: 4; stroke-dasharray: 12 9; stroke-linejoin: round; marker-end: url(#arrow); }
+      .title { font: 500 32px system-ui, sans-serif; fill: #0f172a; }
+      .group-label { font: 500 20px system-ui, sans-serif; fill: #334155; }
+      .label { font: 500 18px system-ui, sans-serif; fill: #0f172a; text-anchor: middle; }
+      .detail { font: 400 15px system-ui, sans-serif; fill: #334155; text-anchor: middle; }
+      .edge-label { font: 500 15px system-ui, sans-serif; fill: #334155; text-anchor: middle; }
+      .port { fill: #334155; }
+      @media (prefers-color-scheme: dark) {
+        .bg { fill: #0f172a; }
+        .group { fill: #111827; stroke: #64748b; }
+        .frontend { fill: #172554; stroke: #60a5fa; }
+        .rename { fill: #2e1065; stroke: #a78bfa; }
+        .schedule { fill: #431407; stroke: #fb923c; }
+        .execute { fill: #052e2b; stroke: #34d399; }
+        .retire { fill: #450a0a; stroke: #f87171; }
+        .wire, .bus { stroke: #cbd5e1; }
+        .control { stroke: #f87171; }
+        .title, .label { fill: #f8fafc; }
+        .group-label, .detail, .edge-label { fill: #cbd5e1; }
+        .port { fill: #cbd5e1; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" width="2000" height="1320"/>
+  <text class="title" x="50" y="52">RV32IMFC 2-wide Out-of-Order Core</text>
+  <text class="detail" x="1710" y="50">OoO execute · in-order precise commit · RV64-ready widths</text>
+
+  <rect class="group" x="40" y="90" width="1920" height="210"/>
+  <text class="group-label" x="65" y="122">Front-end, rename, and scheduling spine</text>
+
+  <rect class="node frontend" x="75" y="155" width="260" height="95"/>
+  <text class="label" x="205" y="183">Frontend · 2-wide</text>
+  <text class="detail" x="205" y="208">BTB 256×4 · gshare 2048 · RAS 16</text>
+  <text class="detail" x="205" y="232">128-bit fetch · epoch · align queue</text>
+
+  <rect class="node frontend" x="375" y="155" width="220" height="95"/>
+  <text class="label" x="485" y="190">Decode2 + C expand</text>
+  <text class="detail" x="485" y="218">illegal · immediate · FU class</text>
+
+  <rect class="node rename" x="635" y="145" width="310" height="115"/>
+  <text class="label" x="790" y="177">Rename2 + PRF state</text>
+  <text class="detail" x="790" y="203">INT/FP RAT · free lists · 8 checkpoints</text>
+  <text class="detail" x="790" y="228">INT PRF 80 · FP PRF 80 · ready/busy</text>
+  <text class="detail" x="790" y="250">same-pair dependency bypass</text>
+
+  <rect class="node rename" x="985" y="155" width="245" height="95"/>
+  <text class="label" x="1108" y="190">Atomic dispatch</text>
+  <text class="detail" x="1108" y="218">ROB + IQ + LQ/SQ allocation</text>
+
+  <rect class="node schedule" x="1270" y="145" width="310" height="115"/>
+  <text class="label" x="1425" y="177">Split issue queues</text>
+  <text class="detail" x="1425" y="203">INT 24 · MEM 16 · FP 16</text>
+  <text class="detail" x="1425" y="228">ROB-age oldest-ready candidates</text>
+  <text class="detail" x="1425" y="250">CDB tag wakeup</text>
+
+  <rect class="node schedule" x="1620" y="145" width="300" height="115"/>
+  <text class="label" x="1770" y="177">Global issue arbiter</text>
+  <text class="detail" x="1770" y="203">5 compatible logical ports</text>
+  <text class="detail" x="1770" y="228">maximum 2 grants / cycle</text>
+  <text class="detail" x="1770" y="250">unit-ready + port compatibility</text>
+
+  <path class="wire" d="M335 202 H375"/>
+  <path class="wire" d="M595 202 H635"/>
+  <path class="wire" d="M945 202 H985"/>
+  <path class="wire" d="M1230 202 H1270"/>
+  <path class="wire" d="M1580 202 H1620"/>
+
+  <rect class="group" x="40" y="340" width="1520" height="300"/>
+  <text class="group-label" x="65" y="372">Execution resources — five logical ports, but only two total grants per cycle</text>
+
+  <rect class="node schedule" x="790" y="380" width="410" height="70"/>
+  <text class="label" x="995" y="409">Operand read + same-cycle bypass</text>
+  <text class="detail" x="995" y="434">reads the two globally granted uops</text>
+
+  <path class="wire" d="M1770 260 V320 H995 V380"/>
+  <path class="bus" d="M205 475 H1375"/>
+  <path class="wire" d="M995 450 V475"/>
+
+  <rect class="node execute" x="75" y="500" width="260" height="100"/>
+  <text class="label" x="205" y="532">P0 · INT0</text>
+  <text class="detail" x="205" y="558">ALU0 · branch unit</text>
+  <text class="detail" x="205" y="582">CSR execution hook</text>
+  <rect class="node execute" x="375" y="500" width="300" height="100"/>
+  <text class="label" x="525" y="532">P1 · INT1</text>
+  <text class="detail" x="525" y="558">ALU1 · pipelined MUL</text>
+  <text class="detail" x="525" y="582">iterative DIV side unit</text>
+  <rect class="node execute" x="715" y="490" width="360" height="120"/>
+  <text class="label" x="895" y="522">P2 MEM0 + P3 MEM1</text>
+  <text class="detail" x="895" y="548">AGU0/1 · LSU0/1</text>
+  <text class="detail" x="895" y="574">two PMP/PMA check paths</text>
+  <text class="detail" x="895" y="598">two 64-bit D-memory request ports</text>
+  <rect class="node execute" x="1115" y="500" width="320" height="100"/>
+  <text class="label" x="1275" y="532">P4 · FP cluster</text>
+  <text class="detail" x="1275" y="558">FMA / arithmetic · misc / convert</text>
+  <text class="detail" x="1275" y="582">iterative divide / square-root</text>
+
+  <path class="wire" d="M205 475 V500"/>
+  <path class="wire" d="M525 475 V500"/>
+  <path class="wire" d="M895 475 V490"/>
+  <path class="wire" d="M1275 475 V500"/>
+
+  <rect class="group" x="1590" y="340" width="370" height="900"/>
+  <text class="group-label" x="1615" y="372">Memory visibility</text>
+  <rect class="node execute" x="1625" y="450" width="300" height="220"/>
+  <text class="label" x="1775" y="485">LQ 24 + SQ 16</text>
+  <text class="detail" x="1775" y="518">ROB-age memory ordering</text>
+  <text class="detail" x="1775" y="548">unknown older-store → load stall</text>
+  <text class="detail" x="1775" y="578">youngest older-store forwarding</text>
+  <text class="detail" x="1775" y="608">device store direct at ROB head</text>
+  <text class="detail" x="1775" y="638">flush removes younger LQ/SQ state</text>
+
+  <rect class="node execute" x="1625" y="970" width="300" height="120"/>
+  <text class="label" x="1775" y="1005">Committed store buffer · 16</text>
+  <text class="detail" x="1775" y="1034">normal stores enter after commit</text>
+  <text class="detail" x="1775" y="1060">drains through either D-memory port</text>
+
+  <rect class="node execute" x="1625" y="1130" width="300" height="90"/>
+  <text class="label" x="1775" y="1165">Dual D-memory ports</text>
+  <text class="detail" x="1775" y="1194">loads + committed stores · bank replay</text>
+
+  <path class="wire" d="M1075 550 H1515 V560 H1625"/>
+  <path class="wire" d="M1925 620 H1940 V1100 H1775 V1130"/>
+
+  <rect class="group" x="40" y="700" width="1520" height="250"/>
+  <text class="group-label" x="65" y="732">Completion and precise retirement</text>
+  <rect class="node retire" x="100" y="780" width="350" height="115"/>
+  <text class="label" x="275" y="812">Result buffers + WB arbiter</text>
+  <text class="detail" x="275" y="840">PRF write · IQ tag wakeup</text>
+  <text class="detail" x="275" y="866">ROB completion · exception metadata</text>
+  <rect class="node retire" x="510" y="780" width="300" height="115"/>
+  <text class="label" x="660" y="812">ROB · 48 entries</text>
+  <text class="detail" x="660" y="840">program order · complete / trap</text>
+  <text class="detail" x="660" y="866">branch / store / old-map metadata</text>
+  <rect class="node retire" x="870" y="780" width="280" height="115"/>
+  <text class="label" x="1010" y="812">In-order commit</text>
+  <text class="detail" x="1010" y="840">maximum 2 instructions / cycle</text>
+  <text class="detail" x="1010" y="866">memory slot serialized at head</text>
+  <rect class="node retire" x="1210" y="780" width="300" height="115"/>
+  <text class="label" x="1360" y="812">Precise architectural state</text>
+  <text class="detail" x="1360" y="840">RRAT · old physical register release</text>
+  <text class="detail" x="1360" y="866">CSR/FCSR/privilege · commit trace</text>
+
+  <path class="bus" d="M205 660 H1275"/>
+  <path class="wire" d="M205 600 V660"/>
+  <path class="wire" d="M525 600 V660"/>
+  <path class="wire" d="M1275 600 V660"/>
+  <path class="wire" d="M205 660 V750 H275 V780"/>
+  <text class="edge-label" x="720" y="650">completion bus</text>
+
+  <path class="wire" d="M1625 620 H1545 V750 H450 V838"/>
+  <text class="edge-label" x="1250" y="738">forwarded or returned load completion</text>
+  <path class="wire" d="M450 838 H510"/>
+  <path class="wire" d="M810 838 H870"/>
+  <path class="wire" d="M1150 838 H1210"/>
+
+  <path class="wire" d="M1010 895 V930 H1530 V1030 H1625"/>
+  <text class="edge-label" x="1320" y="920">ROB-head commit permission</text>
+  <path class="wire" d="M1775 1090 V1130"/>
+
+  <rect class="node retire" x="300" y="1000" width="900" height="135"/>
+  <text class="label" x="750" y="1035">Recovery control</text>
+  <text class="detail" x="750" y="1064">branch mispredict · exception · interrupt · MRET · FENCE.I</text>
+  <text class="detail" x="750" y="1092">redirect frontend · restore rename checkpoint · rebuild free-list state</text>
+  <text class="detail" x="750" y="1120">squash younger ROB / IQ / result-buffer / LQ / SQ entries</text>
+  <path class="control" d="M100 600 V965 H460 V1000"/>
+  <path class="control" d="M1010 895 V965 H1030 V1000"/>
+  <text class="edge-label" x="260" y="952">branch resolve</text>
+  <text class="edge-label" x="1080" y="952">precise event</text>
+
+  <text class="edge-label" x="1000" y="1290">Solid: instruction / operand / result / memory flow · Dashed: recovery control · All wires use orthogonal routing.</text>
+</svg>

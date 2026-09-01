@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Verification baseline v1.9.0 (SoC/core architecture diagrams, GCC C/ASM loop PASS) |
+| 상태 | Verification baseline v1.9.1 (fixed orthogonal SoC/core diagrams, GCC C/ASM loop PASS) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -99,6 +99,11 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 
 ### 3.1 전체 SoC architecture
 
+[![RV OoO Core SoC architecture](diagrams/soc-architecture.svg)](diagrams/soc-architecture.svg)
+
+<details>
+<summary>논리 연결 원본(Mermaid) 보기</summary>
+
 ```mermaid
 flowchart TB
     subgraph INIT["AXI initiators"]
@@ -163,9 +168,16 @@ flowchart TB
     class DPI external;
 ```
 
+</details>
+
 I/D local fabric은 각각 AXI master outbound port와 AXI slave inbound port를 따로 가진다. 그림의 Xbar S0/S1에서 ITIM/DTIM/CLINT로 향하는 화살표는 가독성을 위해 `AXI-to-local bridge → local fabric inbound arbitration → target`을 하나의 경로로 축약한 것이며, Xbar가 TIM bank에 직접 접속한다는 뜻은 아니다. 코어 자신의 local 주소는 AXI로 내보내기 전에 local decode에서 흡수하므로 `I outbound → I inbound`, `D outbound → D inbound` self-loop는 발생하지 않는다. 반면 LSU가 ITIM을 data로 읽거나 IFU가 DTIM에서 fetch하는 cross-local access는 Main Xbar를 통해 허용한다.
 
 ### 3.2 코어 내부 microarchitecture
+
+[![RV OoO Core microarchitecture](diagrams/core-microarchitecture.svg)](diagrams/core-microarchitecture.svg)
+
+<details>
+<summary>논리 연결 원본(Mermaid) 보기</summary>
 
 ```mermaid
 flowchart TB
@@ -256,6 +268,8 @@ flowchart TB
     class INTEX,MEMEX,FPEX,PMP,LSQ,SB,DMEM execute;
     class WBA,ROB,COMMIT,ARCH,REC retire;
 ```
+
+</details>
 
 실선은 instruction/operand/result의 정상 dataflow를, 점선은 branch·trap recovery 같은 control path를 뜻한다. 여러 블록을 돌아가는 화살표가 그림을 가리지 않도록 CDB의 `PRF write / IQ wakeup / ROB complete`와 recovery control의 `frontend redirect / checkpoint restore / younger-state squash`는 각 블록 라벨에 피드백 책임을 묶어 표시했다. `P0..P4`는 동시에 모두 발행되는 5-wide 구조가 아니라, global arbiter가 호환되는 후보 중 매 cycle 최대 2개만 선택하는 execution port다. ROB는 program order를 소유하고 실행은 IQ에서 out-of-order로 진행하며, architectural state와 store의 외부 가시성은 ROB head commit에서만 확정된다.
 
@@ -1994,3 +2008,4 @@ GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 
 | v1.8.0 | xPack GCC 15.2로 실제 RV32IMFC C/ASM integer·FP·load/store loop를 빌드하고 DPI ELF SoC self-check를 추가. RV32 `C.FLW/C.FSW/C.FLWSP/C.FSWSP` expansion과 RV64 shared encoding 구분을 보완하고, branch recovery 동시 older load response 및 IQ wakeup 유실을 수정해 단위 회귀로 고정. 결과 log/disassembly/symbol/commit CSV를 `verification/tests/rv32_c_loop`에 보관 |
 | v1.8.1 | 검증 파일을 역할과 범위가 드러나는 `tb/unit/{frontend,backend,soc}`, `tb/integration/{backend,soc}`, `tb/e2e/dpi`, `tb/fixtures`, `tb/elaboration` 구조로 재배치. 실행 software는 `sw/tests/<case>`, 보존 결과는 `verification/tests/<case>`에서 같은 case 이름을 사용하도록 통일 |
 | v1.9.0 | RTL 연결을 기준으로 Main AXI Xbar·I/D local fabric·TIM/peripheral·DPI Host를 표현한 전체 SoC architecture diagram과, 2-wide frontend·rename/ROB/IQ·5-port/2-grant execution·dual LSU/LSQ·commit/recovery를 표현한 core microarchitecture diagram을 추가 |
+| v1.9.1 | 자동 배치 구조도의 얇고 구불거리는 wire를 대체하기 위해 SoC/core 구조도를 고정 그리드 SVG로 재작성. 4–6 px 배선과 수평·수직만 사용하는 orthogonal route, 라이트/다크 테마, 클릭 시 원본 확대를 적용 |

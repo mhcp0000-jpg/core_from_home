@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 1120" role="img" aria-labelledby="title desc">
+  <title id="title">RV OoO Core SoC architecture</title>
+  <desc id="desc">Orthogonal block diagram of the core instruction and dual data ports, I and D local fabrics, three-master AXI4 crossbar, ITIM, DTIM, CLINT, PLIC, Boot ROM, HostIF, and DPI host.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .group { fill: #f8fafc; stroke: #94a3b8; stroke-width: 2; rx: 14; }
+      .core { fill: #e8f2ff; stroke: #2563eb; }
+      .local { fill: #ecfdf5; stroke: #059669; }
+      .axi { fill: #fff7ed; stroke: #ea580c; }
+      .host { fill: #f5f3ff; stroke: #7c3aed; }
+      .node { stroke-width: 3; rx: 10; }
+      .wire { fill: none; stroke: #334155; stroke-width: 4; stroke-linejoin: round; stroke-linecap: square; marker-end: url(#arrow); }
+      .wire-local { stroke: #047857; }
+      .wire-axi { stroke: #c2410c; }
+      .wire-host { stroke: #6d28d9; }
+      .title { font: 500 32px system-ui, sans-serif; fill: #0f172a; }
+      .group-label { font: 500 20px system-ui, sans-serif; fill: #334155; }
+      .label { font: 500 18px system-ui, sans-serif; fill: #0f172a; text-anchor: middle; }
+      .detail { font: 400 15px system-ui, sans-serif; fill: #334155; text-anchor: middle; }
+      .edge-label { font: 500 15px system-ui, sans-serif; fill: #334155; text-anchor: middle; }
+      .port { fill: #334155; }
+      @media (prefers-color-scheme: dark) {
+        .bg { fill: #0f172a; }
+        .group { fill: #111827; stroke: #64748b; }
+        .core { fill: #172554; stroke: #60a5fa; }
+        .local { fill: #052e2b; stroke: #34d399; }
+        .axi { fill: #431407; stroke: #fb923c; }
+        .host { fill: #2e1065; stroke: #a78bfa; }
+        .wire { stroke: #cbd5e1; }
+        .wire-local { stroke: #6ee7b7; }
+        .wire-axi { stroke: #fdba74; }
+        .wire-host { stroke: #c4b5fd; }
+        .title, .label { fill: #f8fafc; }
+        .group-label, .detail, .edge-label { fill: #cbd5e1; }
+        .port { fill: #cbd5e1; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1900" height="1120"/>
+  <text class="title" x="50" y="52">RV32IMFC 2-wide OoO Core SoC</text>
+  <text class="detail" x="1610" y="50">32-bit address · 64-bit AXI4 data · parameterized memory map</text>
+
+  <rect class="group" x="40" y="90" width="1040" height="180"/>
+  <text class="group-label" x="65" y="122">Core memory interfaces</text>
+  <rect class="node core" x="100" y="150" width="250" height="82"/>
+  <text class="label" x="225" y="182">IFU port</text>
+  <text class="detail" x="225" y="209">128-bit fetch · ID + epoch</text>
+  <rect class="node core" x="420" y="150" width="230" height="82"/>
+  <text class="label" x="535" y="182">LSU0 port</text>
+  <text class="detail" x="535" y="209">64-bit local request</text>
+  <rect class="node core" x="710" y="150" width="230" height="82"/>
+  <text class="label" x="825" y="182">LSU1 port</text>
+  <text class="detail" x="825" y="209">64-bit local request</text>
+
+  <rect class="group" x="1300" y="90" width="560" height="180"/>
+  <text class="group-label" x="1325" y="122">Testbench / external host</text>
+  <rect class="node host" x="1410" y="150" width="340" height="82"/>
+  <text class="label" x="1580" y="182">DPI Host / debugger</text>
+  <text class="detail" x="1580" y="209">ELF loader · Host AXI BFM</text>
+
+  <rect class="group" x="40" y="310" width="1040" height="210"/>
+  <text class="group-label" x="65" y="342">Low-latency local fabrics</text>
+  <rect class="node local" x="100" y="375" width="370" height="100"/>
+  <text class="label" x="285" y="408">I local fabric</text>
+  <text class="detail" x="285" y="434">IFU route + AXI inbound arbitration</text>
+  <text class="detail" x="285" y="458">ITIM hit / non-ITIM outbound</text>
+  <rect class="node local" x="610" y="375" width="400" height="100"/>
+  <text class="label" x="810" y="408">D local fabric</text>
+  <text class="detail" x="810" y="434">LSU0 + LSU1 + AXI inbound arbitration</text>
+  <text class="detail" x="810" y="458">DTIM / CLINT hit · other address outbound</text>
+
+  <rect class="group" x="1220" y="310" width="640" height="210"/>
+  <text class="group-label" x="1245" y="342">Main AXI4 interconnect</text>
+  <rect class="node axi" x="1335" y="365" width="410" height="110"/>
+  <text class="label" x="1540" y="399">AXI4 crossbar</text>
+  <text class="detail" x="1540" y="427">M0 I-fabric · M1 D-fabric · M2 Host</text>
+  <text class="detail" x="1540" y="452">6 decoded targets · ID prefix / response route</text>
+
+  <path class="wire wire-local" d="M225 232 V375"/>
+  <path class="wire wire-local" d="M535 232 V310 H710 V375"/>
+  <path class="wire wire-local" d="M825 232 V375"/>
+  <path class="wire wire-host" d="M1580 232 V365"/>
+  <path class="wire wire-axi" d="M470 405 H520 V355 H1160 V392 H1335"/>
+  <path class="wire wire-axi" d="M1010 445 H1160 V448 H1335"/>
+  <text class="edge-label" x="1265" y="383">M0</text>
+  <text class="edge-label" x="1265" y="439">M1</text>
+  <text class="edge-label" x="1638" y="292">M2 · Host AXI</text>
+
+  <rect class="group" x="40" y="610" width="1090" height="230"/>
+  <text class="group-label" x="65" y="642">Tightly integrated targets</text>
+  <rect class="node local" x="85" y="690" width="300" height="100"/>
+  <text class="label" x="235" y="723">ITIM · 128 KiB</text>
+  <text class="detail" x="235" y="750">2 banks × 64-bit 1R1W</text>
+  <text class="detail" x="235" y="775">0x8000_0000</text>
+  <rect class="node local" x="435" y="690" width="300" height="100"/>
+  <text class="label" x="585" y="723">DTIM · 128 KiB</text>
+  <text class="detail" x="585" y="750">2 banks × 64-bit 1R1W</text>
+  <text class="detail" x="585" y="775">0x8002_0000</text>
+  <rect class="node local" x="785" y="680" width="300" height="120"/>
+  <text class="label" x="935" y="713">CLINT</text>
+  <text class="detail" x="935" y="740">MSIP · MTIME / MTIMECMP</text>
+  <text class="detail" x="935" y="765">0x0020_0000</text>
+  <text class="detail" x="935" y="790">MSIP / MTIP → core</text>
+
+  <path class="wire wire-local" d="M285 475 V690"/>
+  <path class="wire wire-local" d="M730 475 V570 H585 V690"/>
+  <path class="wire wire-local" d="M890 475 V570 H935 V680"/>
+
+  <path class="wire wire-axi" d="M1395 475 V555 H235 V690"/>
+  <path class="wire wire-axi" d="M1470 475 V585 H585 V690"/>
+  <path class="wire wire-axi" d="M1545 475 V610 H935 V680"/>
+  <text class="edge-label" x="520" y="545">S0 · AXI-to-local bridge → I-fabric inbound</text>
+  <text class="edge-label" x="930" y="578">S1 · AXI-to-local bridge → D-fabric inbound</text>
+
+  <rect class="group" x="1160" y="610" width="700" height="460"/>
+  <text class="group-label" x="1185" y="642">AXI peripheral targets</text>
+  <rect class="node axi" x="1200" y="700" width="280" height="110"/>
+  <text class="label" x="1340" y="733">S2 · PLIC</text>
+  <text class="detail" x="1340" y="760">0x0C00_0000 · external IRQ</text>
+  <text class="detail" x="1340" y="785">MEIP → core · S-context frame</text>
+  <rect class="node axi" x="1530" y="700" width="280" height="110"/>
+  <text class="label" x="1670" y="733">S3 · Boot ROM</text>
+  <text class="detail" x="1670" y="760">0x0000_1000</text>
+  <text class="detail" x="1670" y="785">reset vector · read-only</text>
+  <rect class="node axi" x="1200" y="875" width="280" height="110"/>
+  <text class="label" x="1340" y="908">S4 · HostIF</text>
+  <text class="detail" x="1340" y="935">0x1000_0000</text>
+  <text class="detail" x="1340" y="960">signature / console / exit → DPI</text>
+  <rect class="node axi" x="1530" y="875" width="280" height="110"/>
+  <text class="label" x="1670" y="908">S5 · Error slave</text>
+  <text class="detail" x="1670" y="935">default target</text>
+  <text class="detail" x="1670" y="960">AXI DECERR</text>
+
+  <path class="wire wire-axi" d="M1585 475 V650 H1340 V700"/>
+  <path class="wire wire-axi" d="M1635 475 V650 H1670 V700"/>
+  <path class="wire wire-axi" d="M1685 475 H1830 V845 H1340 V875"/>
+  <path class="wire wire-axi" d="M1735 475 H1850 V860 H1670 V875"/>
+
+  <text class="edge-label" x="950" y="1090">All address bases and sizes are selected in rv_soc_pkg.sv and may be overridden at rv_soc_top.</text>
+</svg>

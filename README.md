@@ -8,8 +8,8 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
 ## 문서
 
 - [통합 Hardware Design Description](docs/HDD_Core_Architecture.md) — core/SoC/interface/memory map/boot/검증/구현 계획의 단일 기준 문서
-  - [전체 SoC architecture](docs/HDD_Core_Architecture.md#31-전체-soc-architecture)
-  - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture)
+  - [전체 SoC architecture](docs/HDD_Core_Architecture.md#31-전체-soc-architecture) · [구조도 크게 보기](docs/diagrams/soc-architecture.svg)
+  - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture) · [구조도 크게 보기](docs/diagrams/core-microarchitecture.svg)
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
 
 ## 디렉터리
