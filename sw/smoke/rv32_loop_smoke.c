@@ -1,5 +1,13 @@
 #include <stdint.h>
 
+/*
+ * Compiler-driven end-to-end smoke test for the default SoC address map.
+ *
+ * This is intentionally freestanding: there is no C runtime or libc.  The
+ * startup assembly supplies the stack, calls main(), and reports its return
+ * value through HostIF.  Volatile DTIM arrays prevent GCC from replacing the
+ * loop with constants, so the generated ELF must exercise both LSU paths.
+ */
 #define HOSTIF_BASE_ADDR 0x10000000u
 #define HOSTIF_TOHOST_INDEX 3u
 
@@ -36,6 +44,14 @@ int main(void) {
   int32_t integer_sum = 0;
   float fp_sum = 0.0f;
 
+  /*
+   * Per iteration:
+   *   scaled = integer_input[i] * (i + 1) + 5
+   *   mixed  = fp_input[i] * 1.5f + (float)scaled
+   *
+   * Reading each output back immediately makes a store/load dependency part
+   * of the architectural result instead of merely generating dead stores.
+   */
   for (uint32_t i = 0; i < ELEMENT_COUNT; ++i) {
     const int32_t scaled = integer_input[i] * (int32_t)(i + 1u) + 5;
     integer_output[i] = scaled;
@@ -46,6 +62,8 @@ int main(void) {
     fp_sum += fp_output[i];
   }
 
+  /* Every mismatch owns one bit, allowing a failing ELF to identify whether
+   * an integer element, FP element, or final reduction was incorrect. */
   uint32_t mismatch = 0;
   for (uint32_t i = 0; i < ELEMENT_COUNT; ++i) {
     if (integer_output[i] != expected_integer[i]) {
@@ -62,13 +80,19 @@ int main(void) {
     mismatch |= 1u << 17;
   }
 
+  /* Keep a debugger-readable result block in DTIM even on a failing run. */
   result_signature.integer_sum = integer_sum;
   result_signature.fp_sum = fp_sum;
   result_signature.integer_last = integer_output[ELEMENT_COUNT - 1];
   result_signature.fp_last = fp_output[ELEMENT_COUNT - 1];
   result_signature.mismatch_mask = mismatch;
 
-  /* 158 (0x009e) and 185 (0x00b9) form an externally checked signature. */
+  /*
+   * HostIF +0x0c (TOHOST): 158 (0x009e) and 185 (0x00b9) form the externally
+   * checked signature 0x009e00b9.  _start later writes main's return value to
+   * HostIF +0x14 (EXIT_CODE), so both data correctness and program completion
+   * are checked independently by the testbench.
+   */
   volatile uint32_t *const hostif =
     (volatile uint32_t *)(uintptr_t)HOSTIF_BASE_ADDR;
   hostif[HOSTIF_TOHOST_INDEX] =
