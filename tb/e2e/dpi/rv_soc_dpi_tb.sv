@@ -26,7 +26,7 @@ module rv_soc_dpi_tb;
   always #5 clk = ~clk;
 
   rv_soc_top #(
-    .BOOTROM_INIT_FILE("tb/data/bootrom_wait.hex")
+    .BOOTROM_INIT_FILE("tb/fixtures/bootrom/bootrom_wait.hex")
   ) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .external_irq_i(external_irq),
     .host_axi_s(host_axi), .soc_ready_o(soc_ready),

@@ -32,27 +32,27 @@ $tests = @(
   @{
     Top = "rv_rob_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_rob.sv",
-              "tb/unit/rv_rob_tb.sv")
+              "tb/unit/backend/rv_rob_tb.sv")
   },
   @{
     Top = "rv_issue_queue_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_queue.sv",
-              "tb/unit/rv_issue_queue_tb.sv")
+              "tb/unit/backend/rv_issue_queue_tb.sv")
   },
   @{
     Top = "rv_issue_arbiter_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_arbiter.sv",
-              "tb/unit/rv_issue_arbiter_tb.sv")
+              "tb/unit/backend/rv_issue_arbiter_tb.sv")
   },
   @{
     Top = "rv_multiplier_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_multiplier.sv",
-              "tb/unit/rv_multiplier_tb.sv")
+              "tb/unit/backend/rv_multiplier_tb.sv")
   },
   @{
     Top = "rv_branch_predictor_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/frontend/rv_branch_predictor.sv",
-              "tb/unit/rv_branch_predictor_tb.sv")
+              "tb/unit/frontend/rv_branch_predictor_tb.sv")
   },
   @{
     Top = "rv_axi_bridge_tb"
@@ -60,7 +60,7 @@ $tests = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",
       "rtl/soc/rv_axi4_if.sv",
       "rtl/soc/rv_local_mem_if.sv", "rtl/soc/rv_local_to_axi_bridge.sv",
-      "rtl/soc/rv_axi_to_local_bridge.sv", "tb/unit/rv_axi_bridge_tb.sv"
+      "rtl/soc/rv_axi_to_local_bridge.sv", "tb/unit/soc/rv_axi_bridge_tb.sv"
     )
   },
   @{
@@ -70,7 +70,7 @@ $tests = @(
       "rtl/soc/rv_local_mem_if.sv",
       "rtl/soc/rv_sram_1r1w.sv", "rtl/soc/rv_tim_2bank.sv",
       "rtl/soc/rv_clint.sv", "rtl/soc/rv_d_fabric.sv",
-      "tb/unit/rv_d_fabric_tb.sv"
+      "tb/unit/soc/rv_d_fabric_tb.sv"
     )
   },
   @{
@@ -80,7 +80,7 @@ $tests = @(
       "rtl/soc/rv_local_mem_if.sv",
       "rtl/soc/rv_sram_1r1w.sv", "rtl/soc/rv_tim_2bank.sv",
       "rtl/soc/rv_bootrom.sv", "rtl/soc/rv_i_fabric.sv",
-      "tb/unit/rv_i_fabric_tb.sv"
+      "tb/unit/soc/rv_i_fabric_tb.sv"
     )
   },
   @{
@@ -89,7 +89,7 @@ $tests = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",
       "rtl/soc/rv_local_mem_if.sv",
       "rtl/soc/rv_sram_1r1w.sv", "rtl/soc/rv_bootrom.sv",
-      "rtl/soc/rv_hostif.sv", "tb/unit/rv_soc_peripheral_tb.sv"
+      "rtl/soc/rv_hostif.sv", "tb/unit/soc/rv_soc_peripheral_tb.sv"
     )
   },
   @{
@@ -98,7 +98,7 @@ $tests = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",
       "rtl/soc/rv_axi4_if.sv", "rtl/soc/rv_local_mem_if.sv",
       "rtl/soc/rv_axi_to_local_bridge.sv", "rtl/soc/rv_plic.sv",
-      "tb/unit/rv_plic_tb.sv"
+      "tb/unit/soc/rv_plic_tb.sv"
     )
   },
   @{
@@ -106,7 +106,7 @@ $tests = @(
     Files = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",
       "rtl/soc/rv_local_mem_if.sv", "rtl/soc/rv_clint.sv",
-      "tb/unit/rv_clint_tb.sv"
+      "tb/unit/soc/rv_clint_tb.sv"
     )
   }
 )

@@ -44,10 +44,10 @@ rv32_loop_smoke.c + rv32_start.S + rv32_tim.ld
 
 | 파일 | 역할 |
 |---|---|
-| [`sw/smoke/rv32_loop_smoke.c`](../../sw/smoke/rv32_loop_smoke.c) | integer/FP/load-store loop, 예상 배열 비교, DTIM 결과 블록과 Host signature 생성 |
-| [`sw/smoke/rv32_start.S`](../../sw/smoke/rv32_start.S) | CLINT MSIP clear, stack 초기화, `main` 호출, HostIF exit code 기록, 종료 후 WFI |
-| [`sw/smoke/rv32_tim.ld`](../../sw/smoke/rv32_tim.ld) | ITIM/DTIM section 배치, entry point와 stack top 정의 |
-| [`scripts/run_c_loop_test.ps1`](../../scripts/run_c_loop_test.ps1) | tool 확인, ELF build, disassembly 생성, SoC 실행, Host/commit 자동 판정, 산출물 publish |
+| [`sw/tests/rv32_c_loop/rv32_loop_smoke.c`](../../../sw/tests/rv32_c_loop/rv32_loop_smoke.c) | integer/FP/load-store loop, 예상 배열 비교, DTIM 결과 블록과 Host signature 생성 |
+| [`sw/tests/rv32_c_loop/rv32_start.S`](../../../sw/tests/rv32_c_loop/rv32_start.S) | CLINT MSIP clear, stack 초기화, `main` 호출, HostIF exit code 기록, 종료 후 WFI |
+| [`sw/tests/rv32_c_loop/rv32_tim.ld`](../../../sw/tests/rv32_c_loop/rv32_tim.ld) | ITIM/DTIM section 배치, entry point와 stack top 정의 |
+| [`scripts/run_c_loop_test.ps1`](../../../scripts/run_c_loop_test.ps1) | tool 확인, ELF build, disassembly 생성, SoC 실행, Host/commit 자동 판정, 산출물 publish |
 
 이 프로그램은 `-nostdlib -nostartfiles`인 freestanding C다. libc, 운영체제, `printf`에 의존하지 않으며 startup과 종료 protocol을 테스트 자체가 명시한다. 입출력 배열을 `volatile`로 둔 이유는 GCC가 계산을 상수화하거나 DTIM 접근을 제거하지 못하게 하기 위해서다.
 
@@ -166,12 +166,12 @@ ELF binary와 linker map은 재생성 가능하고 repository 크기를 불필�
 powershell -ExecutionPolicy Bypass -File scripts/run_c_loop_test.ps1 `
   -ToolchainRoot C:\rv_toolchains\xpack-riscv-none-elf-gcc-15.2.0-1 `
   -ArtifactRoot C:\rv_build\c_loop_smoke `
-  -PublishRoot verification\c_loop `
+  -PublishRoot verification\tests\rv32_c_loop `
   -BuildJobs 4 `
   -TimeoutCycles 100000
 ```
 
-`PublishRoot`를 생략하면 repository 파일은 건드리지 않고 `ArtifactRoot`에만 결과를 만든다. 실패 시 script는 signature, exit, payload trap, FP commit, lane-1 commit 중 어느 계약이 깨졌는지를 exception으로 표시한다.
+`PublishRoot`를 생략하면 repository 파일은 건드리지 않고 `ArtifactRoot`에만 결과를 만든다. 시뮬레이터 build cache도 기본적으로 `<ArtifactRoot>/soc_elf_build`에 격리되며, 필요하면 `-SocElfBuildRoot`로 다른 경로를 지정할 수 있다. 실패 시 script는 signature, exit, payload trap, FP commit, lane-1 commit 중 어느 계약이 깨졌는지를 exception으로 표시한다.
 
 ## 10. 이 테스트로 발견한 결함
 

@@ -30,7 +30,7 @@ if (!$drive) {
 
 $sources = Get-Content -LiteralPath (Join-Path $repoRoot "rtl\filelist.f") |
   Where-Object { $_.Trim() -and !$_.Trim().StartsWith("#") }
-$sources += "tb/unit/rv_soc_top_tb.sv"
+$sources += "tb/integration/soc/rv_soc_top_tb.sv"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 
 try {

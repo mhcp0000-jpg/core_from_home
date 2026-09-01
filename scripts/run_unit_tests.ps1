@@ -35,7 +35,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_rename2.sv",
-      "tb/unit/rv_rename2_tb.sv"
+      "tb/unit/backend/rv_rename2_tb.sv"
     )
   },
   @{
@@ -43,7 +43,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_phys_regfile.sv",
-      "tb/unit/rv_phys_regfile_tb.sv"
+      "tb/unit/backend/rv_phys_regfile_tb.sv"
     )
   },
   @{
@@ -52,7 +52,7 @@ $tests = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_int_alu.sv",
       "rtl/backend/rv_branch_unit.sv",
-      "tb/unit/rv_execute_units_tb.sv"
+      "tb/unit/backend/rv_execute_units_tb.sv"
     )
   },
   @{
@@ -61,7 +61,7 @@ $tests = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/frontend/rv_c_expander.sv",
       "rtl/backend/rv_decode2.sv",
-      "tb/unit/rv_decode2_tb.sv"
+      "tb/unit/backend/rv_decode2_tb.sv"
     )
   },
   @{
@@ -69,7 +69,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_divider.sv",
-      "tb/unit/rv_divider_tb.sv"
+      "tb/unit/backend/rv_divider_tb.sv"
     )
   },
   @{
@@ -77,7 +77,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_fpu.sv",
-      "tb/unit/rv_fpu_tb.sv"
+      "tb/unit/backend/rv_fpu_tb.sv"
     )
   },
   @{
@@ -85,7 +85,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/frontend/rv_fetch_queue.sv",
-      "tb/unit/rv_fetch_queue_tb.sv"
+      "tb/unit/frontend/rv_fetch_queue_tb.sv"
     )
   },
   @{
@@ -93,7 +93,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_lsu_pipe.sv",
-      "tb/unit/rv_lsu_pipe_tb.sv"
+      "tb/unit/backend/rv_lsu_pipe_tb.sv"
     )
   },
   @{
@@ -101,7 +101,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_store_buffer.sv",
-      "tb/unit/rv_store_buffer_tb.sv"
+      "tb/unit/backend/rv_store_buffer_tb.sv"
     )
   },
   @{
@@ -109,7 +109,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_lsq.sv",
-      "tb/unit/rv_lsq_tb.sv"
+      "tb/unit/backend/rv_lsq_tb.sv"
     )
   },
   @{
@@ -117,7 +117,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_writeback_arbiter.sv",
-      "tb/unit/rv_writeback_arbiter_tb.sv"
+      "tb/unit/backend/rv_writeback_arbiter_tb.sv"
     )
   },
   @{
@@ -125,7 +125,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_branch_recovery.sv",
-      "tb/unit/rv_branch_recovery_tb.sv"
+      "tb/unit/backend/rv_branch_recovery_tb.sv"
     )
   },
   @{
@@ -133,7 +133,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_exec_result_buffer.sv",
-      "tb/unit/rv_exec_result_buffer_tb.sv"
+      "tb/unit/backend/rv_exec_result_buffer_tb.sv"
     )
   },
   @{
@@ -141,7 +141,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_csr_file.sv",
-      "tb/unit/rv_csr_file_tb.sv"
+      "tb/unit/backend/rv_csr_file_tb.sv"
     )
   },
   @{
@@ -149,7 +149,7 @@ $tests = @(
     Files = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_pmp.sv",
-      "tb/unit/rv_pmp_tb.sv"
+      "tb/unit/backend/rv_pmp_tb.sv"
     )
   }
 )

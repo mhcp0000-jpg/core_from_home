@@ -1,5 +1,6 @@
 param(
   [string]$ArtifactRoot = "C:\rv_build\verification",
+  [string]$SocElfBuildRoot = "",
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -9,6 +10,9 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 New-Item -ItemType Directory -Force -Path $ArtifactRoot | Out-Null
+if (!$SocElfBuildRoot) {
+  $SocElfBuildRoot = Join-Path $ArtifactRoot "soc_elf_build"
+}
 $elfPath = Join-Path $ArtifactRoot "rv32_smoke.elf"
 $tracePath = Join-Path $ArtifactRoot "rv32_smoke_commit.csv"
 $compressedElfPath = Join-Path $ArtifactRoot "rv32c_smoke.elf"
@@ -45,7 +49,7 @@ try {
   Invoke-Checked "DPI ELF SoC" {
     powershell -ExecutionPolicy Bypass -File scripts/run_soc_elf_test.ps1 `
       -ElfPath $elfPath -TracePath $tracePath -BuildJobs $BuildJobs `
-      -TimeoutCycles $TimeoutCycles
+      -BuildRoot $SocElfBuildRoot -TimeoutCycles $TimeoutCycles
   }
   Invoke-Checked "Commit trace invariants" {
     powershell -ExecutionPolicy Bypass -File scripts/analyze_commit_trace.ps1 `
@@ -62,7 +66,8 @@ try {
   Invoke-Checked "DPI RV32C ELF SoC" {
     powershell -ExecutionPolicy Bypass -File scripts/run_soc_elf_test.ps1 `
       -ElfPath $compressedElfPath -TracePath $compressedTracePath `
-      -BuildJobs $BuildJobs -TimeoutCycles $TimeoutCycles
+      -BuildRoot $SocElfBuildRoot -BuildJobs $BuildJobs `
+      -TimeoutCycles $TimeoutCycles
   }
   Invoke-Checked "RV32C architectural trace" {
     powershell -ExecutionPolicy Bypass -File scripts/verify_rv32c_smoke_trace.ps1 `
@@ -75,7 +80,8 @@ try {
   Invoke-Checked "DPI M/U privilege ELF SoC" {
     powershell -ExecutionPolicy Bypass -File scripts/run_soc_elf_test.ps1 `
       -ElfPath $privElfPath -TracePath $privTracePath `
-      -BuildJobs $BuildJobs -TimeoutCycles $TimeoutCycles
+      -BuildRoot $SocElfBuildRoot -BuildJobs $BuildJobs `
+      -TimeoutCycles $TimeoutCycles
   }
   Invoke-Checked "M/U privilege architectural trace" {
     powershell -ExecutionPolicy Bypass -File scripts/verify_rv32_priv_smoke_trace.ps1 `

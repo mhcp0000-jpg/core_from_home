@@ -8,20 +8,48 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
 ## 문서
 
 - [통합 Hardware Design Description](docs/HDD_Core_Architecture.md) — core/SoC/interface/memory map/boot/검증/구현 계획의 단일 기준 문서
-- [GCC C/ASM loop 검증 결과](verification/c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
+- [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
 
 ## 디렉터리
 
 ```text
-docs/                 설계 문서와 단계별 완료 조건
-rtl/                  합성 가능한 SystemVerilog RTL
-  frontend/           fetch queue, sequential fetch, align, C expansion
-  backend/            rename, ROB, issue, execute, LSU, commit
-  lib/                공용 하드웨어 프리미티브
-  soc/                AXI Xbar, I/D fabric, TIM, CLINT, PLIC, Boot ROM
-tb/                   unit/integration/SoC/DPI ELF testbench와 commit logger
-scripts/              parse/elaboration, 단위·블록·통합·ELF 회귀 스크립트
+docs/
+  HDD_Core_Architecture.md       단일 설계 기준 문서와 module interface
+
+rtl/
+  rv_ooo_pkg.sv                  core 공용 type/parameter
+  rv_ooo_core.sv                 독립 core top
+  frontend/                      fetch, predictor, C align/expansion
+  backend/                       decode, rename, ROB, IQ, execute, LSU, commit
+  soc/                           AXI, I/D fabric, TIM, CLINT, PLIC, Boot/HostIF
+
+sw/
+  tests/
+    rv32_c_loop/                 C source, startup ASM, linker script 한 세트
+
+tb/
+  unit/
+    frontend/                    frontend module 단위 testbench
+    backend/                     backend module 단위 testbench
+    soc/                         bus/fabric/peripheral 단위 testbench
+  integration/
+    backend/                     OoO backend 통합 testbench
+    soc/                         Boot ROM부터 SoC top까지 통합 testbench
+  e2e/dpi/                       ELF loader, Host model, commit logger, E2E top
+  fixtures/bootrom/              test 전용 Boot ROM image
+  elaboration/                   parameter/address-map elaboration smoke top
+  filelist_elab.f                RTL+elaboration source list
+
+scripts/                         build_/run_/verify_ 접두사 기반 실행 도구
+
+verification/
+  tests/
+    rv32_c_loop/                 결과 설명, commit CSV, disassembly, ELF metadata
 ```
+
+파일 배치 원칙은 `rtl=합성 대상`, `tb=검증 하드웨어/host`, `sw=core에서 실행할 프로그램`, `verification=보존할 결과`, `scripts=재현 명령`이다. 단위 testbench는 대상 RTL 영역과 동일한 `frontend/backend/soc` 이름을 사용하고, 여러 영역을 연결하는 testbench만 `integration` 또는 `e2e`에 둔다.
+
+`sw/tests/<case>`와 `verification/tests/<case>`는 같은 case 이름을 사용한다. 예를 들어 `rv32_c_loop`의 입력 소스는 `sw/tests/rv32_c_loop`, 장기 보존할 결과와 해설은 `verification/tests/rv32_c_loop`에 있다. 시뮬레이터 바이너리나 ELF 같은 재생성 가능한 중간 산출물은 repository에 넣지 않고 실행 시 지정한 `ArtifactRoot`에만 생성한다.
 
 ## ISA 기준선
 
@@ -90,11 +118,13 @@ ROB retire 로그는 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,tr
 powershell -ExecutionPolicy Bypass -File scripts/run_verification.ps1
 ```
 
-실제 GCC가 생성한 RV32IMFC C/ASM loop를 다시 빌드하고 실행하려면 다음을 사용합니다. 결과 요약, ELF header/symbol/disassembly와 전체 ROB commit CSV는 `verification/c_loop`에 보관합니다.
+이 명령은 각 회귀의 DPI/Verilator build cache를 `<ArtifactRoot>/soc_elf_build`에 격리한다. 다른 경로를 원하면 `-ArtifactRoot`나 `-SocElfBuildRoot`를 지정하면 된다.
+
+실제 GCC가 생성한 RV32IMFC C/ASM loop를 다시 빌드하고 실행하려면 다음을 사용합니다. 결과 요약, ELF header/symbol/disassembly와 전체 ROB commit CSV는 `verification/tests/rv32_c_loop`에 보관합니다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_c_loop_test.ps1 `
-  -PublishRoot verification/c_loop
+  -PublishRoot verification/tests/rv32_c_loop
 ```
 
 `-DSYNTHESIS`는 Icarus가 지원하지 않는 SVA 구문만 제외하며 RTL 데이터 경로는

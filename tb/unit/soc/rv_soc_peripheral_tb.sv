@@ -57,7 +57,7 @@ module rv_soc_peripheral_tb;
   end
 
   rv_bootrom_local #(
-    .INIT_FILE ("tb/data/bootrom_test.hex")
+    .INIT_FILE ("tb/fixtures/bootrom/bootrom_test.hex")
   ) u_rom (
     .clk_i  (clk),
     .rst_ni (rst_n),

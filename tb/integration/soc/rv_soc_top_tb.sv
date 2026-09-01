@@ -72,7 +72,7 @@ module rv_soc_top_tb;
   end
 
   rv_soc_top #(
-    .BOOTROM_INIT_FILE ("tb/data/bootrom_wait.hex")
+    .BOOTROM_INIT_FILE ("tb/fixtures/bootrom/bootrom_wait.hex")
   ) u_dut (
     .clk_i                (clk),
     .rst_ni               (rst_n),

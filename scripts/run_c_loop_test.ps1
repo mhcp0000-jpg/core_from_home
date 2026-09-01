@@ -3,6 +3,7 @@ param(
     "C:\rv_toolchains\xpack-riscv-none-elf-gcc-15.2.0-1",
   [string]$ArtifactRoot = "C:\rv_build\c_loop_smoke",
   [string]$PublishRoot = "",
+  [string]$SocElfBuildRoot = "",
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -20,6 +21,9 @@ foreach ($tool in @($gcc, $objdump, $readelf, $nm)) {
 }
 
 New-Item -ItemType Directory -Force -Path $ArtifactRoot | Out-Null
+if (!$SocElfBuildRoot) {
+  $SocElfBuildRoot = Join-Path $ArtifactRoot "soc_elf_build"
+}
 $elfPath = Join-Path $ArtifactRoot "rv32_loop_smoke.elf"
 $tracePath = Join-Path $ArtifactRoot "rv32_loop_smoke_commit.csv"
 $mapPath = Join-Path $ArtifactRoot "rv32_loop_smoke.map"
@@ -28,9 +32,9 @@ $headersPath = Join-Path $ArtifactRoot "rv32_loop_smoke.headers"
 $symbolsPath = Join-Path $ArtifactRoot "rv32_loop_smoke.symbols"
 $simulationLog = Join-Path $ArtifactRoot "rv32_loop_smoke.sim.log"
 
-$startup = Join-Path $repoRoot "sw\smoke\rv32_start.S"
-$source = Join-Path $repoRoot "sw\smoke\rv32_loop_smoke.c"
-$linker = Join-Path $repoRoot "sw\smoke\rv32_tim.ld"
+$startup = Join-Path $repoRoot "sw\tests\rv32_c_loop\rv32_start.S"
+$source = Join-Path $repoRoot "sw\tests\rv32_c_loop\rv32_loop_smoke.c"
+$linker = Join-Path $repoRoot "sw\tests\rv32_c_loop\rv32_tim.ld"
 
 & $gcc -march=rv32imfc_zicsr_zifencei -mabi=ilp32f -mcmodel=medany `
   -msmall-data-limit=0 -O1 -fno-unroll-loops -ffreestanding -fno-builtin `
@@ -55,7 +59,7 @@ try {
   $ErrorActionPreference = "Continue"
   $runnerOutput = & powershell -ExecutionPolicy Bypass -File $runner `
     -ElfPath $elfPath -TracePath $tracePath -BuildJobs $BuildJobs `
-    -TimeoutCycles $TimeoutCycles 2>&1
+    -BuildRoot $SocElfBuildRoot -TimeoutCycles $TimeoutCycles 2>&1
   $runnerExitCode = $LASTEXITCODE
 } finally {
   $ErrorActionPreference = $savedErrorActionPreference

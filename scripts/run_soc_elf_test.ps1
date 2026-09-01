@@ -36,10 +36,10 @@ if (!$drive) { throw "No unused drive letter is available." }
 
 $sources = Get-Content -LiteralPath (Join-Path $repoRoot "rtl\filelist.f") |
   Where-Object { $_.Trim() -and !$_.Trim().StartsWith("#") }
-$sources += "tb/dpi/rv_host_dpi.sv"
-$sources += "tb/dpi/rv_commit_trace_logger.sv"
-$sources += "tb/dpi/rv_soc_dpi_tb.sv"
-$sources += "tb/dpi/elf_loader.cpp"
+$sources += "tb/e2e/dpi/rv_host_dpi.sv"
+$sources += "tb/e2e/dpi/rv_commit_trace_logger.sv"
+$sources += "tb/e2e/dpi/rv_soc_dpi_tb.sv"
+$sources += "tb/e2e/dpi/elf_loader.cpp"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 $stagedElf = Join-Path $BuildRoot "payload.elf"
 Copy-Item -LiteralPath $resolvedElf -Destination $stagedElf -Force

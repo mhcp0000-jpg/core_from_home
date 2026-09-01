@@ -54,7 +54,7 @@ $sources = @(
   "rtl/backend/rv_trap_controller.sv",
   "rtl/backend/rv_fence_controller.sv",
   "rtl/backend/rv_backend.sv",
-  "tb/unit/rv_backend_int_tb.sv"
+  "tb/integration/backend/rv_backend_int_tb.sv"
 )
 
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
