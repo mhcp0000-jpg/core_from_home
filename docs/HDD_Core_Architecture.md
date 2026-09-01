@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Verification baseline v1.8.1 (readable test hierarchy, GCC C/ASM loop PASS) |
+| 상태 | Verification baseline v1.9.0 (SoC/core architecture diagrams, GCC C/ASM loop PASS) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -97,66 +97,169 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 
 ## 3. 전체 구조와 주소 지도
 
-### 3.1 SoC dataflow
+### 3.1 전체 SoC architecture
 
 ```mermaid
 flowchart TB
-    subgraph CORE[RV32IMFC 2-wide OoO Core]
-      IFU[128-bit IFU + Predictor + Fetch Queue]
-      BE[Rename + ROB + IQ + PRF]
-      LSU0[LSU0]
-      LSU1[LSU1]
-      IFU --> BE
-      BE --> LSU0
-      BE --> LSU1
+    subgraph INIT["AXI initiators"]
+      direction LR
+      IFU["Core IFU<br/>128-bit fetch interface"]
+      LSU0["Core LSU0<br/>local request port"]
+      LSU1["Core LSU1<br/>local request port"]
+      DPI["DPI Host / debugger<br/>ELF loader + AXI BFM"]
     end
 
-    subgraph IL[I Local Fabric]
-      IARB[I-Arbiter / inbound-outbound bridge]
-      IT0[ITIM bank0 64b 1R1W]
-      IT1[ITIM bank1 64b 1R1W]
-      IARB --> IT0
-      IARB --> IT1
+    subgraph LOCAL["Low-latency local paths"]
+      direction LR
+      IFAB["I local fabric<br/>IFU route + inbound arbitration"]
+      DFAB["D local fabric<br/>LSU0 + LSU1 + inbound arbitration"]
     end
 
-    subgraph DL[D Local Fabric]
-      DARB[D-Arbiter: LSU0 + LSU1 + AXI inbound]
-      DT0[DTIM bank0 64b 1R1W]
-      DT1[DTIM bank1 64b 1R1W]
-      CLINT[CLINT MSWI + MTIMER]
-      DARB --> DT0
-      DARB --> DT1
-      DARB --> CLINT
+    subgraph MAIN["Main AXI4 interconnect"]
+      XBAR["AXI4 crossbar<br/>32-bit address / 64-bit data<br/>3 masters / 6 targets"]
     end
 
-    subgraph AXI[Main AXI4 Crossbar]
-      XBAR[3-master AXI Xbar]
-      BOOT[Boot ROM]
-      PLIC[PLIC]
-      HOSTIF[HostIF registers]
-      ERR[Default error slave]
-      XBAR --> BOOT
-      XBAR --> PLIC
-      XBAR --> HOSTIF
-      XBAR --> ERR
+    subgraph LOCAL_TARGETS["Tightly integrated targets"]
+      direction LR
+      ITIM["ITIM 128 KiB<br/>2 banks x 64-bit 1R1W<br/>0x8000_0000"]
+      DTIM["DTIM 128 KiB<br/>2 banks x 64-bit 1R1W<br/>0x8002_0000"]
+      CLINT["CLINT<br/>MSIP + MTIME/MTIMECMP<br/>0x0020_0000<br/>MSIP/MTIP to core"]
     end
 
-    HOST[DPI Host AXI Master]
-    IFU --> IARB
-    LSU0 --> DARB
-    LSU1 --> DARB
-    IARB -->|M0 outbound| XBAR
-    DARB -->|M1 outbound| XBAR
-    HOST -->|M2 ELF/MMIO| XBAR
-    XBAR -->|S0 inbound ITIM| IARB
-    XBAR -->|S1 inbound DTIM/CLINT| DARB
-    CLINT -->|MSIP/MTIP| CORE
-    PLIC -->|MEIP| CORE
+    subgraph AXI_TARGETS["Main AXI targets"]
+      direction LR
+      PLIC["S2 PLIC<br/>0x0C00_0000<br/>external IRQ in / MEIP to core"]
+      BOOT["S3 Boot ROM<br/>0x0000_1000<br/>reset vector"]
+      HOSTIF["S4 HostIF<br/>0x1000_0000<br/>signature/console/exit to DPI"]
+      ERR["S5 default error slave<br/>DECERR"]
+    end
+
+    IFU --> IFAB
+    LSU0 --> DFAB
+    LSU1 --> DFAB
+    DPI -->|"M2 Host AXI"| XBAR
+
+    IFAB -->|"ITIM hit"| ITIM
+    DFAB -->|"DTIM hit"| DTIM
+    DFAB -->|"CLINT hit"| CLINT
+    IFAB -->|"M0: non-ITIM via local-to-AXI bridge"| XBAR
+    DFAB -->|"M1: non-DTIM/CLINT via local-to-AXI bridge"| XBAR
+
+    XBAR -->|"S0: AXI-to-local bridge / I inbound"| ITIM
+    XBAR -->|"S1: AXI-to-local bridge / D inbound"| DTIM
+    XBAR -->|"S1: AXI-to-local bridge / D inbound"| CLINT
+    XBAR --> PLIC
+    XBAR --> BOOT
+    XBAR --> HOSTIF
+    XBAR --> ERR
+
+    classDef core fill:#e8f2ff,stroke:#2563eb,color:#111827;
+    classDef local fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef axi fill:#fff7ed,stroke:#ea580c,color:#111827;
+    classDef external fill:#f5f3ff,stroke:#7c3aed,color:#111827;
+    class IFU,LSU0,LSU1 core;
+    class IFAB,DFAB,ITIM,DTIM,CLINT local;
+    class XBAR,PLIC,BOOT,HOSTIF,ERR axi;
+    class DPI external;
 ```
 
-I/D local fabric은 각각 AXI master outbound port와 AXI slave inbound port를 따로 가진다. 코어 자신의 local 주소는 AXI로 내보내기 전에 local decode에서 흡수하므로 `I outbound → I inbound`, `D outbound → D inbound` self-loop는 발생하지 않는다. 반면 LSU가 ITIM을 data로 읽거나 IFU가 DTIM에서 fetch하는 cross-local access는 Main Xbar를 통해 허용한다.
+I/D local fabric은 각각 AXI master outbound port와 AXI slave inbound port를 따로 가진다. 그림의 Xbar S0/S1에서 ITIM/DTIM/CLINT로 향하는 화살표는 가독성을 위해 `AXI-to-local bridge → local fabric inbound arbitration → target`을 하나의 경로로 축약한 것이며, Xbar가 TIM bank에 직접 접속한다는 뜻은 아니다. 코어 자신의 local 주소는 AXI로 내보내기 전에 local decode에서 흡수하므로 `I outbound → I inbound`, `D outbound → D inbound` self-loop는 발생하지 않는다. 반면 LSU가 ITIM을 data로 읽거나 IFU가 DTIM에서 fetch하는 cross-local access는 Main Xbar를 통해 허용한다.
 
-### 3.2 초기 physical memory map
+### 3.2 코어 내부 microarchitecture
+
+```mermaid
+flowchart TB
+    IMEM["I-memory<br/>128-bit response + fetch epoch"]
+
+    subgraph FE["Frontend - maximum 2 instructions/cycle"]
+      direction LR
+      PRED["Predict<br/>BTB 256 x 4-way<br/>gshare 2048 / RAS 16"]
+      FETCH["IFU PMP check + fetch<br/>reject stale epoch responses"]
+      FQ["Fetch queue + align<br/>16/32-bit boundaries"]
+      PRED --> FETCH --> FQ
+    end
+
+    subgraph DR["Decode / rename / dispatch - 2-wide"]
+      direction LR
+      DEC["Decode2 + C expansion<br/>illegal / immediate / FU class"]
+      REN["Rename2<br/>INT/FP RAT + free lists<br/>8 branch checkpoints"]
+      PRF["Physical register state<br/>INT PRF 80 + FP PRF 80<br/>ready/busy tracking"]
+      DISP["Atomic dispatch<br/>allocate ROB + target IQ + LQ/SQ"]
+      DEC --> REN --> DISP
+      REN --- PRF
+    end
+
+    subgraph WINDOW["Out-of-order scheduling window"]
+      direction LR
+      IQ["Split issue queues<br/>INT 24 / MEM 16 / FP 16<br/>ROB-age oldest-ready candidates"]
+      ARB["Global issue arbiter<br/>5 compatible ports<br/>maximum 2 grants/cycle"]
+      OPR["Operand read + bypass<br/>for the two granted uops"]
+      IQ --> ARB --> OPR
+    end
+
+    subgraph EX["Execution ports - only two total grants per cycle"]
+      direction LR
+      INTEX["P0 INT0: ALU0 + branch + CSR hook<br/>P1 INT1: ALU1 + MUL + DIV side unit"]
+      MEMEX["P2 MEM0: AGU0 + LSU0<br/>P3 MEM1: AGU1 + LSU1"]
+      FPEX["P4 FP cluster<br/>FMA + misc + div/sqrt"]
+    end
+
+    subgraph MEM["LSU cluster - ordering and memory visibility"]
+      direction LR
+      PMP["Two PMP/PMA check paths"]
+      LSQ["LQ 24 + SQ 16<br/>unknown older-store stall<br/>youngest older-store forwarding<br/>device store direct only at ROB head"]
+      SB["Committed store buffer 16<br/>normal store visible only after ROB-head commit"]
+      DMEM["Two 64-bit D-memory ports<br/>loads + committed stores"]
+      PMP --> LSQ
+      LSQ -->|"load request"| DMEM
+      SB -->|"committed store"| DMEM
+    end
+
+    subgraph RETIRE["Completion and precise retirement"]
+      direction LR
+      WBA["Result buffers + writeback arbiter<br/>PRF write / IQ wakeup / ROB complete"]
+      ROB["ROB 48 entries<br/>program order + completion/trap<br/>branch/store metadata"]
+      COMMIT["In-order commit<br/>maximum 2/cycle<br/>store slot serialized at head"]
+      ARCH["Precise state<br/>RRAT + free-list release<br/>CSR/FCSR/privilege + trace"]
+      WBA --> ROB --> COMMIT --> ARCH
+    end
+
+    REC["Recovery control<br/>branch mispredict / exception / interrupt / MRET / FENCE.I<br/>redirect frontend, restore checkpoint, squash younger ROB/IQ/LQ/SQ"]
+
+    IMEM --> FETCH
+    FQ --> DEC
+    DISP --> IQ
+    DISP --> ROB
+    PRF -->|"physical operands"| OPR
+
+    OPR --> INTEX
+    OPR --> MEMEX
+    OPR --> FPEX
+
+    INTEX --> WBA
+    FPEX --> WBA
+    MEMEX --> PMP
+    LSQ -->|"forwarded or returned load"| WBA
+    COMMIT -->|"ROB-head normal store"| SB
+
+    INTEX -.->|"branch resolve"| REC
+    COMMIT -.->|"precise event"| REC
+
+    classDef frontend fill:#e8f2ff,stroke:#2563eb,color:#111827;
+    classDef rename fill:#f5f3ff,stroke:#7c3aed,color:#111827;
+    classDef window fill:#fff7ed,stroke:#ea580c,color:#111827;
+    classDef execute fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef retire fill:#fef2f2,stroke:#dc2626,color:#111827;
+    class PRED,FETCH,FQ frontend;
+    class DEC,REN,PRF,DISP rename;
+    class IQ,ARB,OPR window;
+    class INTEX,MEMEX,FPEX,PMP,LSQ,SB,DMEM execute;
+    class WBA,ROB,COMMIT,ARCH,REC retire;
+```
+
+실선은 instruction/operand/result의 정상 dataflow를, 점선은 branch·trap recovery 같은 control path를 뜻한다. 여러 블록을 돌아가는 화살표가 그림을 가리지 않도록 CDB의 `PRF write / IQ wakeup / ROB complete`와 recovery control의 `frontend redirect / checkpoint restore / younger-state squash`는 각 블록 라벨에 피드백 책임을 묶어 표시했다. `P0..P4`는 동시에 모두 발행되는 5-wide 구조가 아니라, global arbiter가 호환되는 후보 중 매 cycle 최대 2개만 선택하는 execution port다. ROB는 program order를 소유하고 실행은 IQ에서 out-of-order로 진행하며, architectural state와 store의 외부 가시성은 ROB head commit에서만 확정된다.
+
+### 3.3 초기 physical memory map
 
 | 시작 주소 | 끝 주소 | 크기 | 대상 | 속성 |
 |---:|---:|---:|---|---|
@@ -170,7 +273,7 @@ I/D local fabric은 각각 AXI master outbound port와 AXI slave inbound port를
 
 `mtvec`의 boot 값과 ITIM base는 모두 `0x8000_0000`이다. CLINT base는 요청에 따라 일반적인 `0x0200_0000`이 아니라 `0x0020_0000`을 사용한다. 주소는 `rv_soc_pkg` 한 곳에서만 정의하며 RTL에 literal을 반복하지 않는다.
 
-### 3.3 Address parameterization
+### 3.4 Address parameterization
 
 모든 region은 `rtl/soc/rv_soc_pkg.sv`에 `*_BASE_ADDR`와 `*_SIZE_KB`로 정의한다. byte 수와 exclusive end address는 package가 파생한다.
 
@@ -1890,3 +1993,4 @@ GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 
 | v1.7.0 | Icarus unit을 15종으로 확대하고 Verilator block 11종 회귀를 추가. FPU arithmetic/FMA/divsqrt/misc/convert/rounding/fflags, predictor BTB/gshare/RAS 및 compressed `C.J`, PLIC/CLINT를 강화. 혼합폭 RV32C ELF와 M/U privilege ELF를 추가해 branch squash, FENCE/FENCE.I, MRET→U, illegal CSR/ECALL precise trap을 ROB commit trace로 exact-match. Spike/Sail, riscv-arch-test, random/formal sign-off는 후속 범위 |
 | v1.8.0 | xPack GCC 15.2로 실제 RV32IMFC C/ASM integer·FP·load/store loop를 빌드하고 DPI ELF SoC self-check를 추가. RV32 `C.FLW/C.FSW/C.FLWSP/C.FSWSP` expansion과 RV64 shared encoding 구분을 보완하고, branch recovery 동시 older load response 및 IQ wakeup 유실을 수정해 단위 회귀로 고정. 결과 log/disassembly/symbol/commit CSV를 `verification/tests/rv32_c_loop`에 보관 |
 | v1.8.1 | 검증 파일을 역할과 범위가 드러나는 `tb/unit/{frontend,backend,soc}`, `tb/integration/{backend,soc}`, `tb/e2e/dpi`, `tb/fixtures`, `tb/elaboration` 구조로 재배치. 실행 software는 `sw/tests/<case>`, 보존 결과는 `verification/tests/<case>`에서 같은 case 이름을 사용하도록 통일 |
+| v1.9.0 | RTL 연결을 기준으로 Main AXI Xbar·I/D local fabric·TIM/peripheral·DPI Host를 표현한 전체 SoC architecture diagram과, 2-wide frontend·rename/ROB/IQ·5-port/2-grant execution·dual LSU/LSQ·commit/recovery를 표현한 core microarchitecture diagram을 추가 |
