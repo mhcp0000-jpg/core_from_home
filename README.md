@@ -44,6 +44,8 @@ tb/
 
 scripts/                         build_/run_/verify_ 접두사 기반 실행 도구
 
+config/                          주소 맵 JSON, C/ASM 상수, Host 실행 기본값
+
 verification/
   tests/
     rv32_c_loop/                 결과 설명, commit CSV, disassembly, ELF metadata
@@ -111,6 +113,35 @@ DPI ELF SoC 실행 진입점은 다음과 같습니다.
 powershell -ExecutionPolicy Bypass -File scripts/run_soc_elf_test.ps1 `
   -ElfPath <riscv-elf-path> -TracePath C:\rv_build\commit.csv
 ```
+
+주소 맵과 Host ELF 환경이 다른 새 프로젝트 복사본은 대화형 생성기로 만들 수 있습니다.
+원본 폴더는 수정하지 않으며, BootROM/CLINT/PLIC/HostIF/ITIM/DTIM의 시작 주소와
+KiB 크기, boot mtvec, BootROM image, 기본 DPI ELF와 artifact 폴더를 차례로 묻습니다.
+
+```powershell
+# Windows
+scripts/configure_project.ps1
+```
+
+```bash
+# Linux
+chmod +x scripts/configure_project.sh
+./scripts/configure_project.sh
+```
+
+질문 없이 서버 설정 파일로 생성할 수도 있습니다.
+
+```bash
+./scripts/configure_project.sh --non-interactive \
+  --config config/soc_project.example.json \
+  --output ../company_rv_core
+```
+
+생성된 폴더의 `config/soc_project.json`은 최종 설정 기록이고, `rv_soc_pkg.sv`,
+C linker script, C/assembly MMIO 상수와 BootROM HEX는 이 값으로 함께 생성됩니다.
+기본 ELF를 지정했다면 `./scripts/run_configured_elf.sh` 또는
+`scripts/run_configured_elf.ps1` 한 번으로 DPI Host를 실행합니다. Linux runner는
+PATH의 `verilator`, `make`, `g++`, `python3`를 사용합니다.
 
 ROB retire 로그는 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` CSV로 기록됩니다. speculative WB에는 나중에 squash될 결과가 포함되므로 정답 비교에는 쓰지 않고, architectural state가 확정되는 in-order commit 경계를 ISA reference 비교점으로 사용합니다.
 

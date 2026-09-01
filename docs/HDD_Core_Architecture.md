@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Verification baseline v1.9.2 (Boot ROM I-local routing, explicit AXI bridge paths) |
+| 상태 | Verification baseline v1.9.3 (portable project configurator and Host ELF runners) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -260,7 +260,41 @@ parameter int unsigned HOSTIF_SIZE_KB   = 4;
 - `BOOT_MTVEC_ADDR`가 ITIM range 안이고 4-byte aligned인지
 - 32-bit address에서 `base + size`가 overflow하지 않는지
 
-SystemVerilog testbench는 package/top parameter 값을 DPI-C `host_config()` 인자로 넘긴다. DPI ELF loader와 C code는 ITIM/DTIM/CLINT/HostIF 주소를 하드코딩하지 않는다. linker script는 `--defsym` 또는 generated include로 같은 값을 받는다.
+SystemVerilog testbench는 package/top parameter 값을 DPI-C `host_config()` 인자로 넘긴다. ELF의 실제 적재 주소는 `PT_LOAD.p_paddr`, 없으면 `p_vaddr`가 결정하므로 software linker map도 RTL map과 같아야 한다. 기본 저장소의 directed fixture에는 기본 주소 literal이 일부 남아 있지만, 아래 프로젝트 생성기는 새 복사본의 C linker script, C/assembly MMIO 주소와 commit-filter ITIM base를 같은 설정으로 다시 쓴다.
+
+### 3.5 대화형 project configurator와 Windows/Linux 재현 계약
+
+`scripts/configure_project.py`는 Python 표준 라이브러리만 사용하는 공통 생성기다. Windows는 `scripts/configure_project.ps1`, Linux는 `scripts/configure_project.sh`가 이 Python entry point를 호출한다. 원본 tree 내부 또는 이미 존재하는 출력 폴더에는 쓰지 않으며 `.git`, build/out/obj_dir와 Python cache를 제외한 새 복사본을 만든다.
+
+대화형 질문 항목은 project name, BootROM/CLINT/PLIC/HostIF/ITIM/DTIM의 base와 KiB size, boot mtvec, BootROM HEX, Host payload folder, 기본 ELF, artifact folder, simulation timeout이다. `auto` BootROM을 선택하면 생성기가 `mtvec`을 적재하고 `mie.MSIE`, `mstatus.MIE`를 켠 뒤 WFI loop에 들어가는 RV32 image를 현재 주소에 맞춰 인코딩한다. 사용자가 별도 HEX를 지정하면 `config/assets/bootrom.hex`로 복사한다.
+
+생성 결과의 source of record는 `config/soc_project.json`이다. 다음 산출물이 같은 transaction에서 생성되거나 갱신된다.
+
+| 산출물 | 역할 |
+|---|---|
+| `rtl/soc/rv_soc_pkg.sv` | 합성 RTL의 모든 region base/size와 boot mtvec |
+| `sw/tests/rv32_c_loop/rv32_tim.ld` | ELF ITIM/DTIM `MEMORY` layout과 stack top |
+| C/assembly smoke source | HostIF access, CLINT MSIP clear 주소 |
+| `config/soc_memory_map.h/.inc` | 이후 firmware가 포함할 C/assembly 상수 |
+| `config/assets/bootrom.hex` | 선택한 map에 대응하는 BootROM image |
+| `config/soc_project.env` | Linux Host runner 기본 ELF/artifact/timeout |
+| `scripts/run_configured_elf.ps1/.sh` | Windows/Linux DPI ELF 실행 entry point |
+
+Host ELF를 생성 시 지정하면 외부 절대 경로를 설정에 남기지 않고 새 project의 `host/payload/` 아래로 복사한다. DPI-C는 실행 시 `+elf=<copied ELF>`로 파일을 열고 ELF header의 `PT_LOAD` 주소에 따라 ITIM/DTIM에 올린다. 즉 Host가 ELF를 읽는 **파일 위치**는 project config가, core memory에 올라가는 **주소 위치**는 linker script와 ELF program header가 소유한다. 이 둘을 구분해야 한다.
+
+생성 전 Python validator와 생성 후 `rv_soc_map_check`가 4 KiB 정렬, non-zero size, 32-bit overflow, region overlap, TIM 2-bank divisibility, mtvec-in-ITIM을 중복 검사한다. Python은 추가로 CLINT가 `mtime`까지, PLIC가 M/S context register까지 포함하는 최소 aperture인지 확인한다. Linux DPI runner는 PATH의 Verilator/GNU make/g++를 사용하며 Windows runner는 기존 Verilator/w64devkit 경로 parameter를 그대로 받는다.
+
+```powershell
+scripts/configure_project.ps1
+```
+
+```bash
+./scripts/configure_project.sh --non-interactive \
+  --config config/soc_project.example.json \
+  --output ../company_rv_core
+cd ../company_rv_core
+./scripts/run_configured_elf.sh /path/to/program.elf
+```
 
 ## 4. 기준 파라미터
 
@@ -1957,3 +1991,4 @@ GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 
 | v1.9.0 | RTL 연결을 기준으로 Main AXI Xbar·I/D local fabric·TIM/peripheral·DPI Host를 표현한 전체 SoC architecture diagram과, 2-wide frontend·rename/ROB/IQ·5-port/2-grant execution·dual LSU/LSQ·commit/recovery를 표현한 core microarchitecture diagram을 추가 |
 | v1.9.1 | 자동 배치 구조도의 얇고 구불거리는 wire를 대체하기 위해 SoC/core 구조도를 고정 그리드 SVG로 재작성. 4–6 px 배선과 수평·수직만 사용하는 orthogonal route, 라이트/다크 테마, 클릭 시 원본 확대를 적용 |
 | v1.9.2 | Boot ROM을 독립 Xbar S3 AXI slave에서 `rv_i_fabric` 내부 I-local target으로 이동. S0를 Boot ROM+ITIM dual-window inbound bridge로 구성하고 S3=HostIF, S4/S5=error로 재배치. Core-local/Global-AXI 경로를 좌→우 두 패널 구조도로 재작성하고 Host→ITIM/LSU→ITIM 경로와 bridge 역할을 명시 |
+| v1.9.3 | Windows/Linux 공통 대화형 project configurator 추가. 새 폴더 복제 시 전체 memory map, mtvec, parameterized BootROM WFI image, linker/C/assembly 주소, 기본 DPI ELF와 artifact 경로를 한 번에 생성하고 JSON/H/INC/ENV 산출물 및 플랫폼별 runner로 재현하도록 정의 |

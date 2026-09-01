@@ -1,0 +1,21 @@
+{
+  "project_name": "core_from_home",
+  "memory_map": {
+    "bootrom": { "base": "0x00001000", "size_kb": 4 },
+    "clint":   { "base": "0x00200000", "size_kb": 64 },
+    "plic":    { "base": "0x0c000000", "size_kb": 4096 },
+    "hostif":  { "base": "0x10000000", "size_kb": 4 },
+    "itim":    { "base": "0x80000000", "size_kb": 128 },
+    "dtim":    { "base": "0x80020000", "size_kb": 128 }
+  },
+  "boot": {
+    "mtvec": "0x80000000",
+    "bootrom_image": "tb/fixtures/bootrom/bootrom_wait.hex"
+  },
+  "host": {
+    "default_elf": "",
+    "payload_dir": "host/payload",
+    "artifact_root": "out/dpi_elf",
+    "timeout_cycles": 2000000
+  }
+}
