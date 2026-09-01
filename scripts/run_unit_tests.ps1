@@ -31,6 +31,31 @@ New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
 
 $tests = @(
   @{
+    Top = "rv_rename2_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_rename2.sv",
+      "tb/unit/rv_rename2_tb.sv"
+    )
+  },
+  @{
+    Top = "rv_phys_regfile_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_phys_regfile.sv",
+      "tb/unit/rv_phys_regfile_tb.sv"
+    )
+  },
+  @{
+    Top = "rv_execute_units_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_int_alu.sv",
+      "rtl/backend/rv_branch_unit.sv",
+      "tb/unit/rv_execute_units_tb.sv"
+    )
+  },
+  @{
     Top = "rv_decode2_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",

@@ -179,9 +179,9 @@ module rv_branch_predictor #(
       immediate[9:8] = instruction[10:9];
       immediate[7] = instruction[6];
       immediate[6] = instruction[7];
-      immediate[5:3] = instruction[5:3];
-      immediate[2] = instruction[11];
-      immediate[1] = instruction[2];
+      immediate[5] = instruction[2];
+      immediate[4] = instruction[11];
+      immediate[3:1] = instruction[5:3];
       immediate[0] = 1'b0;
       return pc + sign_extend_imm(immediate, 12);
     end

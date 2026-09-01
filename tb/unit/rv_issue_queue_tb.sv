@@ -154,18 +154,19 @@ module rv_issue_queue_tb;
   task automatic clear_inputs;
     dispatch_valid             = '0;
     dispatch_sequence          = '0;
-    dispatch_fu                = '{default: FU_INT};
+    dispatch_fu                = '0;
     dispatch_port_mask         = '1;
     dispatch_src_used          = '0;
-    dispatch_src_class         = '{default: REG_NONE};
+    dispatch_src_class         = '0;
     dispatch_src_phys          = '0;
     dispatch_src_ready         = '0;
     dispatch_destination_valid = '0;
-    dispatch_destination_class = '{default: REG_NONE};
+    dispatch_destination_class = '0;
     dispatch_destination_phys  = '0;
     dispatch_pc                = '0;
     dispatch_instruction       = '0;
-    dispatch_inst_len          = '{default: INST_LEN_32};
+    for (int unsigned lane = 0; lane < 2; lane++)
+      dispatch_inst_len[lane] = INST_LEN_32;
     dispatch_prediction        = '0;
     dispatch_immediate         = '0;
     dispatch_operation         = '0;
@@ -180,7 +181,8 @@ module rv_issue_queue_tb;
     dispatch_lq_index          = '0;
     dispatch_sq_index          = '0;
     writeback_valid            = '0;
-    writeback_class            = '{default: REG_INT};
+    for (int unsigned port = 0; port < 2; port++)
+      writeback_class[port] = REG_INT;
     writeback_phys             = '0;
     candidate_accept           = '0;
     flush_all                  = 1'b0;
@@ -240,8 +242,13 @@ module rv_issue_queue_tb;
     #1;
     if ((candidate_valid != 2'b11) ||
         (candidate_sequence[0] != 8'd10) ||
-        (candidate_sequence[1] != 8'd11))
+        (candidate_sequence[1] != 8'd11)) begin
+      $display("IQ diagnostic valid=%b seq=%0d/%0d ready=%b wb=%b/%0d/%0d",
+               candidate_valid, candidate_sequence[0], candidate_sequence[1],
+               u_dut.ready_now, writeback_valid[0], writeback_class[0],
+               writeback_phys[0]);
       $fatal(1, "Writeback wakeup/oldest-ready dual select failed");
+    end
     candidate_accept = 2'b11;
     @(posedge clk);
     @(negedge clk);

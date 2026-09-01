@@ -40,6 +40,7 @@ module rv_rob_tb;
   logic [1:0] complete_exception_valid;
   exception_code_e [1:0] complete_exception_cause;
   logic [1:0][31:0] complete_exception_tval;
+  logic [1:0][4:0] complete_fflags;
   logic [1:0] complete_branch_mispredict;
   logic [1:0][31:0] complete_branch_target;
   logic [3:0][SEQ_WIDTH-1:0] live_query_sequence;
@@ -61,6 +62,7 @@ module rv_rob_tb;
   logic [1:0] retire_is_load;
   logic [1:0][LQ_WIDTH-1:0] retire_lq_index;
   logic [1:0][SQ_WIDTH-1:0] retire_sq_index;
+  logic [1:0][4:0] retire_fflags;
   logic head_valid;
   logic head_complete;
   logic [SEQ_WIDTH-1:0] head_sequence;
@@ -127,6 +129,7 @@ module rv_rob_tb;
     .complete_exception_valid_i(complete_exception_valid),
     .complete_exception_cause_i(complete_exception_cause),
     .complete_exception_tval_i (complete_exception_tval),
+    .complete_fflags_i         (complete_fflags),
     .complete_branch_mispredict_i(complete_branch_mispredict),
     .complete_branch_target_i  (complete_branch_target),
     .live_query_sequence_i     (live_query_sequence),
@@ -147,6 +150,7 @@ module rv_rob_tb;
     .retire_is_load_o          (retire_is_load),
     .retire_lq_index_o         (retire_lq_index),
     .retire_sq_index_o         (retire_sq_index),
+    .retire_fflags_o           (retire_fflags),
     .head_valid_o              (head_valid),
     .head_complete_o           (head_complete),
     .head_sequence_o           (head_sequence),
@@ -178,7 +182,7 @@ module rv_rob_tb;
     alloc_instruction_length    = '0;
     alloc_complete              = '0;
     alloc_writes_destination    = '0;
-    alloc_destination_class     = '{default: REG_NONE};
+    alloc_destination_class     = '0;
     alloc_destination_arch      = '0;
     alloc_destination_phys      = '0;
     alloc_stale_phys            = '0;
@@ -190,13 +194,14 @@ module rv_rob_tb;
     alloc_is_branch             = '0;
     alloc_serializing           = '0;
     alloc_exception_valid       = '0;
-    alloc_exception_cause       = '{default: EXC_ILLEGAL_INSTRUCTION};
+    alloc_exception_cause       = '0;
     alloc_exception_tval        = '0;
     complete_valid              = '0;
     complete_sequence           = '0;
     complete_exception_valid    = '0;
-    complete_exception_cause    = '{default: EXC_ILLEGAL_INSTRUCTION};
+    complete_exception_cause    = '0;
     complete_exception_tval     = '0;
+    complete_fflags             = '0;
     complete_branch_mispredict  = '0;
     complete_branch_target      = '0;
     live_query_sequence          = '0;
@@ -224,10 +229,12 @@ module rv_rob_tb;
     alloc_pc[1]              = 32'h1004;
     alloc_instruction[0]     = 32'h0010_0293;
     alloc_instruction[1]     = 32'h0020_0313;
-    alloc_instruction_length = '{2'd2, 2'd2};
+    alloc_instruction_length[0] = INST_LEN_32;
+    alloc_instruction_length[1] = INST_LEN_32;
     alloc_complete           = 2'b10;
     alloc_writes_destination = 2'b11;
-    alloc_destination_class  = '{REG_INT, REG_INT};
+    alloc_destination_class[0] = REG_INT;
+    alloc_destination_class[1] = REG_INT;
     alloc_destination_arch[0] = 5;
     alloc_destination_arch[1] = 6;
     alloc_destination_phys[0] = 32;
@@ -271,7 +278,8 @@ module rv_rob_tb;
     alloc_valid                = 2'b11;
     alloc_pc[0]                = 32'h2000;
     alloc_pc[1]                = 32'h2004;
-    alloc_instruction_length   = '{2'd2, 2'd2};
+    alloc_instruction_length[0] = INST_LEN_32;
+    alloc_instruction_length[1] = INST_LEN_32;
     alloc_complete             = 2'b10;
     alloc_exception_valid[0]   = 1'b1;
     alloc_exception_cause[0]   = EXC_ILLEGAL_INSTRUCTION;
@@ -298,7 +306,8 @@ module rv_rob_tb;
     alloc_valid              = 2'b11;
     alloc_pc[0]              = 32'h3000;
     alloc_pc[1]              = 32'h3004;
-    alloc_instruction_length = '{2'd2, 2'd2};
+    alloc_instruction_length[0] = INST_LEN_32;
+    alloc_instruction_length[1] = INST_LEN_32;
     alloc_complete           = 2'b11;
     #1;
     second_sequence          = alloc_sequence;

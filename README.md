@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합 및 directed verification 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐으며 trap/interrupt와 fence drain은 독립 controller 경계로 분리했습니다. frontend에는 256-entry 4-way BTB, 2048-entry gshare, 16-entry RAS가 연결됐고, DPI-C는 ELF32/ELF64 PT_LOAD를 Host AXI로 적재한 뒤 HostIF와 CLINT MSIP를 순서대로 기록합니다. parse/elaboration, 단위 12종, backend 통합, Boot ROM 부트, DPI ELF end-to-end 및 RV32IMF commit trace exact-match가 통과했습니다. C/CSR/FENCE 전 범위와 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합 및 directed verification 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐으며 trap/interrupt와 fence drain은 독립 controller 경계로 분리했습니다. frontend에는 256-entry 4-way BTB, 2048-entry gshare, 16-entry RAS가 연결됐고, DPI-C는 ELF32/ELF64 PT_LOAD를 Host AXI로 적재한 뒤 HostIF와 CLINT MSIP를 순서대로 기록합니다. parse/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend 통합, Boot ROM 부트, DPI ELF end-to-end가 통과했습니다. 실제 RV32IMF, 혼합폭 RV32C, M/U privilege ELF의 ROB commit trace도 예상 결과와 exact-match합니다. C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
 ## 문서
 
@@ -19,7 +19,7 @@ rtl/                  합성 가능한 SystemVerilog RTL
   lib/                공용 하드웨어 프리미티브
   soc/                AXI Xbar, I/D fabric, TIM, CLINT, PLIC, Boot ROM
 tb/                   unit/integration/SoC/DPI ELF testbench와 commit logger
-scripts/              parse/elaboration 및 Icarus 단위 회귀 스크립트
+scripts/              parse/elaboration, 단위·블록·통합·ELF 회귀 스크립트
 ```
 
 ## ISA 기준선
@@ -60,6 +60,14 @@ powershell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1
 
 Icarus 회귀는 decoder/C expander, divider, RV32F 실행기, fetch queue, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer, CSR/privilege/trap 상태 전이와 PMP mode/priority/permission을 검증합니다.
 
+Icarus가 가변 packed-array index를 elaboration하지 못하는 ROB/IQ/arbiter와 SoC 블록은 Verilator 회귀로 실행합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_block_tests.ps1
+```
+
+이 회귀는 ROB, issue queue/global arbiter, multiplier, branch predictor, AXI bridge, I/D fabric, SoC peripheral path, PLIC, CLINT 11종을 검증합니다.
+
 Boot ROM→WFI→Host AXI ITIM/DTIM 적재→CLINT MSIP→ITIM vector 실행 흐름은 다음으로 확인할 수 있습니다.
 
 ```powershell
@@ -73,9 +81,9 @@ powershell -ExecutionPolicy Bypass -File scripts/run_soc_elf_test.ps1 `
   -ElfPath <riscv-elf-path> -TracePath C:\rv_build\commit.csv
 ```
 
-ROB retire 로그는 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` CSV로 기록됩니다. speculative WB가 아니라 in-order commit 경계이므로 ISA reference 비교에 사용합니다.
+ROB retire 로그는 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` CSV로 기록됩니다. speculative WB에는 나중에 squash될 결과가 포함되므로 정답 비교에는 쓰지 않고, architectural state가 확정되는 in-order commit 경계를 ISA reference 비교점으로 사용합니다.
 
-현재 directed 검증 전체를 한 번에 실행하려면 다음 명령을 사용합니다. 이 스크립트는 self-contained RV32IMF ELF를 생성하고 Boot ROM→WFI→Host AXI 적재→CLINT MSIP→ITIM 실행→HostIF exit(0)을 거쳐 24개 payload 명령의 architectural 결과와 dual commit을 exact-match합니다.
+현재 directed 검증 전체를 한 번에 실행하려면 다음 명령을 사용합니다. 이 스크립트는 self-contained ELF 3종을 생성하고 Boot ROM→WFI→Host AXI 적재→CLINT MSIP→ITIM 실행→HostIF exit(0)을 반복합니다. RV32IMF 24개 payload의 INT/FP 결과, 혼합 16/32-bit RV32C 18개 payload와 branch squash/FENCE, MRET 이후 U-mode illegal CSR·ECALL trap 및 M-mode 복귀를 각각 ROB commit CSV와 exact-match합니다.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_verification.ps1

@@ -70,6 +70,8 @@ SOURCES = (
     "tb/unit/rv_i_fabric_tb.sv",
     "tb/unit/rv_axi_bridge_tb.sv",
     "tb/unit/rv_soc_peripheral_tb.sv",
+    "tb/unit/rv_plic_tb.sv",
+    "tb/unit/rv_clint_tb.sv",
     "tb/unit/rv_soc_top_tb.sv",
     "tb/unit/rv_rename2_tb.sv",
     "tb/unit/rv_rob_tb.sv",
@@ -86,6 +88,7 @@ SOURCES = (
     "tb/unit/rv_lsq_tb.sv",
     "tb/unit/rv_writeback_arbiter_tb.sv",
     "tb/unit/rv_branch_recovery_tb.sv",
+    "tb/unit/rv_branch_predictor_tb.sv",
     "tb/unit/rv_exec_result_buffer_tb.sv",
     "tb/unit/rv_csr_file_tb.sv",
     "tb/unit/rv_pmp_tb.sv",
@@ -120,8 +123,8 @@ def main() -> int:
         "axi_bridge_tbs, soc_top_tb, rename2_tb, rob_tb, issue_queue_tb, "
         "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb, "
         "decode2_tb, divider_tb, fetch_queue_tb, lsu_pipe_tb, store_buffer_tb, "
-        "lsq_tb, writeback_arbiter_tb, branch_recovery_tb, result_buffer_tb, "
-        "csr_file_tb, pmp_tb, backend_int_tb"
+        "lsq_tb, writeback_arbiter_tb, branch_recovery_tb, branch_predictor_tb, result_buffer_tb, "
+        "csr_file_tb, pmp_tb, plic_tb, clint_tb, backend_int_tb"
     )
     return 0
 
