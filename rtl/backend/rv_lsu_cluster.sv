@@ -567,7 +567,12 @@ module rv_lsu_cluster #(
         dmem_req_committed_o[lane] = 1'b1;
         dmem_req_device_o[lane] = sb_drain_device[lane];
         sb_drain_ready[lane] = dmem_req_ready_i[lane];
-      end else if (load_candidate_valid[lane] && load_memory_read[lane]) begin
+      // A recovery invalidates younger LQ entries on this edge.  Do not let a
+      // candidate from the pre-flush combinational view launch a request in
+      // the same cycle: its later response could otherwise alias a reused LQ
+      // index and complete the wrong ROB sequence.
+      end else if (!flush_valid_i && load_candidate_valid[lane] &&
+                   load_memory_read[lane]) begin
         load_request_selected[lane] = 1'b1;
         dmem_req_valid_o[lane] = 1'b1;
         dmem_req_id_o[lane] = {1'b0, 5'(load_candidate_index[lane])};
@@ -578,7 +583,8 @@ module rv_lsu_cluster #(
         load_candidate_ready[lane] = dmem_req_ready_i[lane];
       end
 
-      if (load_candidate_valid[lane] && load_forward_valid[lane] &&
+      if (!flush_valid_i && load_candidate_valid[lane] &&
+          load_forward_valid[lane] &&
           !(dmem_rsp_valid_i[lane] && response_is_load[lane]))
         load_candidate_ready[lane] = completion_ready_i[2+lane];
     end
@@ -698,6 +704,8 @@ module rv_lsu_cluster #(
     for (int unsigned lane = 0; lane < 2; lane++) begin
       if (dmem_req_valid_o[lane] && dmem_req_write_o[lane])
         assert (dmem_req_committed_o[lane]);
+      if (flush_valid_i)
+        assert (!(dmem_req_valid_o[lane] && !dmem_req_write_o[lane]));
       assert (!(load_forward_valid[lane] && load_memory_read[lane]));
     end
     if (memory_idle_o)

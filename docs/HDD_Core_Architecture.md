@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-01)는 **RV32IMFC 1차 RTL 통합과 directed verification baseline 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. 현재 parser/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend OoO 통합, directed SoC boot와 DPI ELF end-to-end가 통과했다. RV32IMF 24개 payload, 혼합폭 RV32C 18개 payload, MRET/U-mode illegal CSR/ECALL을 포함한 M/U ELF를 ROB commit trace와 exact-match했다. GCC 15.2가 생성한 C integer/FP/load-store loop도 HostIF signature와 exit(0), payload commit 357개, FP write 68개, lane-1 commit 121개, payload trap 0개로 통과했다. 이 workload로 RV32 compressed FP memory expansion과 recovery 동시 load-response/IQ-wakeup 유실을 발견해 수정했다. 단, C/CSR/FENCE/privilege의 모든 조합, random long-run 및 Spike/Sail differential과 riscv-arch-test는 아직 남아 있으므로 전체 ISA sign-off 상태는 아니다.
+현재 구현 상태(2026-09-01)는 **RV32IMFC 1차 RTL 통합과 directed verification baseline 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. 현재 parser/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend OoO 통합, directed SoC boot와 DPI ELF end-to-end가 통과했다. RV32IMF 24개 payload, 혼합폭 RV32C 18개 payload, MRET/U-mode illegal CSR/ECALL을 포함한 M/U ELF를 ROB commit trace와 exact-match했다. GCC 15.2가 생성한 C integer/FP/load-store loop도 HostIF signature와 exit(0), payload commit 357개, FP write 68개, lane-1 commit 121개, payload trap 0개로 통과했다. 이 workload로 RV32 compressed FP memory expansion과 recovery 동시 load-response/IQ-wakeup 유실을 발견해 수정했다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 684,571 cycles, 576,450 instret, IPC 0.842060, 비공식 추정 2.921538 CoreMark/MHz를 기록했고 recovery cycle에 발행된 orphan load request의 LQ-index alias를 추가로 발견·수정했다. 단, C/CSR/FENCE/privilege의 모든 조합, random long-run 및 Spike/Sail differential과 riscv-arch-test는 아직 남아 있으므로 전체 ISA sign-off 상태는 아니다.
 
 ## 1. 목적과 성능 포지션
 
@@ -1866,8 +1866,49 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | RV32C trace | `scripts/verify_rv32c_smoke_trace.ps1` | 혼합폭 payload 18, dual-commit cycles 4, wrong-path PC 2개 미commit PASS |
 | M/U trace | `scripts/verify_rv32_priv_smoke_trace.ps1` | MRET→U, illegal CSR cause 2, ECALL-U cause 8, U resume 및 M-mode exit PASS |
 | GCC C/ASM loop | `scripts/run_c_loop_test.ps1` | integer/FP/load-store 8회 loop, payload 357, FP write 68, lane-1 commit 121, trap 0, signature `0x009e00b9`, exit(0) PASS |
+| CoreMark short RTL | `scripts/run_coremark.ps1` | 2 iterations, CRC 4종 PASS, 684,571 cycles, 576,450 instret, IPC 0.842060, estimated 2.921538 CoreMark/MHz, exit(0) |
 
 GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 결과 요약과 전체 commit CSV는 `verification/tests/rv32_c_loop`에 함께 보관한다. 이 테스트는 compiler가 선택한 RV32IMFC instruction 조합과 반복 branch recovery를 실제 SoC 경로에서 검증한다. 특히 recovery와 같은 cycle에 도착한 older load response는 surviving LQ entry를 완료해야 하고, older writeback은 surviving IQ entry의 source-ready를 반드시 갱신해야 한다. 두 상태 전이는 각각 LSQ/IQ 단위 회귀로 고정한다.
+
+### 18.6 CoreMark short RTL 성능 계약
+
+CoreMark는 upstream `eembc/coremark` commit
+`1f483d5b8316753a742cbf5590caf5bd0a4e4777`의 algorithm source를 수정하지
+않고 별도 bare-metal port로 빌드한다. 2K performance seed, static memory,
+single context, GCC `-O2`, RV32IMC Zicsr/Zifencei/ILP32를 기준으로 하며 code와
+read-only data는 ITIM, mutable static data와 stack은 DTIM에 둔다. benchmark
+timed region은 `mcycle`과 `minstret`의 RV32 high-low-high 안정 read로 측정한다.
+
+초기 RTL 회귀의 기본 iteration은 2다. 이는 다음 CoreMark 공식 보고 조건 중
+최소 10초 실행을 의도적으로 만족하지 않으므로 결과를 **non-certified
+implementation estimate**로만 기록한다. 기능 PASS 조건은 known 2K
+performance seed CRC `e9f5`, list CRC `e714`, matrix CRC `1fd7`, state CRC
+`8e3a`, datatype error 0, CRC error 0이다. 10초 미만 status는 이 short run에서
+예상되며 기능 실패에 포함하지 않는다.
+
+`portable_fini`는 printf/UART를 사용하지 않고 HostIF TOHOST에 magic/version,
+iteration, 64-bit cycle, 64-bit retired instruction, 5개 CRC, status를 12개의
+ordered 32-bit word로 전송한 뒤 EXIT_CODE를 쓴다. 성능 report는
+`IPC=instret/cycles`, `cycles/iteration=cycles/iterations`,
+`estimated CoreMark/MHz=iterations*1,000,000/cycles`로 계산한다. 마지막 값은
+현재 1:1 ITIM/DTIM 모델의 cycle 기반 추정치이며 합성 Fmax 없이 절대
+CoreMark/sec로 해석하지 않는다.
+
+PowerShell runner는 공식 source pin/clean 상태, ELF build, DPI Host 적재,
+CRC packet과 exit(0), metric 산출을 한 번에 검사한다. Linux runner도 같은
+ELF/SoC 경로를 사용하며 raw HostIF packet을 보존한다. 전체 commit trace는
+benchmark 시간과 무관하지만 파일이 매우 커지므로 기본 비활성화하고,
+architectural count는 commit 경계에서 증가하는 `minstret`로 얻는다.
+
+첫 CoreMark 장기 실행은 recovery cycle의 stale load-response alias를 발견했다.
+flush와 같은 cycle에 pre-flush candidate가 read request를 발행하면 LSQ는 해당
+younger entry를 제거한 뒤 response가 도착하기 전에 index를 재사용할 수 있다.
+따라서 `rv_lsu_cluster`는 `flush_valid` cycle에 speculative load request와
+forward completion handshake를 모두 금지한다. 불변조건은
+`flush_valid -> !(dmem_req_valid && !dmem_req_write)`이며, committed store drain은
+recovery와 독립적으로 유지된다. late response를 generation/sequence까지 태깅하는
+방식은 향후 decoupled fabric 확장 항목이지만, 초기 모델은 요청 자체를 차단해
+orphan speculative response 생성을 방지한다.
 
 `rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval`을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
@@ -1992,3 +2033,4 @@ GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 
 | v1.9.1 | 자동 배치 구조도의 얇고 구불거리는 wire를 대체하기 위해 SoC/core 구조도를 고정 그리드 SVG로 재작성. 4–6 px 배선과 수평·수직만 사용하는 orthogonal route, 라이트/다크 테마, 클릭 시 원본 확대를 적용 |
 | v1.9.2 | Boot ROM을 독립 Xbar S3 AXI slave에서 `rv_i_fabric` 내부 I-local target으로 이동. S0를 Boot ROM+ITIM dual-window inbound bridge로 구성하고 S3=HostIF, S4/S5=error로 재배치. Core-local/Global-AXI 경로를 좌→우 두 패널 구조도로 재작성하고 Host→ITIM/LSU→ITIM 경로와 bridge 역할을 명시 |
 | v1.9.3 | Windows/Linux 공통 대화형 project configurator 추가. 새 폴더 복제 시 전체 memory map, mtvec, parameterized BootROM WFI image, linker/C/assembly 주소, 기본 DPI ELF와 artifact 경로를 한 번에 생성하고 JSON/H/INC/ENV 산출물 및 플랫폼별 runner로 재현하도록 정의 |
+| v1.10.0 | 공식 CoreMark source 고정 commit을 사용하는 RV32 bare-metal TIM port와 Windows/Linux runner 추가. 2-iteration short RTL run의 CRC 검증, mcycle/minstret 기반 cycle·IPC·CoreMark/MHz 추정, ordered HostIF result packet과 비공식 결과 분류 계약을 정의 |

@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합 및 directed verification 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐으며 trap/interrupt와 fence drain은 독립 controller 경계로 분리했습니다. frontend에는 256-entry 4-way BTB, 2048-entry gshare, 16-entry RAS가 연결됐고, DPI-C는 ELF32/ELF64 PT_LOAD를 Host AXI로 적재한 뒤 HostIF와 CLINT MSIP를 순서대로 기록합니다. parse/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend 통합, Boot ROM 부트, DPI ELF end-to-end가 통과했습니다. 실제 RV32IMF, 혼합폭 RV32C, M/U privilege ELF의 ROB commit trace도 예상 결과와 exact-match합니다. GCC 15.2로 빌드한 C integer/FP/load-store loop도 357개 payload commit, FP write 68개, lane-1 commit 121개, payload trap 0개로 self-check/HostIF exit(0)을 통과했습니다. C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합 및 directed verification 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐으며 trap/interrupt와 fence drain은 독립 controller 경계로 분리했습니다. frontend에는 256-entry 4-way BTB, 2048-entry gshare, 16-entry RAS가 연결됐고, DPI-C는 ELF32/ELF64 PT_LOAD를 Host AXI로 적재한 뒤 HostIF와 CLINT MSIP를 순서대로 기록합니다. parse/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend 통합, Boot ROM 부트, DPI ELF end-to-end가 통과했습니다. 실제 RV32IMF, 혼합폭 RV32C, M/U privilege ELF의 ROB commit trace도 예상 결과와 exact-match합니다. GCC 15.2로 빌드한 C integer/FP/load-store loop도 357개 payload commit, FP write 68개, lane-1 commit 121개, payload trap 0개로 self-check/HostIF exit(0)을 통과했습니다. 공식 source 기반 CoreMark 2-iteration short RTL run도 CRC/exit(0)을 통과했고 684,571 cycles, 576,450 instret, IPC 0.842060, 비공식 추정 2.921538 CoreMark/MHz를 기록했습니다. 이 workload에서 발견한 recovery-cycle stale load-response alias도 수정했습니다. C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
 ## 문서
 
@@ -11,6 +11,8 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
   - [전체 SoC architecture](docs/HDD_Core_Architecture.md#31-전체-soc-architecture) · [구조도 크게 보기](docs/diagrams/soc-architecture.svg)
   - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture) · [구조도 크게 보기](docs/diagrams/core-microarchitecture.svg)
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
+- [CoreMark short RTL benchmark](sw/benchmarks/coremark/README.md) — 공식 upstream pin, TIM port, 실행법과 점수 해석
+- [CoreMark 2-iteration 결과](verification/benchmarks/coremark/RESULTS.md) — CRC, cycle/IPC, 발견한 LSU recovery 결함과 수정 결과
 
 ## 디렉터리
 
@@ -26,6 +28,7 @@ rtl/
   soc/                           AXI, I/D fabric, TIM, CLINT, PLIC, Boot/HostIF
 
 sw/
+  benchmarks/coremark/            CoreMark RV32 TIM port, startup, linker
   tests/
     rv32_c_loop/                 C source, startup ASM, linker script 한 세트
 
@@ -47,6 +50,7 @@ scripts/                         build_/run_/verify_ 접두사 기반 실행 도
 config/                          주소 맵 JSON, C/ASM 상수, Host 실행 기본값
 
 verification/
+  benchmarks/coremark/            CoreMark 결과, log, disassembly, ELF metadata
   tests/
     rv32_c_loop/                 결과 설명, commit CSV, disassembly, ELF metadata
 ```
@@ -159,6 +163,18 @@ powershell -ExecutionPolicy Bypass -File scripts/run_verification.ps1
 powershell -ExecutionPolicy Bypass -File scripts/run_c_loop_test.ps1 `
   -PublishRoot verification/tests/rv32_c_loop
 ```
+
+CoreMark는 공식 upstream source를 고정 commit에서 가져와 1~2 iteration의 짧은
+TIM RTL workload로 실행합니다. 다음 결과는 CRC 기능 검증과 cycle/IPC 비교용
+**비공식 구현 추정치**이며 CoreMark의 최소 10초 공식 보고 조건을 만족하지 않습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_coremark.ps1 `
+  -Iterations 2 -PublishRoot verification/benchmarks/coremark
+```
+
+Linux에서는 `./scripts/run_coremark.sh --iterations 2`를 사용합니다. 세부 source
+pin, HostIF packet, 산식과 결과 해석은 `sw/benchmarks/coremark/README.md`에 있습니다.
 
 `-DSYNTHESIS`는 Icarus가 지원하지 않는 SVA 구문만 제외하며 RTL 데이터 경로는
 동일하게 시뮬레이션합니다.

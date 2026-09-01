@@ -1,0 +1,18 @@
+{
+  "classification": "non-certified implementation estimate",
+  "upstream_commit": "1f483d5b8316753a742cbf5590caf5bd0a4e4777",
+  "iterations": 2,
+  "cycles": 684571,
+  "retired_instructions": 576450,
+  "cycles_per_iteration": 342285.5,
+  "instructions_per_iteration": 288225.0,
+  "ipc": 0.8420602099709161,
+  "estimated_coremark_per_mhz": 2.9215377221646843,
+  "seedcrc": "0xe9f5",
+  "crclist": "0xe714",
+  "crcmatrix": "0x1fd7",
+  "crcstate": "0x8e3a",
+  "crcfinal": "0x72be",
+  "status": "0x00000009",
+  "official_ten_second_rule_met": false
+}
