@@ -69,6 +69,8 @@ module rv_i_fabric #(
   logic local_if_read_pending_q;
   logic if_error_valid_q;
   logic [STREAK_WIDTH-1:0] if_core_streak_q;
+  logic if_response_consumed;
+  logic if_slot_available;
 
   logic if_rsp_buffer_valid_q;
   logic [3:0] if_rsp_buffer_id_q;
@@ -122,6 +124,13 @@ module rv_i_fabric #(
     return (address & byte_mask) == 0;
   endfunction
 
+  assign if_response_consumed = if_rsp_valid_o && if_rsp_ready_i;
+  // The response owner metadata is consumed at the edge, so a new IFU request
+  // may take ownership of the slot on that same edge.  This is still a
+  // single-outstanding interface; it merely removes the response-to-request
+  // bubble between consecutive ITIM blocks.
+  assign if_slot_available = !if_busy_q || if_response_consumed;
+
   always_comb begin
     if_local_candidate = addr_in_region(if_req_addr_i, ITIM_BASE_ADDR,
                                          size_kb_to_bytes(ITIM_SIZE_KB));
@@ -172,7 +181,7 @@ module rv_i_fabric #(
       xbar_write_accept = 1'b1;
     end
 
-    if (!if_busy_q && if_req_valid_i) begin
+    if (if_slot_available && if_req_valid_i) begin
       if (if_req_addr_i[3:0] != 0) begin
         if_req_ready_o  = 1'b1;
         if_error_accept = 1'b1;
@@ -444,7 +453,9 @@ module rv_i_fabric #(
       if ((local_if_rsp_valid || if_error_valid_q) &&
           !if_rsp_buffer_valid_q) begin
         if (if_rsp_ready_i) begin
-          if_busy_q <= 1'b0;
+          if (!(if_local_accept || if_bootrom_accept || if_nonlocal_accept ||
+                if_error_accept))
+            if_busy_q <= 1'b0;
         end else begin
           if_rsp_buffer_valid_q <= 1'b1;
           if_rsp_buffer_id_q    <= if_id_q;
@@ -456,7 +467,9 @@ module rv_i_fabric #(
       end
       if (if_rsp_buffer_valid_q && if_rsp_ready_i) begin
         if_rsp_buffer_valid_q <= 1'b0;
-        if_busy_q             <= 1'b0;
+        if (!(if_local_accept || if_bootrom_accept || if_nonlocal_accept ||
+              if_error_accept))
+          if_busy_q <= 1'b0;
       end
 
       if (xbar_in_bus.req_valid && xbar_in_bus.req_ready) begin

@@ -8,6 +8,7 @@ Usage: run_soc_elf_test.sh --elf FILE [options]
 Options:
   --build-root DIR       Verilator output directory (default: /tmp/rv_soc_elf)
   --trace FILE           Commit CSV output path
+  --perf FILE            Performance profile JSON output path
   --jobs N               Parallel build jobs (default: host CPU count)
   --timeout-cycles N     Simulation timeout (default: 2000000)
   --verilator COMMAND    Verilator command (default: verilator)
@@ -20,6 +21,7 @@ cd -- "$repo_root"
 elf_path=""
 build_root="${TMPDIR:-/tmp}/rv_soc_elf"
 trace_path=""
+perf_path=""
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '4')"
 timeout_cycles=2000000
 verilator_cmd="${VERILATOR:-verilator}"
@@ -29,6 +31,7 @@ while (($#)); do
     --elf) elf_path="$2"; shift 2 ;;
     --build-root) build_root="$2"; shift 2 ;;
     --trace) trace_path="$2"; shift 2 ;;
+    --perf) perf_path="$2"; shift 2 ;;
     --jobs) jobs="$2"; shift 2 ;;
     --timeout-cycles) timeout_cycles="$2"; shift 2 ;;
     --verilator) verilator_cmd="$2"; shift 2 ;;
@@ -62,6 +65,7 @@ done < "${repo_root}/rtl/filelist.f"
 sources+=(
   "${repo_root}/tb/e2e/dpi/rv_host_dpi.sv"
   "${repo_root}/tb/e2e/dpi/rv_commit_trace_logger.sv"
+  "${repo_root}/tb/e2e/dpi/rv_perf_profiler.sv"
   "${repo_root}/tb/e2e/dpi/rv_soc_dpi_tb.sv"
   "${repo_root}/tb/e2e/dpi/elf_loader.cpp"
 )
@@ -76,5 +80,10 @@ if [[ -n "$trace_path" ]]; then
   mkdir -p "$(dirname -- "$trace_path")"
   trace_path="$(cd -- "$(dirname -- "$trace_path")" && pwd)/$(basename -- "$trace_path")"
   simulation_args+=("+trace_file=${trace_path}")
+fi
+if [[ -n "$perf_path" ]]; then
+  mkdir -p "$(dirname -- "$perf_path")"
+  perf_path="$(cd -- "$(dirname -- "$perf_path")" && pwd)/$(basename -- "$perf_path")"
+  simulation_args+=("+perf_file=${perf_path}")
 fi
 "${build_root}/Vrv_soc_dpi_tb" "${simulation_args[@]}"

@@ -76,6 +76,9 @@ module rv_frontend #(
   logic [QUEUE_COUNT_WIDTH-1:0] queue_byte_count;
   logic response_id_matches;
   logic response_is_current;
+  logic response_fire;
+  logic request_fire;
+  logic response_releases_slot;
   logic [1:0][XLEN-1:0] sequential_pc;
   logic [1:0] prediction_taken, prediction_fire;
   logic [1:0][XLEN-1:0] prediction_target;
@@ -99,12 +102,23 @@ module rv_frontend #(
                                (imem_rsp_epoch_i == outstanding_epoch_q) &&
                                (outstanding_epoch_q == epoch_q);
 
-  assign imem_req_valid_o = !frontend_redirect_valid && !outstanding_q &&
+  assign response_fire = imem_rsp_valid_i && imem_rsp_ready_o &&
+                         response_id_matches;
+  // A completed response releases the single outstanding slot immediately.
+  // Launching the following sequential block in that same cycle removes one
+  // dead cycle per fetch block while preserving the one-response-at-a-time
+  // ordering contract.  A current error response does not launch past the
+  // fault; a stale response from an old epoch may release the slot normally.
+  assign response_releases_slot = response_fire &&
+    (!response_is_current || (imem_rsp_resp_i == 2'b00));
+  assign imem_req_valid_o = !frontend_redirect_valid &&
+                            (!outstanding_q || response_releases_slot) &&
                             !fault_stop_q &&
                             (queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES));
   assign imem_req_addr_o = next_request_addr_q;
   assign imem_req_id_o = next_id_q;
   assign imem_req_epoch_o = epoch_q;
+  assign request_fire = imem_req_valid_o && imem_req_ready_i;
 
   assign queue_fill_valid = imem_rsp_valid_i && response_is_current &&
                             !frontend_redirect_valid;
@@ -213,7 +227,7 @@ module rv_frontend #(
       outstanding_addr_q <= '0;
       fault_stop_q <= 1'b0;
     end else begin
-      if (imem_req_valid_o && imem_req_ready_i) begin
+      if (request_fire) begin
         outstanding_q <= 1'b1;
         outstanding_id_q <= next_id_q;
         outstanding_epoch_q <= epoch_q;
@@ -222,8 +236,10 @@ module rv_frontend #(
         next_id_q <= next_id_q + 1'b1;
       end
 
-      if (imem_rsp_valid_i && imem_rsp_ready_o && response_id_matches) begin
+      if (response_fire && !request_fire) begin
         outstanding_q <= 1'b0;
+      end
+      if (response_fire) begin
         if (response_is_current && (imem_rsp_resp_i != 2'b00))
           fault_stop_q <= 1'b1;
       end

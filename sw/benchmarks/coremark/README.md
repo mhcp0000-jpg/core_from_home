@@ -45,7 +45,7 @@ core clock과 1:1이라는 현재 모델에만 그대로 적용할 수 있다.
 | 파일 | 역할 |
 |---|---|
 | `port/core_portme.h` | RV32 type, static-memory, no-libc, timing 설정 |
-| `port/core_portme.c` | `mcycle/minstret` 측정, CRC 수집, HostIF 결과 전송 |
+| `port/core_portme.c` | `mcycle/minstret` 측정, profiler start/stop marker, CRC/HostIF 결과 전송 |
 | `rv32_start.S` | CLINT MSIP clear, DTIM stack 설정, `main` 호출 |
 | `rv32_tim.ld` | ITIM/DTIM section과 stack 배치 |
 
@@ -100,7 +100,8 @@ list(`e714`), matrix(`1fd7`), state(`8e3a`) CRC와 bit 1/2/4는 반드시
 
 PowerShell runner는 ELF를 외부 artifact 디렉터리에 두고 disassembly,
 ELF headers, symbols, full simulation log, 사람이 읽는 result log, JSON
-result를 만든다. `-PublishRoot`를 지정했을 때만 Git으로 관리할 작은 검증
+result와 timed-region pipeline profile인 `coremark.perf.json`을 만든다. profile
+event는 서로 겹칠 수 있어 합계가 전체 cycle을 뜻하지 않는다. `-PublishRoot`를 지정했을 때만 Git으로 관리할 작은 검증
 산출물을 복사하며 ELF/map/Verilator build tree는 복사하지 않는다.
 
 공식 규칙과 일반 포팅 절차는 upstream

@@ -11,6 +11,8 @@
 #define HOSTIF_EXIT_CODE_OFF 0x14u
 
 #define RESULT_MAGIC 0x434d0001u /* "CM", protocol version 1 */
+#define PERF_START_MAGIC 0x50460001u /* "PF", begin profiling window */
+#define PERF_STOP_MAGIC  0x50460002u /* "PF", end profiling window */
 
 #define STATUS_KNOWN_2K_PERFORMANCE (1u << 0)
 #define STATUS_CRC_ERROR            (1u << 1)
@@ -42,6 +44,8 @@ static ee_u32 result_crcmatrix;
 static ee_u32 result_crcstate;
 static ee_u32 result_crcfinal;
 
+static void host_send(ee_u32 value);
+
 static CORE_TICKS read_mcycle64(void) {
   ee_u32 hi_before, lo, hi_after;
   do {
@@ -63,6 +67,7 @@ static CORE_TICKS read_minstret64(void) {
 }
 
 void start_time(void) {
+  host_send(PERF_START_MAGIC);
   start_instret = read_minstret64();
   start_cycle = read_mcycle64();
 }
@@ -70,6 +75,7 @@ void start_time(void) {
 void stop_time(void) {
   stop_cycle = read_mcycle64();
   stop_instret = read_minstret64();
+  host_send(PERF_STOP_MAGIC);
 }
 
 CORE_TICKS get_time(void) { return stop_cycle - start_cycle; }

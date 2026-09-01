@@ -18,6 +18,7 @@ module rv_soc_dpi_tb;
   integer timeout_cycles;
   logic exit_pending;
   logic [3:0] exit_delay;
+  logic perf_start, perf_stop;
 
   rv_axi4_if #(.ADDR_WIDTH(SOC_ADDR_WIDTH), .DATA_WIDTH(SOC_DATA_WIDTH),
                .ID_WIDTH(AXI_LOCAL_ID_WIDTH))
@@ -67,6 +68,57 @@ module rv_soc_dpi_tb;
     .host_event_ready_o(host_event_ready),
     .host_event_kind_i(host_event_kind), .host_event_data_i(host_event_data),
     .load_done_o(load_done), .load_failed_o(load_failed)
+  );
+
+  assign perf_start = host_event_valid && host_event_ready &&
+                      (host_event_kind == HOST_EVENT_TOHOST) &&
+                      (host_event_data == 32'h5046_0001);
+  assign perf_stop = host_event_valid && host_event_ready &&
+                     (host_event_kind == HOST_EVENT_TOHOST) &&
+                     (host_event_data == 32'h5046_0002);
+
+  rv_perf_profiler u_perf_profiler (
+    .clk_i(clk), .rst_ni(rst_n), .start_i(perf_start), .stop_i(perf_stop),
+    .fetch_valid_i(u_dut.u_core.fe_valid),
+    .fetch_ready_i(u_dut.u_core.fe_ready),
+    .imem_req_valid_i(u_dut.u_core.fe_imem_req_valid),
+    .imem_req_ready_i(u_dut.u_core.fe_imem_req_ready),
+    .imem_rsp_valid_i(u_dut.u_core.fe_imem_rsp_valid),
+    .imem_rsp_ready_i(u_dut.u_core.fe_imem_rsp_ready),
+    .decode_valid_i(u_dut.u_core.u_backend.dec_valid),
+    .dispatch_fire_i(u_dut.u_core.u_backend.dispatch_fire),
+    .dispatch_resources_ready_i(u_dut.u_core.u_backend.dispatch_resources_ready),
+    .rename_ready_i(u_dut.u_core.u_backend.rename_can_accept),
+    .branch_ready_i(u_dut.u_core.u_backend.branch_capacity_ok),
+    .rob_capacity_i((48-u_dut.u_core.u_backend.rob_count) >=
+                    u_dut.u_core.u_backend.dispatch_count),
+    .iq_capacity_i((56-u_dut.u_core.u_backend.iq_count) >=
+                   u_dut.u_core.u_backend.iq_need),
+    .lsq_ready_i(u_dut.u_core.u_backend.lsq_dispatch_ready),
+    .serial_block_i((|u_dut.u_core.u_backend.serial_barrier_valid_q) ||
+                    u_dut.u_core.u_backend.system_redirect_pending_q ||
+                    u_dut.u_core.u_backend.wfi_sleep_q ||
+                    u_dut.u_core.u_backend.csr_interrupt_pending ||
+                    u_dut.u_core.u_backend.flush_valid),
+    .issue_valid_i(u_dut.u_core.u_backend.issue_valid),
+    .iq_empty_i(u_dut.u_core.u_backend.iq_empty),
+    .retire_valid_i(u_dut.u_core.u_backend.retire_valid),
+    .retire_ready_i(u_dut.u_core.u_backend.retire_ready),
+    .retire_fire_i(u_dut.u_core.u_backend.retire_fire),
+    .rob_head_valid_i(u_dut.u_core.u_backend.rob_head_valid),
+    .rob_head_complete_i(u_dut.u_core.u_backend.rob_head_complete),
+    .branch_resolve_i(u_dut.u_core.u_backend.bp_resolve_valid_o),
+    .branch_mispredict_i(u_dut.u_core.u_backend.bp_resolve_mispredict_o),
+    .flush_valid_i(u_dut.u_core.u_backend.flush_valid),
+    .load_candidate_present_i(u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_present),
+    .load_candidate_valid_i(u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_valid),
+    .load_stall_reason_i(u_dut.u_core.u_backend.u_lsu_cluster.load_stall_reason),
+    .dmem_req_valid_i(u_dut.u_core.u_backend.dmem_req_valid_o),
+    .dmem_req_ready_i(u_dut.u_core.u_backend.dmem_req_ready_i),
+    .rob_count_i(u_dut.u_core.u_backend.rob_count),
+    .iq_count_i(u_dut.u_core.u_backend.iq_count),
+    .lq_count_i(u_dut.u_core.u_backend.u_lsu_cluster.lq_count),
+    .sq_count_i(u_dut.u_core.u_backend.u_lsu_cluster.sq_count)
   );
 
   always_ff @(posedge clk) begin
@@ -127,6 +179,25 @@ module rv_soc_dpi_tb;
                  u_dut.u_core.u_backend.rob_head_sequence,
                  u_dut.u_core.u_backend.rob_head_pc,
                  u_dut.u_core.u_backend.rob_head_instruction);
+        $display("TIMEOUT frontend valid=%b ready=%b q_count=%0d req=%b/%b rsp=%b/%b outstanding=%b id=%0d epoch=%0d next=%08h",
+                 u_dut.u_core.fe_valid, u_dut.u_core.fe_ready,
+                 u_dut.u_core.u_frontend.queue_byte_count,
+                 u_dut.u_core.fe_imem_req_valid,
+                 u_dut.u_core.fe_imem_req_ready,
+                 u_dut.u_core.fe_imem_rsp_valid,
+                 u_dut.u_core.fe_imem_rsp_ready,
+                 u_dut.u_core.u_frontend.outstanding_q,
+                 u_dut.u_core.u_frontend.outstanding_id_q,
+                 u_dut.u_core.u_frontend.epoch_q,
+                 u_dut.u_core.u_frontend.next_request_addr_q);
+        $display("TIMEOUT i_fabric busy=%b local_pending=%b bank_valid=%b rsp_buffer=%b outbound_state=%0d id=%0d epoch=%0d",
+                 u_dut.u_i_fabric.if_busy_q,
+                 u_dut.u_i_fabric.local_if_read_pending_q,
+                 u_dut.u_i_fabric.bank_read_valid,
+                 u_dut.u_i_fabric.if_rsp_buffer_valid_q,
+                 u_dut.u_i_fabric.outbound_state_q,
+                 u_dut.u_i_fabric.if_id_q,
+                 u_dut.u_i_fabric.if_epoch_q);
         $display("TIMEOUT retire valid=%b ready=%b fire=%b load=%b lq_index=%0d/%0d seq=%0d/%0d",
                  u_dut.u_core.u_backend.retire_valid,
                  u_dut.u_core.u_backend.retire_ready,

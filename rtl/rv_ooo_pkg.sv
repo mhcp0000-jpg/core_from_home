@@ -147,6 +147,9 @@ package rv_ooo_pkg;
   typedef struct packed {
     logic       valid;
     logic       taken;
+    logic       bimodal_taken;
+    logic       global_taken;
+    logic       use_global;
     logic       is_call;
     logic       is_return;
     logic [63:0] target;

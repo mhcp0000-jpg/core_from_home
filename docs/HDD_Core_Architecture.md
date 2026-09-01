@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Verification baseline v1.9.3 (portable project configurator and Host ELF runners) |
+| 상태 | Performance baseline v1.11.0 (instrumented CoreMark and tournament predictor) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -21,7 +21,7 @@
 | ISA | RV32IMFC + Zicsr + Zifencei, little-endian |
 | Privilege | M/U 구현, `HAS_SMODE` 확장 frame, PMP 8 entries |
 | Frontend | 128-bit fetch, 64-byte fetch queue, 2-wide align/decode, C 지원 |
-| Predictor | 256-entry 4-way BTB, 2 Ki-entry gshare, 16-entry RAS |
+| Predictor | 256-entry 4-way BTB, 2 Ki bimodal + 2 Ki gshare + 2 Ki chooser tournament, 16-entry RAS |
 | OoO window | ROB 48, branch checkpoint 8 |
 | Rename | INT/FP RAT+RRAT, INT/FP PRF 각 80 entries |
 | Issue | global 2 uop/cycle, INT IQ 24, MEM IQ 16, FP IQ 16 |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-01)는 **RV32IMFC 1차 RTL 통합과 directed verification baseline 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F arithmetic/FMA/divsqrt/misc/convert 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적하며, `rv_branch_predictor`는 256-entry 4-way BTB, 2048-entry gshare, 16-entry speculative/committed RAS를 2-wide frontend와 branch resolve/commit에 연결한다. DPI 구조는 ELF32/ELF64 little-endian RISC-V PT_LOAD를 최대 16-beat Host AXI burst로 ITIM/DTIM에 적재하고 HostIF entry/flags 뒤 마지막 write로 CLINT MSIP를 발생시킨다. 현재 parser/elaboration, Icarus 단위 15종, Verilator 블록 11종, backend OoO 통합, directed SoC boot와 DPI ELF end-to-end가 통과했다. RV32IMF 24개 payload, 혼합폭 RV32C 18개 payload, MRET/U-mode illegal CSR/ECALL을 포함한 M/U ELF를 ROB commit trace와 exact-match했다. GCC 15.2가 생성한 C integer/FP/load-store loop도 HostIF signature와 exit(0), payload commit 357개, FP write 68개, lane-1 commit 121개, payload trap 0개로 통과했다. 이 workload로 RV32 compressed FP memory expansion과 recovery 동시 load-response/IQ-wakeup 유실을 발견해 수정했다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 684,571 cycles, 576,450 instret, IPC 0.842060, 비공식 추정 2.921538 CoreMark/MHz를 기록했고 recovery cycle에 발행된 orphan load request의 LQ-index alias를 추가로 발견·수정했다. 단, C/CSR/FENCE/privilege의 모든 조합, random long-run 및 Spike/Sail differential과 riscv-arch-test는 아직 남아 있으므로 전체 ISA sign-off 상태는 아니다.
+현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, 1차 CoreMark profile/튜닝 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 기존 directed 회귀와 C loop가 통과했으며 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 604,885 cycles, 576,450 instret, IPC 0.952991, 비공식 추정 3.306414 CoreMark/MHz를 기록했다. 최초 공개 baseline 대비 cycle은 11.64% 감소하고 IPC는 13.17% 증가했다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
 
 ## 1. 목적과 성능 포지션
 
@@ -129,7 +129,7 @@ flowchart TB
 
     subgraph FE["Frontend - maximum 2 instructions/cycle"]
       direction LR
-      PRED["Predict<br/>BTB 256 x 4-way<br/>gshare 2048 / RAS 16"]
+      PRED["Predict<br/>BTB 256 x 4-way<br/>tournament 3 x 2048 / RAS 16"]
       FETCH["IFU PMP check + fetch<br/>reject stale epoch responses"]
       FQ["Fetch queue + align<br/>16/32-bit boundaries"]
       PRED --> FETCH --> FQ
@@ -322,7 +322,7 @@ cd ../company_rv_core
 | I outstanding fetch | 4 blocks | non-local AXI fetch latency 은닉 |
 | RAS | 16 entries | call/return 예측 |
 | BTB | 256 entries, 4-way | 강한 IFU 기준선 |
-| Direction predictor | 2 Ki-entry gshare, 2-bit | 초기 검증 가능한 예측기 |
+| Direction predictor | 2 Ki bimodal + 2 Ki gshare + 2 Ki chooser tournament, 2-bit | local/global branch 특성에 적응 |
 | PLIC sources | 32 | source 0 reserved, M-context 1 |
 | PMP entries | 8 | M/U 초기 protection |
 
@@ -334,7 +334,7 @@ cd ../company_rv_core
 
 | 단계 | 이름 | 주요 동작 |
 |---:|---|---|
-| F0 | Predict | next PC, BTB, gshare, RAS lookup |
+| F0 | Predict | next PC, BTB, bimodal/gshare/chooser, RAS lookup |
 | F1 | ITIM | PMP/PMA check, 2-bank ITIM read 또는 AXI request |
 | F2 | IFData | 128-bit data 반환, fetch queue 삽입 |
 | F3 | Align | 16/32-bit 경계 검출, 최대 2개 instruction 추출 |
@@ -401,10 +401,12 @@ I local fabric은 IFU request와 Main Xbar inbound access를 Boot ROM 또는 ITI
 초기 predictor는 다음 세 요소를 사용한다.
 
 - 256-entry 4-way BTB: tag, target, branch type, instruction length
+- 2048-entry PC-indexed 2-bit bimodal PHT
 - 2048-entry 2-bit gshare PHT와 11-bit global history
+- 2048-entry PC-indexed 2-bit chooser: bimodal과 gshare가 다를 때 맞은 component 쪽으로 학습
 - 16-entry RAS: JAL/JALR hint에 따른 call/return 추적
 
-예측기는 speculative history와 committed/recovery state를 구분한다. branch resolve 시 direction 또는 target이 틀리면 해당 branch checkpoint로 rename state와 predictor history를 복구하고 younger state를 flush한다.
+conditional branch는 chooser가 bimodal 또는 gshare 결과를 선택한다. resolve 시 두 PHT를 모두 실제 결과로 학습하고, 두 component의 예측이 달랐을 때만 chooser를 갱신한다. `prediction_meta_t`가 두 component 결과와 선택값을 uop/ROB까지 운반하므로 학습은 lookup 당시 판단을 기준으로 한다. 예측기는 speculative history와 committed/recovery state를 구분한다. branch resolve 시 direction 또는 target이 틀리면 해당 branch checkpoint로 rename state와 predictor history를 복구하고 younger state를 flush한다.
 
 ## 7. Decode와 명령어 표현
 
@@ -1132,7 +1134,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
 | `rv_frontend`, `rv_fetch_queue` | Implemented candidate: 2-wide predictor redirect integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
-| `rv_branch_predictor` | Implemented candidate: BTB/gshare/RAS resolve+commit paths, verification pending | core clock/reset | BTB/gshare/RAS entries |
+| `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Implemented candidate: RV32IMFC execution/recovery paths integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
 | `rv_i_fabric` | Implemented | single clock, sync active-low reset | Boot ROM/ITIM map, ROM image, fairness bound |
 | `rv_local_to_axi_bridge` | Implemented | single clock, sync active-low reset | local/AXI ID width, instruction attribute |
@@ -1604,7 +1606,7 @@ queue는 같은 cycle fill과 최대 8-byte consume를 허용한다. access faul
 | commit | lane별 `commit_valid_i`, PC/instruction/length/taken | precise fallback용 committed GHR/RAS 갱신 |
 | flush | `redirect_valid_i` | resolve-mispredict가 아닌 full architectural redirect는 committed history/RAS로 복구 |
 
-baseline storage는 256-entry 4-way BTB, 2048-entry 2-bit gshare, 16-entry speculative RAS와 committed RAS mirror다. `prediction_meta_t`는 taken/target, lookup 전 11-bit GHR, 8-bit BTB set/way, RAS pointer/count 및 call/return 분류를 보관한다. conditional miss는 gshare, direct JAL/C.J는 즉시 계산 target, indirect miss는 not-taken, return은 RAS를 우선한다. predictor가 access fault를 만들 수 없다.
+baseline storage는 256-entry 4-way BTB, 각 2048-entry 2-bit인 bimodal/global/chooser table, 16-entry speculative RAS와 committed RAS mirror다. `prediction_meta_t`는 taken/target, lookup 전 11-bit GHR, bimodal/global prediction과 chooser 선택, 8-bit BTB set/way, RAS pointer/count 및 call/return 분류를 보관한다. conditional miss는 tournament direction, direct JAL/C.J는 즉시 계산 target, indirect miss는 not-taken, return은 RAS를 우선한다. predictor가 access fault를 만들 수 없다.
 
 #### `rv_decode2`
 
@@ -1866,7 +1868,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | RV32C trace | `scripts/verify_rv32c_smoke_trace.ps1` | 혼합폭 payload 18, dual-commit cycles 4, wrong-path PC 2개 미commit PASS |
 | M/U trace | `scripts/verify_rv32_priv_smoke_trace.ps1` | MRET→U, illegal CSR cause 2, ECALL-U cause 8, U resume 및 M-mode exit PASS |
 | GCC C/ASM loop | `scripts/run_c_loop_test.ps1` | integer/FP/load-store 8회 loop, payload 357, FP write 68, lane-1 commit 121, trap 0, signature `0x009e00b9`, exit(0) PASS |
-| CoreMark short RTL | `scripts/run_coremark.ps1` | 2 iterations, CRC 4종 PASS, 684,571 cycles, 576,450 instret, IPC 0.842060, estimated 2.921538 CoreMark/MHz, exit(0) |
+| CoreMark short RTL | `scripts/run_coremark.ps1` | 2 iterations, CRC 4종 PASS, 604,885 cycles, 576,450 instret, IPC 0.952991, estimated 3.306414 CoreMark/MHz, exit(0) |
 
 GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 결과 요약과 전체 commit CSV는 `verification/tests/rv32_c_loop`에 함께 보관한다. 이 테스트는 compiler가 선택한 RV32IMFC instruction 조합과 반복 branch recovery를 실제 SoC 경로에서 검증한다. 특히 recovery와 같은 cycle에 도착한 older load response는 surviving LQ entry를 완료해야 하고, older writeback은 surviving IQ entry의 source-ready를 반드시 갱신해야 한다. 두 상태 전이는 각각 LSQ/IQ 단위 회귀로 고정한다.
 
@@ -1899,6 +1901,38 @@ CRC packet과 exit(0), metric 산출을 한 번에 검사한다. Linux runner도
 ELF/SoC 경로를 사용하며 raw HostIF packet을 보존한다. 전체 commit trace는
 benchmark 시간과 무관하지만 파일이 매우 커지므로 기본 비활성화하고,
 architectural count는 commit 경계에서 증가하는 `minstret`로 얻는다.
+
+#### 18.6.1 performance profiler와 1차 튜닝 결과
+
+CoreMark port는 timed region 직전/직후에 simulation-only HostIF marker를 보낸다.
+`rv_perf_profiler`는 두 marker 사이만 계수하고 `coremark.perf.json`을 만든다.
+따라서 ELF load, Boot ROM, 초기 software interrupt와 결과 packet 전송은 profile에
+들어가지 않는다. profile에는 fetch/dispatch/issue/retire의 0·1·2 slot cycle,
+frontend empty/backpressure, dispatch resource stall, IQ nonempty/no-issue, ROB-head
+incomplete, branch resolve/mispredict, LSQ ordering stall, D-memory wait와 queue
+occupancy가 포함된다. stall event는 같은 cycle에 겹칠 수 있으므로 합산해 전체
+cycle로 해석하면 안 된다.
+
+| configuration | cycles | IPC | estimated CoreMark/MHz | 결론 |
+|---|---:|---:|---:|---|
+| 최초 공개 baseline | 684,571 | 0.842060 | 2.921538 | 비교 기준 |
+| marker 포함 동일 build baseline | 688,060 | 0.837790 | 2.906723 | profiler A/B 기준 |
+| response/request 동시 handoff | 653,304 | 0.882361 | 3.061362 | IFU/I-Fabric bubble 제거 |
+| PC bimodal 선택 | 614,717 | 0.937749 | 3.253530 | CoreMark에서 단독 gshare보다 우수 |
+| tournament predictor | **604,885** | **0.952991** | **3.306414** | 채택 baseline |
+
+최종 profile window는 604,932 cycles이며 branch 136,355회 중 mispredict
+32,738회, frontend-empty 221,771 cycles, IQ가 비어 있지 않지만 issue가 없는
+cycle 115,981회, ROB head incomplete 196,067회, 미확정 older-store 때문에 load가
+막힌 cycle 41,100회, D-memory request wait 42,494회다. 이는 다음 우선순위를
+분기 target/direction 개선, fetch buffering/redirect latency, dependency와 FU
+availability 분해, conservative LSQ의 안전한 speculation/replay 순으로 둔다는
+근거다.
+
+branch checkpoint를 8→16, LQ를 24→32로 늘린 실험은 cycle을 줄이지 못해
+baseline 용량으로 되돌렸다. lane-1 load의 동시 retire도 112 cycles 느려져
+store/load retirement의 기존 single-copy 경계를 유지한다. 즉 자원 수 증가는
+측정으로 이득이 입증될 때만 baseline에 반영한다.
 
 첫 CoreMark 장기 실행은 recovery cycle의 stale load-response alias를 발견했다.
 flush와 같은 cycle에 pre-flush candidate가 read request를 발행하면 LSQ는 해당
@@ -2034,3 +2068,4 @@ orphan speculative response 생성을 방지한다.
 | v1.9.2 | Boot ROM을 독립 Xbar S3 AXI slave에서 `rv_i_fabric` 내부 I-local target으로 이동. S0를 Boot ROM+ITIM dual-window inbound bridge로 구성하고 S3=HostIF, S4/S5=error로 재배치. Core-local/Global-AXI 경로를 좌→우 두 패널 구조도로 재작성하고 Host→ITIM/LSU→ITIM 경로와 bridge 역할을 명시 |
 | v1.9.3 | Windows/Linux 공통 대화형 project configurator 추가. 새 폴더 복제 시 전체 memory map, mtvec, parameterized BootROM WFI image, linker/C/assembly 주소, 기본 DPI ELF와 artifact 경로를 한 번에 생성하고 JSON/H/INC/ENV 산출물 및 플랫폼별 runner로 재현하도록 정의 |
 | v1.10.0 | 공식 CoreMark source 고정 commit을 사용하는 RV32 bare-metal TIM port와 Windows/Linux runner 추가. 2-iteration short RTL run의 CRC 검증, mcycle/minstret 기반 cycle·IPC·CoreMark/MHz 추정, ordered HostIF result packet과 비공식 결과 분류 계약을 정의 |
+| v1.11.0 | CoreMark timed-region profiler와 JSON artifact를 추가. IFU/I-Fabric response→request bubble을 제거하고 bimodal/gshare/chooser tournament predictor를 채택해 최초 baseline 대비 cycle 11.64% 감소, IPC 13.17% 증가. checkpoint/LQ 증설과 lane-1 load retire는 A/B상 이득이 없어 원복 |

@@ -53,6 +53,7 @@ $symbolsPath = Join-Path $ArtifactRoot "coremark.symbols"
 $simulationLog = Join-Path $ArtifactRoot "coremark.sim.log"
 $resultPath = Join-Path $ArtifactRoot "coremark.result.log"
 $jsonPath = Join-Path $ArtifactRoot "coremark.result.json"
+$perfPath = Join-Path $ArtifactRoot "coremark.perf.json"
 
 $portRoot = Join-Path $repoRoot "sw\benchmarks\coremark\port"
 $sources = @(
@@ -83,8 +84,10 @@ if ($LASTEXITCODE -ne 0) { throw "CoreMark RV32 compilation failed." }
 
 & $objdump -d -S $elfPath | Set-Content -LiteralPath $disassemblyPath
 if ($LASTEXITCODE -ne 0) { throw "objdump failed." }
-& $readelf -h -l $elfPath | Set-Content -LiteralPath $headersPath
+$readelfOutput = & $readelf -h -l $elfPath
 if ($LASTEXITCODE -ne 0) { throw "readelf failed." }
+$readelfOutput | ForEach-Object { $_.TrimEnd() } |
+  Set-Content -LiteralPath $headersPath
 & $nm -n $elfPath | Set-Content -LiteralPath $symbolsPath
 if ($LASTEXITCODE -ne 0) { throw "nm failed." }
 $sizeLine = (& $sizeTool $elfPath | Select-Object -Last 1)
@@ -95,13 +98,19 @@ try {
   $ErrorActionPreference = "Continue"
   $runnerOutput = & powershell -ExecutionPolicy Bypass -File $runner `
     -ElfPath $elfPath -BuildJobs $BuildJobs -BuildRoot $SocElfBuildRoot `
-    -TimeoutCycles $TimeoutCycles 2>&1
+    -TimeoutCycles $TimeoutCycles -PerfPath $perfPath 2>&1
   $runnerExitCode = $LASTEXITCODE
 } finally {
   $ErrorActionPreference = $savedErrorActionPreference
 }
-$runnerOutput | Tee-Object -LiteralPath $simulationLog
+$runnerOutput
+$runnerOutput | ForEach-Object { "$($_)".TrimEnd() } |
+  Set-Content -LiteralPath $simulationLog -Encoding utf8
 if ($runnerExitCode -ne 0) { throw "CoreMark SoC simulation failed." }
+if (!(Test-Path -LiteralPath $perfPath)) {
+  throw "CoreMark performance profile was not produced."
+}
+$performanceProfile = Get-Content -LiteralPath $perfPath -Raw | ConvertFrom-Json
 
 $logText = Get-Content -LiteralPath $simulationLog -Raw
 $matches = [regex]::Matches(
@@ -117,7 +126,7 @@ $packet = $values[$magicIndex..($magicIndex + 11)]
 $cycles = [uint64]$packet[2] + [uint64]$packet[3] * [uint64]4294967296
 $instructions = [uint64]$packet[4] + [uint64]$packet[5] * [uint64]4294967296
 $status = [uint32]$packet[11]
-if (($status -band 0x17u) -ne 0x01u) {
+if (($status -band [uint32]0x17) -ne [uint32]0x01) {
   throw ("CoreMark validation failed; status=0x{0:x8}" -f $status)
 }
 if ($packet[6] -ne 0xe9f5 -or $packet[7] -ne 0xe714 -or
@@ -134,7 +143,7 @@ $ipc = if ($cycles) { [double]$instructions / [double]$cycles } else { 0.0 }
 $coreMarkPerMHz = if ($cycles) {
   [double]$Iterations * 1000000.0 / [double]$cycles
 } else { 0.0 }
-$durationRule = if (($status -band 0x08u) -ne 0) { "NOT MET (expected for short RTL run)" } else { "met" }
+$durationRule = if (($status -band [uint32]0x08) -ne 0) { "NOT MET (expected for short RTL run)" } else { "met" }
 
 $summary = @(
   "COREMARK SHORT RTL RUN PASS",
@@ -151,6 +160,11 @@ $summary = @(
   ("Instructions / iter.   : {0:N3}" -f $instructionsPerIteration),
   ("IPC                   : {0:N6}" -f $ipc),
   ("Estimated CoreMark/MHz: {0:N6}" -f $coreMarkPerMHz),
+  "Profiler cycles       : $($performanceProfile.profile_cycles)",
+  "Branch mispredicts    : $($performanceProfile.branch_mispredicts)",
+  "Frontend empty cycles : $($performanceProfile.frontend_empty_cycles)",
+  "IQ no-issue cycles    : $($performanceProfile.iq_nonempty_no_issue_cycles)",
+  "ROB-head wait cycles  : $($performanceProfile.rob_head_incomplete_cycles)",
   ("seedcrc / list        : 0x{0:x4} / 0x{1:x4}" -f $packet[6], $packet[7]),
   ("matrix / state        : 0x{0:x4} / 0x{1:x4}" -f $packet[8], $packet[9]),
   ("final CRC             : 0x{0:x4}" -f $packet[10]),
@@ -158,7 +172,8 @@ $summary = @(
   "Official 10-second rule: $durationRule",
   "ELF size              : $sizeLine"
 )
-$summary | Tee-Object -LiteralPath $resultPath
+$summary
+$summary | Set-Content -LiteralPath $resultPath -Encoding utf8
 
 [ordered]@{
   classification = "non-certified implementation estimate"
@@ -176,13 +191,16 @@ $summary | Tee-Object -LiteralPath $resultPath
   crcstate = ("0x{0:x4}" -f $packet[9])
   crcfinal = ("0x{0:x4}" -f $packet[10])
   status = ("0x{0:x8}" -f $status)
-  official_ten_second_rule_met = (($status -band 0x08u) -eq 0)
-} | ConvertTo-Json | Set-Content -LiteralPath $jsonPath
+  official_ten_second_rule_met = (($status -band [uint32]0x08) -eq 0)
+  performance_profile_file = "coremark.perf.json"
+  performance_profile = $performanceProfile
+} | ConvertTo-Json -Depth 5 |
+  Set-Content -LiteralPath $jsonPath -Encoding utf8
 
 if ($PublishRoot) {
   New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
   foreach ($artifact in @($disassemblyPath, $headersPath, $symbolsPath,
-                           $simulationLog, $resultPath, $jsonPath)) {
+                           $simulationLog, $resultPath, $jsonPath, $perfPath)) {
     Copy-Item -LiteralPath $artifact -Destination $PublishRoot -Force
   }
 }

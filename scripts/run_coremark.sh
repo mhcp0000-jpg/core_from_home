@@ -69,7 +69,8 @@ port="${repo_root}/sw/benchmarks/coremark/port"
 
 "${script_dir}/run_soc_elf_test.sh" --elf "$elf" \
   --build-root "${artifact_root}/soc_elf_build" --jobs "$jobs" \
-  --timeout-cycles "$timeout_cycles" | tee "${artifact_root}/coremark.sim.log"
+  --timeout-cycles "$timeout_cycles" \
+  --perf "${artifact_root}/coremark.perf.json" | tee "${artifact_root}/coremark.sim.log"
 
 # The PowerShell runner produces the canonical parsed report.  Linux keeps the
 # raw structured HostIF packet easy to inspect without requiring Python/jq.
@@ -77,10 +78,13 @@ grep '\[host-event kind=0 data=' "${artifact_root}/coremark.sim.log" \
   > "${artifact_root}/coremark.result.log"
 grep -q 'data=0x434d0001' "${artifact_root}/coremark.result.log"
 grep -q '\[host-finish code=0\]' "${artifact_root}/coremark.sim.log"
+[[ -s "${artifact_root}/coremark.perf.json" ]] || {
+  printf 'CoreMark performance profile was not produced\n' >&2; exit 2;
+}
 
 if [[ -n "$publish_root" ]]; then
   mkdir -p "$publish_root"
-  cp "${artifact_root}"/coremark.{disasm,headers,symbols,sim.log,result.log} \
+  cp "${artifact_root}"/coremark.{disasm,headers,symbols,sim.log,result.log,perf.json} \
     "$publish_root/"
 fi
 printf 'CoreMark short RTL run PASS; parse raw HostIF packet in %s\n' \

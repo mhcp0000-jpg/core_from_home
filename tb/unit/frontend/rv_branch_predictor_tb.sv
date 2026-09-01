@@ -152,6 +152,55 @@ module rv_branch_predictor_tb;
     if (!prediction_taken[0] || (prediction_target[0] != 32'h0000_0408))
       $fatal(1, "Conditional PHT/target training failed");
 
+    // The tournament chooser moves only when the component predictions
+    // disagree.  Two globally-correct samples cross the weak-bimodal reset
+    // state; two bimodal-correct samples move it back.
+    repeat (2) begin
+      @(negedge clk);
+      clear_inputs();
+      resolve_valid = 1'b1;
+      resolve_pc = 32'h0000_0440;
+      resolve_instruction = 32'h0000_1463;
+      resolve_inst_len = INST_LEN_32;
+      resolve_taken = 1'b1;
+      resolve_target = 32'h0000_0448;
+      resolve_prediction = '0;
+      resolve_prediction.bimodal_taken = 1'b0;
+      resolve_prediction.global_taken = 1'b1;
+      @(posedge clk);
+    end
+    @(negedge clk);
+    clear_inputs();
+    query_valid[0] = 1'b1;
+    query_pc[0] = 32'h0000_0440;
+    query_instruction[0] = 32'h0000_1463;
+    #1;
+    if (!prediction_meta[0].use_global)
+      $fatal(1, "Tournament chooser did not select global predictor");
+
+    repeat (2) begin
+      @(negedge clk);
+      clear_inputs();
+      resolve_valid = 1'b1;
+      resolve_pc = 32'h0000_0440;
+      resolve_instruction = 32'h0000_1463;
+      resolve_inst_len = INST_LEN_32;
+      resolve_taken = 1'b0;
+      resolve_target = 32'h0000_0444;
+      resolve_prediction = '0;
+      resolve_prediction.bimodal_taken = 1'b0;
+      resolve_prediction.global_taken = 1'b1;
+      @(posedge clk);
+    end
+    @(negedge clk);
+    clear_inputs();
+    query_valid[0] = 1'b1;
+    query_pc[0] = 32'h0000_0440;
+    query_instruction[0] = 32'h0000_1463;
+    #1;
+    if (prediction_meta[0].use_global)
+      $fatal(1, "Tournament chooser did not return to bimodal predictor");
+
     $display("rv_branch_predictor_tb PASS");
     $finish;
   end

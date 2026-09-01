@@ -50,6 +50,8 @@ module rv_branch_predictor #(
   btb_entry_t btb_q [0:BTB_SETS-1][0:BTB_WAYS-1];
   logic [$clog2(BTB_WAYS)-1:0] btb_replace_q [0:BTB_SETS-1];
   logic [1:0] pht_q [0:PHT_ENTRIES-1];
+  logic [1:0] global_pht_q [0:PHT_ENTRIES-1];
+  logic [1:0] chooser_q [0:PHT_ENTRIES-1];
   logic [PHT_BITS-1:0] speculative_history_q, committed_history_q;
   logic [XLEN-1:0] speculative_ras_q [0:RAS_DEPTH-1];
   logic [XLEN-1:0] committed_ras_q [0:RAS_DEPTH-1];
@@ -61,6 +63,8 @@ module rv_branch_predictor #(
   logic [1:0] query_call, query_return;
   logic [1:0][XLEN-1:0] query_sequential_pc, query_direct_target;
   logic [1:0][PHT_BITS-1:0] query_pht_index;
+  logic [1:0][PHT_BITS-1:0] query_global_pht_index;
+  logic [1:0] query_bimodal_taken, query_global_taken, query_use_global;
   logic [1:0][BTB_SET_BITS-1:0] query_btb_set;
   logic [1:0][BTB_TAG_BITS-1:0] query_btb_tag;
   logic [1:0] query_btb_hit;
@@ -235,7 +239,13 @@ module rv_branch_predictor #(
                                                 query_inst_len_i[lane]);
       query_direct_target[lane] = calculate_direct_target(
         query_pc_i[lane], query_instruction_i[lane], query_inst_len_i[lane]);
-      query_pht_index[lane] = query_pc_i[lane][PHT_BITS:1] ^ history_work;
+      query_pht_index[lane] = query_pc_i[lane][PHT_BITS:1];
+      query_global_pht_index[lane] =
+        query_pc_i[lane][PHT_BITS:1] ^ history_work;
+      query_bimodal_taken[lane] = pht_q[query_pht_index[lane]][1];
+      query_global_taken[lane] =
+        global_pht_q[query_global_pht_index[lane]][1];
+      query_use_global[lane] = chooser_q[query_pht_index[lane]][1];
       query_btb_set[lane] = query_pc_i[lane][BTB_SET_BITS:1];
       query_btb_tag[lane] = query_pc_i[lane][XLEN-1:BTB_SET_BITS+1];
       for (integer way = 0; way < BTB_WAYS; way++) begin
@@ -251,6 +261,9 @@ module rv_branch_predictor #(
         (query_conditional[lane] || query_direct_jump[lane] ||
          query_indirect_jump[lane]);
       prediction_meta_o[lane].global_history = 11'(history_work);
+      prediction_meta_o[lane].bimodal_taken = query_bimodal_taken[lane];
+      prediction_meta_o[lane].global_taken = query_global_taken[lane];
+      prediction_meta_o[lane].use_global = query_use_global[lane];
       prediction_meta_o[lane].btb_index =
         8'({query_btb_set[lane], query_btb_way[lane]});
       prediction_meta_o[lane].ras_pointer = 4'(ras_pointer_work);
@@ -260,7 +273,8 @@ module rv_branch_predictor #(
 
       prediction_target_o[lane] = query_sequential_pc[lane];
       if (query_valid_i[lane] && query_conditional[lane]) begin
-        prediction_taken_o[lane] = pht_q[query_pht_index[lane]][1];
+        prediction_taken_o[lane] = query_use_global[lane] ?
+          query_global_taken[lane] : query_bimodal_taken[lane];
         if (prediction_taken_o[lane])
           prediction_target_o[lane] = query_direct_target[lane];
       end else if (query_valid_i[lane] && query_direct_jump[lane]) begin
@@ -311,8 +325,14 @@ module rv_branch_predictor #(
         for (integer way = 0; way < BTB_WAYS; way++)
           btb_q[set_index][way] <= '0;
       end
-      for (integer index = 0; index < PHT_ENTRIES; index++)
+      for (integer index = 0; index < PHT_ENTRIES; index++) begin
         pht_q[index] <= 2'b01;
+        global_pht_q[index] <= 2'b01;
+        // Weakly prefer bimodal until the global predictor proves better for
+        // this branch PC.  This retains the strong CoreMark baseline while
+        // allowing correlated branches to opt into gshare independently.
+        chooser_q[index] <= 2'b01;
+      end
       for (integer index = 0; index < RAS_DEPTH; index++) begin
         speculative_ras_q[index] <= '0;
         committed_ras_q[index] <= '0;
@@ -322,11 +342,13 @@ module rv_branch_predictor #(
       // speculative history/RAS to the snapshot carried by that instruction.
       if (resolve_valid_i) begin
         logic [PHT_BITS-1:0] resolve_pht_index;
+        logic [PHT_BITS-1:0] resolve_global_pht_index;
         logic [BTB_SET_BITS-1:0] resolve_set;
         logic [BTB_TAG_BITS-1:0] resolve_tag;
         logic [$clog2(BTB_WAYS)-1:0] update_way;
-        resolve_pht_index = resolve_pc_i[PHT_BITS:1] ^
-                            PHT_BITS'(resolve_prediction_i.global_history);
+        resolve_pht_index = resolve_pc_i[PHT_BITS:1];
+        resolve_global_pht_index = resolve_pc_i[PHT_BITS:1] ^
+          PHT_BITS'(resolve_prediction_i.global_history);
         resolve_set = resolve_pc_i[BTB_SET_BITS:1];
         resolve_tag = resolve_pc_i[XLEN-1:BTB_SET_BITS+1];
         update_way = btb_replace_q[resolve_set];
@@ -340,6 +362,25 @@ module rv_branch_predictor #(
             pht_q[resolve_pht_index] <= pht_q[resolve_pht_index] + 1'b1;
           else if (!resolve_taken_i && (pht_q[resolve_pht_index] != 2'b00))
             pht_q[resolve_pht_index] <= pht_q[resolve_pht_index] - 1'b1;
+          if (resolve_taken_i &&
+              (global_pht_q[resolve_global_pht_index] != 2'b11))
+            global_pht_q[resolve_global_pht_index] <=
+              global_pht_q[resolve_global_pht_index] + 1'b1;
+          else if (!resolve_taken_i &&
+                   (global_pht_q[resolve_global_pht_index] != 2'b00))
+            global_pht_q[resolve_global_pht_index] <=
+              global_pht_q[resolve_global_pht_index] - 1'b1;
+          if (resolve_prediction_i.bimodal_taken !=
+              resolve_prediction_i.global_taken) begin
+            if ((resolve_prediction_i.global_taken == resolve_taken_i) &&
+                (chooser_q[resolve_pht_index] != 2'b11))
+              chooser_q[resolve_pht_index] <=
+                chooser_q[resolve_pht_index] + 1'b1;
+            else if ((resolve_prediction_i.bimodal_taken == resolve_taken_i) &&
+                     (chooser_q[resolve_pht_index] != 2'b00))
+              chooser_q[resolve_pht_index] <=
+                chooser_q[resolve_pht_index] - 1'b1;
+          end
         end
         if (resolve_taken_i) begin
           btb_q[resolve_set][update_way].valid <= 1'b1;

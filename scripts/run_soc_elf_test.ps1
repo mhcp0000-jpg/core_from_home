@@ -5,6 +5,7 @@ param(
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [string]$BuildRoot = "C:\rv_build\soc_elf",
   [string]$TracePath = "",
+  [string]$PerfPath = "",
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -38,6 +39,7 @@ $sources = Get-Content -LiteralPath (Join-Path $repoRoot "rtl\filelist.f") |
   Where-Object { $_.Trim() -and !$_.Trim().StartsWith("#") }
 $sources += "tb/e2e/dpi/rv_host_dpi.sv"
 $sources += "tb/e2e/dpi/rv_commit_trace_logger.sv"
+$sources += "tb/e2e/dpi/rv_perf_profiler.sv"
 $sources += "tb/e2e/dpi/rv_soc_dpi_tb.sv"
 $sources += "tb/e2e/dpi/elf_loader.cpp"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
@@ -82,6 +84,14 @@ try {
       New-Item -ItemType Directory -Force -Path $traceDirectory | Out-Null
     }
     $simulationArgs += "+trace_file=$resolvedTrace"
+  }
+  if ($PerfPath) {
+    $resolvedPerf = [System.IO.Path]::GetFullPath($PerfPath)
+    $perfDirectory = Split-Path -Parent $resolvedPerf
+    if ($perfDirectory) {
+      New-Item -ItemType Directory -Force -Path $perfDirectory | Out-Null
+    }
+    $simulationArgs += "+perf_file=$resolvedPerf"
   }
   & $simulation @simulationArgs
   if ($LASTEXITCODE -ne 0) { throw "DPI ELF SoC simulation failed." }
