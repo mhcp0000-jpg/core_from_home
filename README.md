@@ -13,6 +13,7 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
 - [CoreMark short RTL benchmark](sw/benchmarks/coremark/README.md) — 공식 upstream pin, TIM port, 실행법과 점수 해석
 - [CoreMark 2-iteration 결과](verification/benchmarks/coremark/RESULTS.md) — CRC, cycle/IPC, 발견한 LSU recovery 결함과 수정 결과
+- [Xcelium verilog_sub export](sim/xcelium/README.md) — 회사 Linux 서버용 self-contained RTL/file list 생성과 기존 TB 연결법
 
 ## 디렉터리
 
@@ -47,6 +48,8 @@ tb/
 
 scripts/                         build_/run_/verify_ 접두사 기반 실행 도구
 
+sim/xcelium/                     Xcelium compile-order file list와 Linux wrapper
+
 config/                          주소 맵 JSON, C/ASM 상수, Host 실행 기본값
 
 verification/
@@ -74,6 +77,21 @@ F 확장은 Zicsr에 의존하므로 실제 ISA 문자열은 `RV32IMFC_Zicsr_Zif
 
 SoC 합성 최상위는 `rtl/soc/rv_soc_top.sv`, 독립 core 최상위는 `rtl/rv_ooo_core.sv`, 공통 제어 타입은 `rtl/rv_ooo_pkg.sv`입니다.
 기본 설정은 RV32이며 `XLEN=64` 구성 검증을 항상 병행합니다.
+
+회사 Xcelium 서버에 RTL을 `verilog_sub` 묶음으로 전달하려면 다음을 실행합니다.
+생성물의 모든 RTL 경로는 bundle root 기준 상대경로이며 서버의 기존 TB/DPI file
+list는 수정하거나 복제하지 않습니다.
+
+```powershell
+python scripts/export_verilog_sub.py --output out/verilog_sub
+```
+
+Linux 서버에서는 다음처럼 기존 검증환경을 뒤에 연결합니다.
+
+```bash
+# 기존 server verification root에서 실행
+/path/to/verilog_sub/scripts/run_xcelium.sh run server_tb_top tb/filelist.f
+```
 
 SoC 주소와 용량은 `rtl/soc/rv_soc_pkg.sv`가 단일 기준입니다. Boot ROM,
 CLINT, PLIC, HostIF, ITIM, DTIM의 `*_BASE_ADDR`와 `*_SIZE_KB`, HostIF/interrupt

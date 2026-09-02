@@ -1,0 +1,33 @@
+# RV OoO core-only SystemVerilog sources.
+# Invoke from the repository root: xrun -64bit -sv -f sim/xcelium/sources_core.f ...
+rtl/rv_ooo_pkg.sv
+rtl/frontend/rv_c_expander.sv
+rtl/frontend/rv_fetch_queue.sv
+rtl/frontend/rv_fetch_target_buffer.sv
+rtl/frontend/rv_branch_predictor.sv
+rtl/backend/rv_decode2.sv
+rtl/backend/rv_lsq_order_check.sv
+rtl/backend/rv_lsu_pipe.sv
+rtl/backend/rv_lsq.sv
+rtl/backend/rv_store_buffer.sv
+rtl/backend/rv_lsu_cluster.sv
+rtl/backend/rv_rename2.sv
+rtl/backend/rv_phys_regfile.sv
+rtl/backend/rv_issue_queue.sv
+rtl/backend/rv_issue_arbiter.sv
+rtl/backend/rv_int_alu.sv
+rtl/backend/rv_branch_unit.sv
+rtl/backend/rv_multiplier.sv
+rtl/backend/rv_divider.sv
+rtl/backend/rv_fpu.sv
+rtl/backend/rv_writeback_arbiter.sv
+rtl/backend/rv_branch_recovery.sv
+rtl/backend/rv_exec_result_buffer.sv
+rtl/backend/rv_csr_file.sv
+rtl/backend/rv_pmp.sv
+rtl/backend/rv_trap_controller.sv
+rtl/backend/rv_fence_controller.sv
+rtl/backend/rv_rob.sv
+rtl/frontend/rv_frontend.sv
+rtl/backend/rv_backend.sv
+rtl/rv_ooo_core.sv

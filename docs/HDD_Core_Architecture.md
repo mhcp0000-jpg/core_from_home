@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Performance baseline v1.13.0 (D-Fabric response/request handoff·precise trap/interrupt 회귀) |
+| 상태 | Integration baseline v1.13.1 (Xcelium verilog_sub export 추가) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -295,6 +295,37 @@ scripts/configure_project.ps1
 cd ../company_rv_core
 ./scripts/run_configured_elf.sh /path/to/program.elf
 ```
+
+### 3.6 Xcelium `verilog_sub` 전달 계약
+
+회사 Linux 서버의 기존 Xcelium testbench/DPI/Host protocol을 그대로 사용하기 위해
+RTL 전달물은 server TB와 분리한다. `sim/xcelium/sources_core.f`는 독립 core,
+`sources_soc.f`는 complete SoC의 compile order를 정의한다. 두 list는 package를 먼저,
+interface를 다음, leaf RTL과 core, `rv_soc_top`을 마지막에 둔다.
+
+`scripts/export_verilog_sub.py`는 Python 표준 라이브러리만 사용하며 지정한 새 폴더에
+49개 합성 RTL, memory-map config, 기본 BootROM image, core/SoC file list와 Linux
+`xrun` wrapper를 복사한다. root의 `verilog_sub.f`는 export root 기준 상대경로만
+포함하므로 원본 checkout 절대경로나 Windows 사용자 이름을 보존하지 않는다.
+`manifest.json`은 Git revision, top 이름, memory map과 모든 전달 파일의 SHA-256을
+기록한다. 기존 non-empty output은 `--force`를 명시하지 않으면 덮어쓰지 않는다.
+
+```bash
+python3 scripts/export_verilog_sub.py --output out/verilog_sub
+/absolute/verilog_sub/scripts/run_xcelium.sh compile
+/absolute/verilog_sub/scripts/run_xcelium.sh run server_tb_top tb/filelist.f
+```
+
+wrapper는 호출한 server working directory를 유지하고 bundle RTL만 absolute path로
+확장하므로 기존 server TB file list 내부의 relative path를 깨지 않는다. 서버 flow가
+자체 `xrun` command를 관리하면 bundle root에서
+`-sv -f verilog_sub.f`만 기존 TB file list보다 앞에 추가한다. repository의
+Verilator DPI, current HostIF packet parser와 local testbench는 export하지 않는다.
+따라서 server `tohost/fromhost`, ELF loader와 PASS/FAIL protocol은 서버 환경이 계속
+소유한다. 단, server TB가 기대하는 DUT top port와 현재 `rv_soc_top` port가 다르면
+별도 wrapper는 서버 계약을 확인한 뒤 추가해야 한다. Xcelium executable이 없는
+개발 PC에서는 source 집합 일치, 상대경로 존재, export tree의 SystemVerilog parse로
+검증하고 실제 `xrun` compile/elaboration은 서버 gate로 남긴다.
 
 ## 4. 기준 파라미터
 
@@ -2285,3 +2316,4 @@ orphan speculative response 생성을 방지한다.
 | v1.12.1 | target-buffer hit의 redirect와 fetch-queue fill을 같은 edge에 원자 처리해 replay register/bubble을 제거하고, IQ store address/data phase 분할로 base-ready 주소를 SQ에 조기 확정. split update는 valid field만 덮어쓰며 store completion/visibility 규칙을 유지. CoreMark CRC/576,450 instret를 보존하면서 548,343→533,820 cycle, IPC 1.051258→1.079858을 달성. checkpoint 16개 재실험은 544-cycle 이득뿐이라 8개 유지 |
 | v1.12.2 | predictor branch subtype/direction/target profiler를 추가하고 backend resolve metadata가 compressed canonical instruction과 `INST_LEN_16`을 섞던 계약 오류를 수정. execution은 canonical instruction, predictor query/resolve/commit은 raw encoding을 사용하도록 분리하고 C.BNEZ 학습 단위 회귀를 추가. CoreMark CRC/576,450 instret를 보존하면서 533,820→483,143 cycle, mispredict 33,832→7,477, IPC 1.079858→1.193125를 달성. ROB 48/checkpoint 8을 유지하고 4-wide migration 경계를 문서화 |
 | v1.13.0 | issue wait와 ROB-head instruction class profiler를 추가해 load-dependent latency를 주병목으로 확정. D-Fabric이 old response handshake와 next request accept를 같은 cycle에 수행하되 old ID/data와 single-outstanding를 보존하도록 변경하고 directed assertion/test를 추가. CSR interrupt priority와 독립 trap-controller 회귀 및 backend/trap assertions로 exception-over-interrupt, ROB-empty interrupt 경계, pending interrupt의 dispatch quiesce, precise mepc/cause/tval, WFI serialization을 고정. CoreMark CRC/576,450 instret를 보존하면서 483,143→464,335 cycle, D-memory wait 60,828→12,173, IPC 1.193125→1.241453를 달성하고 성능 변경을 동결 |
+| v1.13.1 | Xcelium-safe package/interface/RTL compile order를 core/SoC file list로 추가하고, 49개 합성 RTL·memory-map config·BootROM image·상대경로 `verilog_sub.f`·Linux xrun wrapper·SHA-256 manifest를 하나의 self-contained 전달 폴더로 만드는 `export_verilog_sub.py`를 추가. 서버 TB/DPI/tohost protocol은 export에서 제외해 기존 회사 검증환경이 소유하도록 분리 |
