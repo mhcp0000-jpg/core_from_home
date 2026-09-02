@@ -32,6 +32,7 @@ SOURCES = (
     "rtl/rv_ooo_pkg.sv",
     "rtl/frontend/rv_c_expander.sv",
     "rtl/frontend/rv_fetch_queue.sv",
+    "rtl/frontend/rv_fetch_target_buffer.sv",
     "rtl/frontend/rv_branch_predictor.sv",
     "rtl/backend/rv_decode2.sv",
     "rtl/backend/rv_lsq_order_check.sv",
@@ -83,6 +84,7 @@ SOURCES = (
     "tb/unit/backend/rv_decode2_tb.sv",
     "tb/unit/backend/rv_divider_tb.sv",
     "tb/unit/frontend/rv_fetch_queue_tb.sv",
+    "tb/unit/frontend/rv_fetch_target_buffer_tb.sv",
     "tb/unit/backend/rv_lsu_pipe_tb.sv",
     "tb/unit/backend/rv_store_buffer_tb.sv",
     "tb/unit/backend/rv_lsq_tb.sv",
@@ -122,7 +124,7 @@ def main() -> int:
         "d_fabric_tb, i_fabric_tb, axi_bridges, axi_xbar, peripherals, "
         "axi_bridge_tbs, soc_top_tb, rename2_tb, rob_tb, issue_queue_tb, "
         "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb, "
-        "decode2_tb, divider_tb, fetch_queue_tb, lsu_pipe_tb, store_buffer_tb, "
+        "decode2_tb, divider_tb, fetch_queue_tb, fetch_target_buffer_tb, lsu_pipe_tb, store_buffer_tb, "
         "lsq_tb, writeback_arbiter_tb, branch_recovery_tb, branch_predictor_tb, result_buffer_tb, "
         "csr_file_tb, pmp_tb, plic_tb, clint_tb, backend_int_tb"
     )

@@ -1,32 +1,21 @@
-- V e r i l a t i o n   R e p o r t: Verilator 5.050 2026-07-01 rev v5.050-60-g3d2421f3b (mod)
-- Verilator: Built from 15.686 MB sources in 56 modules, into 25.244 MB in 34 C++ files needing 0.042 MB
-- Verilator: Walltime 4.447 s (elab=0.147, cvt=2.866, bld=0.000); cpu 0.000 s on 1 threads; allocated 208.777 MB
-make: Entering directory 'C:/rv_build/coremark_profile_final/soc_elf_build'
-g++ -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -Os  -c -o elf_loader.o U:/tb/e2e/dpi/elf_loader.cpp
+﻿- V e r i l a t i o n   R e p o r t: Verilator 5.050 2026-07-01 rev v5.050-60-g3d2421f3b (mod)
+- Verilator: Built from 16.008 MB sources in 57 modules, into 25.277 MB in 35 C++ files needing 0.042 MB
+- Verilator: Walltime 3.587 s (elab=0.170, cvt=2.849, bld=0.000); cpu 0.000 s on 1 threads; allocated 209.125 MB
+make: Entering directory 'C:/rv_build/coremark_target_buffer/soc_elf_build'
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated.o C:\\rv_toolchains\\verilator-5.050/include/verilated.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_dpi.o C:\\rv_toolchains\\verilator-5.050/include/verilated_dpi.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_timing.o C:\\rv_toolchains\\verilator-5.050/include/verilated_timing.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_threads.o C:\\rv_toolchains\\verilator-5.050/include/verilated_threads.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.fast.gch
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.slow.gch
-powershell.exe : C:\rv_toolchains\verilator-5.050/include/verilated.cpp:78:10: warning: 'STDOUT_FILENO' redefined
-At C:\Users\강지민\Desktop\My_core\scripts\run_coremark.ps1:97 char:19
-+ ...  $runnerOutput = & powershell -ExecutionPolicy Bypass -File $runner `
-+                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (C:\rv_toolchain...LENO' redefined:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
-
+C:\rv_toolchains\verilator-5.050/include/verilated.cpp:78:10: warning: 'STDOUT_FILENO' redefined
    78 | # define STDOUT_FILENO _fileno(stdout)
       |          ^~~~~~~~~~~~~
 In file included from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/include/locale.h:12,
-                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/clocale:
-47,
-                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/x86_64-w
-64-mingw32/bits/c++locale.h:41,
-                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/bits/loc
-alefwd.h:42,
-                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/string:4
-8,
+                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/clocale:47,
+                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/x86_64-w64-mingw32/bits/c++locale.h:41,
+                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/bits/localefwd.h:42,
+                 from C:/rv_toolchains/w64devkit-2.9.1/w64devkit/lib/gcc/x86_64-w64-mingw32/16.2.0/include/c++/string:48,
                  from C:\rv_toolchains\verilator-5.050/include/verilatedos.h:653,
                  from C:\rv_toolchains\verilator-5.050/include/verilated.cpp:51:
 C:/rv_toolchains/w64devkit-2.9.1/w64devkit/include/stdio.h:75:9: note: this is the location of the previous definition
@@ -39,22 +28,6 @@ C:/rv_toolchains/w64devkit-2.9.1/w64devkit/include/stdio.h:76:9: note: this is t
    76 | #define STDERR_FILENO   2
       |         ^~~~~~~~~~~~~
 In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
-                 from Vrv_soc_dpi_tb__pch.h:21:
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  147 | XXTERN typedef void* svScope;
-      |                      ^~~~~~~
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  150 | XXTERN typedef void* svOpenArrayHandle;
-      |                      ^~~~~~~~~~~~~~~~~
-In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
-                 from Vrv_soc_dpi_tb__pch.h:21:
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  147 | XXTERN typedef void* svScope;
-      |                      ^~~~~~~
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  150 | XXTERN typedef void* svOpenArrayHandle;
-      |                      ^~~~~~~~~~~~~~~~~
-In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
                  from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:32:
 C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
   147 | XXTERN typedef void* svScope;
@@ -62,271 +35,218 @@ C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimp
 C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
   150 | XXTERN typedef void* svOpenArrayHandle;
       |                      ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:60:13: warning: 'const char* svDpiVersion()' redeclared with
-out dllimport attribute: previous dllimport ignored [-Wattributes]
+In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
+                 from Vrv_soc_dpi_tb__pch.h:21:
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  147 | XXTERN typedef void* svScope;
+      |                      ^~~~~~~
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  150 | XXTERN typedef void* svOpenArrayHandle;
+      |                      ^~~~~~~~~~~~~~~~~
+In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
+                 from Vrv_soc_dpi_tb__pch.h:21:
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  147 | XXTERN typedef void* svScope;
+      |                      ^~~~~~~
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  150 | XXTERN typedef void* svOpenArrayHandle;
+      |                      ^~~~~~~~~~~~~~~~~
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:60:13: warning: 'const char* svDpiVersion()' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    60 | const char* svDpiVersion() { return "1800-2005"; }
       |             ^~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:65:7: warning: 'svBit svGetBitselBit(const svBitVecVal*, int
-)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:65:7: warning: 'svBit svGetBitselBit(const svBitVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    65 | svBit svGetBitselBit(const svBitVecVal* sp, int bit) { return VL_BITRSHIFT_W(sp, bit) & 1; }
       |       ^~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:66:9: warning: 'svLogic svGetBitselLogic(const svLogicVecVal
-*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:66:9: warning: 'svLogic svGetBitselLogic(const svLogicVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    66 | svLogic svGetBitselLogic(const svLogicVecVal* sp, int bit) {
       |         ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:73:6: warning: 'void svPutBitselBit(svBitVecVal*, int, svBit
-)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:73:6: warning: 'void svPutBitselBit(svBitVecVal*, int, svBit)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    73 | void svPutBitselBit(svBitVecVal* dp, int bit, svBit s) {
       |      ^~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:76:6: warning: 'void svPutBitselLogic(svLogicVecVal*, int, s
-vLogic)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:76:6: warning: 'void svPutBitselLogic(svLogicVecVal*, int, svLogic)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    76 | void svPutBitselLogic(svLogicVecVal* dp, int bit, svLogic s) {
       |      ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:84:6: warning: 'void svGetPartselBit(svBitVecVal*, const svB
-itVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:84:6: warning: 'void svGetPartselBit(svBitVecVal*, const svBitVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
    84 | void svGetPartselBit(svBitVecVal* dp, const svBitVecVal* sp, int lsb, int width) {
       |      ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:108:6: warning: 'void svGetPartselLogic(svLogicVecVal*, cons
-t svLogicVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:108:6: warning: 'void svGetPartselLogic(svLogicVecVal*, const svLogicVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   108 | void svGetPartselLogic(svLogicVecVal* dp, const svLogicVecVal* sp, int lsb, int width) {
       |      ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:134:6: warning: 'void svPutPartselBit(svBitVecVal*, svBitVec
-Val, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:134:6: warning: 'void svPutPartselBit(svBitVecVal*, svBitVecVal, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   134 | void svPutPartselBit(svBitVecVal* dp, const svBitVecVal s, int lbit, int width) {
       |      ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:158:6: warning: 'void svPutPartselLogic(svLogicVecVal*, svLo
-gicVecVal, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:158:6: warning: 'void svPutPartselLogic(svLogicVecVal*, svLogicVecVal, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   158 | void svPutPartselLogic(svLogicVecVal* dp, const svLogicVecVal s, int lbit, int width) {
       |      ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:204:5: warning: 'int svLeft(svOpenArrayHandle, int)' redecla
-red without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:204:5: warning: 'int svLeft(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   204 | int svLeft(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->left(d); }
       |     ^~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:205:5: warning: 'int svRight(svOpenArrayHandle, int)' redecl
-ared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:205:5: warning: 'int svRight(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   205 | int svRight(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->right(d); }
       |     ^~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:206:5: warning: 'int svLow(svOpenArrayHandle, int)' redeclar
-ed without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:206:5: warning: 'int svLow(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   206 | int svLow(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->low(d); }
       |     ^~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:207:5: warning: 'int svHigh(svOpenArrayHandle, int)' redecla
-red without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:207:5: warning: 'int svHigh(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   207 | int svHigh(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->high(d); }
       |     ^~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:208:5: warning: 'int svIncrement(svOpenArrayHandle, int)' re
-declared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:208:5: warning: 'int svIncrement(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   208 | int svIncrement(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->increment(d); }
       |     ^~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:209:5: warning: 'int svSize(svOpenArrayHandle, int)' redecla
-red without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:209:5: warning: 'int svSize(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   209 | int svSize(const svOpenArrayHandle h, int d) { return _vl_openhandle_varp(h)->elements(d); }
       |     ^~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:210:5: warning: 'int svDimensions(svOpenArrayHandle)' redecl
-ared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:210:5: warning: 'int svDimensions(svOpenArrayHandle)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   210 | int svDimensions(const svOpenArrayHandle h) { return _vl_openhandle_varp(h)->udims(); }
       |     ^~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:213:7: warning: 'void* svGetArrayPtr(svOpenArrayHandle)' red
-eclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:213:7: warning: 'void* svGetArrayPtr(svOpenArrayHandle)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   213 | void* svGetArrayPtr(const svOpenArrayHandle h) {
       |       ^~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:219:5: warning: 'int svSizeOfArray(svOpenArrayHandle)' redec
-lared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:219:5: warning: 'int svSizeOfArray(svOpenArrayHandle)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   219 | int svSizeOfArray(const svOpenArrayHandle h) {
       |     ^~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:428:7: warning: 'void* svGetArrElemPtr(svOpenArrayHandle, in
-t, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:428:7: warning: 'void* svGetArrElemPtr(svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   428 | void* svGetArrElemPtr(const svOpenArrayHandle h, int indx1, ...) {
       |       ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:452:7: warning: 'void* svGetArrElemPtr1(svOpenArrayHandle, i
-nt)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:452:7: warning: 'void* svGetArrElemPtr1(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   452 | void* svGetArrElemPtr1(const svOpenArrayHandle h, int indx1) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:455:7: warning: 'void* svGetArrElemPtr2(svOpenArrayHandle, i
-nt, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:455:7: warning: 'void* svGetArrElemPtr2(svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   455 | void* svGetArrElemPtr2(const svOpenArrayHandle h, int indx1, int indx2) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:458:7: warning: 'void* svGetArrElemPtr3(svOpenArrayHandle, i
-nt, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:458:7: warning: 'void* svGetArrElemPtr3(svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   458 | void* svGetArrElemPtr3(const svOpenArrayHandle h, int indx1, int indx2, int indx3) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:462:6: warning: 'void svPutBitArrElemVecVal(svOpenArrayHandl
-e, const svBitVecVal*, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:462:6: warning: 'void svPutBitArrElemVecVal(svOpenArrayHandle, const svBitVecVal*, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   462 | void svPutBitArrElemVecVal(const svOpenArrayHandle d, const svBitVecVal* s, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:483:6: warning: 'void svPutBitArrElem1VecVal(svOpenArrayHand
-le, const svBitVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:483:6: warning: 'void svPutBitArrElem1VecVal(svOpenArrayHandle, const svBitVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   483 | void svPutBitArrElem1VecVal(const svOpenArrayHandle d, const svBitVecVal* s, int indx1) {
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:486:6: warning: 'void svPutBitArrElem2VecVal(svOpenArrayHand
-le, const svBitVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:486:6: warning: 'void svPutBitArrElem2VecVal(svOpenArrayHandle, const svBitVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   486 | void svPutBitArrElem2VecVal(const svOpenArrayHandle d, const svBitVecVal* s, int indx1,
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:490:6: warning: 'void svPutBitArrElem3VecVal(svOpenArrayHand
-le, const svBitVecVal*, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattribute
-s]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:490:6: warning: 'void svPutBitArrElem3VecVal(svOpenArrayHandle, const svBitVecVal*, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   490 | void svPutBitArrElem3VecVal(const svOpenArrayHandle d, const svBitVecVal* s, int indx1, int indx2,
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:494:6: warning: 'void svPutLogicArrElemVecVal(svOpenArrayHan
-dle, const svLogicVecVal*, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:494:6: warning: 'void svPutLogicArrElemVecVal(svOpenArrayHandle, const svLogicVecVal*, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   494 | void svPutLogicArrElemVecVal(const svOpenArrayHandle d, const svLogicVecVal* s, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:515:6: warning: 'void svPutLogicArrElem1VecVal(svOpenArrayHa
-ndle, const svLogicVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:515:6: warning: 'void svPutLogicArrElem1VecVal(svOpenArrayHandle, const svLogicVecVal*, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   515 | void svPutLogicArrElem1VecVal(const svOpenArrayHandle d, const svLogicVecVal* s, int indx1) {
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:518:6: warning: 'void svPutLogicArrElem2VecVal(svOpenArrayHa
-ndle, const svLogicVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes
-]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:518:6: warning: 'void svPutLogicArrElem2VecVal(svOpenArrayHandle, const svLogicVecVal*, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   518 | void svPutLogicArrElem2VecVal(const svOpenArrayHandle d, const svLogicVecVal* s, int indx1,
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:522:6: warning: 'void svPutLogicArrElem3VecVal(svOpenArrayHa
-ndle, const svLogicVecVal*, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattri
-butes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:522:6: warning: 'void svPutLogicArrElem3VecVal(svOpenArrayHandle, const svLogicVecVal*, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   522 | void svPutLogicArrElem3VecVal(const svOpenArrayHandle d, const svLogicVecVal* s, int indx1,
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:530:6: warning: 'void svGetBitArrElemVecVal(svBitVecVal*, sv
-OpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:530:6: warning: 'void svGetBitArrElemVecVal(svBitVecVal*, svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   530 | void svGetBitArrElemVecVal(svBitVecVal* d, const svOpenArrayHandle s, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:551:6: warning: 'void svGetBitArrElem1VecVal(svBitVecVal*, s
-vOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:551:6: warning: 'void svGetBitArrElem1VecVal(svBitVecVal*, svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   551 | void svGetBitArrElem1VecVal(svBitVecVal* d, const svOpenArrayHandle s, int indx1) {
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:554:6: warning: 'void svGetBitArrElem2VecVal(svBitVecVal*, s
-vOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:554:6: warning: 'void svGetBitArrElem2VecVal(svBitVecVal*, svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   554 | void svGetBitArrElem2VecVal(svBitVecVal* d, const svOpenArrayHandle s, int indx1, int indx2) {
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:557:6: warning: 'void svGetBitArrElem3VecVal(svBitVecVal*, s
-vOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:557:6: warning: 'void svGetBitArrElem3VecVal(svBitVecVal*, svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   557 | void svGetBitArrElem3VecVal(svBitVecVal* d, const svOpenArrayHandle s, int indx1, int indx2,
       |      ^~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:561:6: warning: 'void svGetLogicArrElemVecVal(svLogicVecVal*
-, svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:561:6: warning: 'void svGetLogicArrElemVecVal(svLogicVecVal*, svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   561 | void svGetLogicArrElemVecVal(svLogicVecVal* d, const svOpenArrayHandle s, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:582:6: warning: 'void svGetLogicArrElem1VecVal(svLogicVecVal
-*, svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:582:6: warning: 'void svGetLogicArrElem1VecVal(svLogicVecVal*, svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   582 | void svGetLogicArrElem1VecVal(svLogicVecVal* d, const svOpenArrayHandle s, int indx1) {
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:585:6: warning: 'void svGetLogicArrElem2VecVal(svLogicVecVal
-*, svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:585:6: warning: 'void svGetLogicArrElem2VecVal(svLogicVecVal*, svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   585 | void svGetLogicArrElem2VecVal(svLogicVecVal* d, const svOpenArrayHandle s, int indx1, int indx2) {
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:588:6: warning: 'void svGetLogicArrElem3VecVal(svLogicVecVal
-*, svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:588:6: warning: 'void svGetLogicArrElem3VecVal(svLogicVecVal*, svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   588 | void svGetLogicArrElem3VecVal(svLogicVecVal* d, const svOpenArrayHandle s, int indx1, int indx2,
       |      ^~~~~~~~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:593:7: warning: 'svBit svGetBitArrElem(svOpenArrayHandle, in
-t, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:593:7: warning: 'svBit svGetBitArrElem(svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   593 | svBit svGetBitArrElem(const svOpenArrayHandle s, int indx1, ...) {
       |       ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:616:7: warning: 'svBit svGetBitArrElem1(svOpenArrayHandle, i
-nt)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:616:7: warning: 'svBit svGetBitArrElem1(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   616 | svBit svGetBitArrElem1(const svOpenArrayHandle s, int indx1) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:619:7: warning: 'svBit svGetBitArrElem2(svOpenArrayHandle, i
-nt, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:619:7: warning: 'svBit svGetBitArrElem2(svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   619 | svBit svGetBitArrElem2(const svOpenArrayHandle s, int indx1, int indx2) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:622:7: warning: 'svBit svGetBitArrElem3(svOpenArrayHandle, i
-nt, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:622:7: warning: 'svBit svGetBitArrElem3(svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   622 | svBit svGetBitArrElem3(const svOpenArrayHandle s, int indx1, int indx2, int indx3) {
       |       ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:625:9: warning: 'svLogic svGetLogicArrElem(svOpenArrayHandle
-, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:625:9: warning: 'svLogic svGetLogicArrElem(svOpenArrayHandle, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   625 | svLogic svGetLogicArrElem(const svOpenArrayHandle s, int indx1, ...) {
       |         ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:649:9: warning: 'svLogic svGetLogicArrElem1(svOpenArrayHandl
-e, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:649:9: warning: 'svLogic svGetLogicArrElem1(svOpenArrayHandle, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   649 | svLogic svGetLogicArrElem1(const svOpenArrayHandle s, int indx1) {
       |         ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:653:9: warning: 'svLogic svGetLogicArrElem2(svOpenArrayHandl
-e, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:653:9: warning: 'svLogic svGetLogicArrElem2(svOpenArrayHandle, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   653 | svLogic svGetLogicArrElem2(const svOpenArrayHandle s, int indx1, int indx2) {
       |         ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:657:9: warning: 'svLogic svGetLogicArrElem3(svOpenArrayHandl
-e, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:657:9: warning: 'svLogic svGetLogicArrElem3(svOpenArrayHandle, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   657 | svLogic svGetLogicArrElem3(const svOpenArrayHandle s, int indx1, int indx2, int indx3) {
       |         ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:662:6: warning: 'void svPutBitArrElem(svOpenArrayHandle, svB
-it, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:662:6: warning: 'void svPutBitArrElem(svOpenArrayHandle, svBit, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   662 | void svPutBitArrElem(const svOpenArrayHandle d, svBit value, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:683:6: warning: 'void svPutBitArrElem1(svOpenArrayHandle, sv
-Bit, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:683:6: warning: 'void svPutBitArrElem1(svOpenArrayHandle, svBit, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   683 | void svPutBitArrElem1(const svOpenArrayHandle d, svBit value, int indx1) {
       |      ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:686:6: warning: 'void svPutBitArrElem2(svOpenArrayHandle, sv
-Bit, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:686:6: warning: 'void svPutBitArrElem2(svOpenArrayHandle, svBit, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   686 | void svPutBitArrElem2(const svOpenArrayHandle d, svBit value, int indx1, int indx2) {
       |      ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:689:6: warning: 'void svPutBitArrElem3(svOpenArrayHandle, sv
-Bit, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:689:6: warning: 'void svPutBitArrElem3(svOpenArrayHandle, svBit, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   689 | void svPutBitArrElem3(const svOpenArrayHandle d, svBit value, int indx1, int indx2, int indx3) {
       |      ^~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:692:6: warning: 'void svPutLogicArrElem(svOpenArrayHandle, s
-vLogic, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:692:6: warning: 'void svPutLogicArrElem(svOpenArrayHandle, svLogic, int, ...)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   692 | void svPutLogicArrElem(const svOpenArrayHandle d, svLogic value, int indx1, ...) {
       |      ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:714:6: warning: 'void svPutLogicArrElem1(svOpenArrayHandle,
-svLogic, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:714:6: warning: 'void svPutLogicArrElem1(svOpenArrayHandle, svLogic, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   714 | void svPutLogicArrElem1(const svOpenArrayHandle d, svLogic value, int indx1) {
       |      ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:718:6: warning: 'void svPutLogicArrElem2(svOpenArrayHandle,
-svLogic, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:718:6: warning: 'void svPutLogicArrElem2(svOpenArrayHandle, svLogic, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   718 | void svPutLogicArrElem2(const svOpenArrayHandle d, svLogic value, int indx1, int indx2) {
       |      ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:722:6: warning: 'void svPutLogicArrElem3(svOpenArrayHandle,
-svLogic, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:722:6: warning: 'void svPutLogicArrElem3(svOpenArrayHandle, svLogic, int, int, int)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   722 | void svPutLogicArrElem3(const svOpenArrayHandle d, svLogic value, int indx1, int indx2,
       |      ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:731:9: warning: 'void* svGetScope()' redeclared without dlli
-mport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:731:9: warning: 'void* svGetScope()' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   731 | svScope svGetScope() {
       |         ^~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:740:9: warning: 'void* svSetScope(svScope)' redeclared witho
-ut dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:740:9: warning: 'void* svSetScope(svScope)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   740 | svScope svSetScope(const svScope scope) {
       |         ^~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:748:13: warning: 'const char* svGetNameFromScope(svScope)' r
-edeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:748:13: warning: 'const char* svGetNameFromScope(svScope)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   748 | const char* svGetNameFromScope(const svScope scope) {
       |             ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:753:9: warning: 'void* svGetScopeFromName(const char*)' rede
-clared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:753:9: warning: 'void* svGetScopeFromName(const char*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   753 | svScope svGetScopeFromName(const char* scopeName) {
       |         ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:758:5: warning: 'int svPutUserData(svScope, void*, void*)' r
-edeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:758:5: warning: 'int svPutUserData(svScope, void*, void*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   758 | int svPutUserData(const svScope scope, void* userKey, void* userData) {
       |     ^~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:763:7: warning: 'void* svGetUserData(svScope, void*)' redecl
-ared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:763:7: warning: 'void* svGetUserData(svScope, void*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   763 | void* svGetUserData(const svScope scope, void* userKey) {
       |       ^~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:767:5: warning: 'int svGetCallerInfo(const char**, int*)' re
-declared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:767:5: warning: 'int svGetCallerInfo(const char**, int*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   767 | int svGetCallerInfo(const char** fileNamepp, int* lineNumberp) {
       |     ^~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:780:5: warning: 'int svGetTime(svScope, svTimeVal*)' redecla
-red without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:780:5: warning: 'int svGetTime(svScope, svTimeVal*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   780 | int svGetTime(const svScope /*scope*/, svTimeVal* time) {
       |     ^~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:790:5: warning: 'int svGetTimeUnit(svScope, int32_t*)' redec
-lared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:790:5: warning: 'int svGetTimeUnit(svScope, int32_t*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   790 | int svGetTimeUnit(const svScope scope, int32_t* time_unit) {
       |     ^~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:801:5: warning: 'int svGetTimePrecision(svScope, int32_t*)'
-redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:801:5: warning: 'int svGetTimePrecision(svScope, int32_t*)' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   801 | int svGetTimePrecision(const svScope /*scope*/, int32_t* time_precision) {
       |     ^~~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:810:5: warning: 'int svIsDisabledState()' redeclared without
- dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:810:5: warning: 'int svIsDisabledState()' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   810 | int svIsDisabledState() {
       |     ^~~~~~~~~~~~~~~~~
-C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:814:6: warning: 'void svAckDisabledState()' redeclared witho
-ut dllimport attribute: previous dllimport ignored [-Wattributes]
+C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:814:6: warning: 'void svAckDisabledState()' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   814 | void svAckDisabledState() {
       |      ^~~~~~~~~~~~~~~~~~
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb__ConstPool__0__Slow.cpp
@@ -358,6 +278,7 @@ g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb___024root__10.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb___024root__11.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb___024root__12.cpp
+g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb___024root__13.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb_rv_axi4_if__0.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb_rv_local_mem_if__0.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb_rv_axi4_if__I6__0.cpp
@@ -365,14 +286,14 @@ g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb__Dpi.cpp
 g++  -static-libstdc++ -static-libgcc  -static-libstdc++ -static-libgcc  -static-libstdc++ -static-libgcc elf_loader.o verilated.o verilated_dpi.o verilated_timing.o verilated_threads.o Vrv_soc_dpi_tb__ALL.a   -lwinpthread  -lwinpthread  -lwinpthread   -o Vrv_soc_dpi_tb
 rm Vrv_soc_dpi_tb__ALL.verilator_deplist.tmp
-make: Leaving directory 'C:/rv_build/coremark_profile_final/soc_elf_build'
+make: Leaving directory 'C:/rv_build/coremark_target_buffer/soc_elf_build'
 DPI ELF load complete entry=80000000 flags=00000001
 [host-event kind=0 data=0x50460001]
 [host-event kind=0 data=0x50460002]
-PERF profile written: C:\rv_build\coremark_profile_final\coremark.perf.json cycles=604932 retired=576462
+PERF profile written: C:\rv_build\coremark_target_buffer\coremark.perf.json cycles=548390 retired=576462
 [host-event kind=0 data=0x434d0001]
 [host-event kind=0 data=0x00000002]
-[host-event kind=0 data=0x00093ad5]
+[host-event kind=0 data=0x00085df7]
 [host-event kind=0 data=0x00000000]
 [host-event kind=0 data=0x0008cbc2]
 [host-event kind=0 data=0x00000000]
@@ -384,7 +305,7 @@ PERF profile written: C:\rv_build\coremark_profile_final\coremark.perf.json cycl
 [host-event kind=0 data=0x00000009]
 [host-event kind=1 data=0x00000000]
 [host-finish code=0]
-- U:/tb/e2e/dpi\rv_soc_dpi_tb.sv:141: Verilog $finish
+- U:/tb/e2e/dpi\rv_soc_dpi_tb.sv:148: Verilog $finish
 - S i m u l a t i o n   R e p o r t: Verilator 5.050 2026-07-01
-- Verilator: $finish at 6us; walltime 4.657 s; speed 1.360 us/s
-- Verilator: cpu 0.000 s on 1 threads; allocated 8 MB
+- Verilator: $finish at 6us; walltime 4.309 s; speed 1.337 us/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB

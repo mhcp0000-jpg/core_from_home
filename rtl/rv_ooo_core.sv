@@ -6,6 +6,7 @@ module rv_ooo_core #(
   parameter bit          HAS_F            = 1'b1,
   parameter bit          HAS_SMODE        = 1'b0,
   parameter int unsigned FETCH_BYTES      = 16,
+  parameter int unsigned IF_TARGET_BUFFER_ENTRIES = 16,
   parameter int unsigned ROB_ENTRIES      = 48,
   parameter int unsigned ROB_SEQ_WIDTH    = rv_ooo_pkg::ROB_SEQ_WIDTH,
   parameter int unsigned INT_PHYS_REGS    = 80,
@@ -120,6 +121,9 @@ module rv_ooo_core #(
       $fatal(1, "XLEN must be 32 or 64");
     if ((FETCH_BYTES < 8) || ((FETCH_BYTES & (FETCH_BYTES-1)) != 0))
       $fatal(1, "FETCH_BYTES must be a power of two and at least 8");
+    if ((IF_TARGET_BUFFER_ENTRIES < 2) ||
+        ((IF_TARGET_BUFFER_ENTRIES & (IF_TARGET_BUFFER_ENTRIES-1)) != 0))
+      $fatal(1, "IF_TARGET_BUFFER_ENTRIES must be a power of two");
     if (PADDR_WIDTH == 0)
       $fatal(1, "PADDR_WIDTH must be greater than zero");
     if ((MEM_DATA_WIDTH < XLEN) || ((MEM_DATA_WIDTH % 8) != 0))
@@ -143,6 +147,7 @@ module rv_ooo_core #(
     .XLEN         (XLEN),
     .PADDR_WIDTH  (PADDR_WIDTH),
     .FETCH_BYTES  (FETCH_BYTES),
+    .TARGET_BUFFER_ENTRIES(IF_TARGET_BUFFER_ENTRIES),
     .RESET_VECTOR (RESET_VECTOR)
   ) u_frontend (
     .clk_i,

@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark 1차 profile/튜닝 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff합니다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 604,885 cycles, 576,450 instret, IPC 0.952991, 비공식 추정 3.306414 CoreMark/MHz를 기록했습니다. 최초 공개 baseline보다 cycle은 11.64% 감소하고 IPC는 13.17% 증가했습니다. parse/elaboration, block/backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했지만, C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark 2차 frontend 튜닝 완료, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현합니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff합니다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 548,343 cycles, 576,450 instret, IPC 1.051258, 비공식 추정 3.647352 CoreMark/MHz를 기록했습니다. 직전 v1.11 baseline보다 cycle은 9.35% 감소하고 IPC는 10.31% 증가했습니다. parse/elaboration, block/backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했지만, C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
 ## 문서
 
@@ -95,7 +95,7 @@ core 블록의 Icarus 사이클 단위 회귀:
 powershell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1
 ```
 
-Icarus 회귀는 decoder/C expander, divider, RV32F 실행기, fetch queue, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer, CSR/privilege/trap 상태 전이와 PMP mode/priority/permission을 검증합니다.
+Icarus 회귀는 decoder/C expander, divider, RV32F 실행기, fetch queue, target/loop block buffer, LSU AGU, LSQ ordering/tombstone/device-store path, store buffer, writeback/recovery buffer, CSR/privilege/trap 상태 전이와 PMP mode/priority/permission을 검증합니다.
 
 Icarus가 가변 packed-array index를 elaboration하지 못하는 ROB/IQ/arbiter와 SoC 블록은 Verilator 회귀로 실행합니다.
 
@@ -103,7 +103,7 @@ Icarus가 가변 packed-array index를 elaboration하지 못하는 ROB/IQ/arbite
 powershell -ExecutionPolicy Bypass -File scripts/run_block_tests.ps1
 ```
 
-이 회귀는 ROB, issue queue/global arbiter, multiplier, branch predictor, AXI bridge, I/D fabric, SoC peripheral path, PLIC, CLINT 11종을 검증합니다.
+이 회귀는 ROB, issue queue/global arbiter, multiplier, branch predictor, target/loop block buffer, AXI bridge, I/D fabric, SoC peripheral path, PLIC, CLINT 12종을 검증합니다.
 
 Boot ROM→WFI→Host AXI ITIM/DTIM 적재→CLINT MSIP→ITIM vector 실행 흐름은 다음으로 확인할 수 있습니다.
 

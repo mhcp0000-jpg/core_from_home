@@ -50,7 +50,7 @@
   <rect class="node frontend" x="75" y="155" width="260" height="95"/>
   <text class="label" x="205" y="183">Frontend · 2-wide</text>
   <text class="detail" x="205" y="208">BTB 256×4 · tournament 3×2048 · RAS 16</text>
-  <text class="detail" x="205" y="232">128-bit fetch · epoch · align queue</text>
+  <text class="detail" x="205" y="232">128-bit fetch · target buffer 16 · epoch</text>
 
   <rect class="node frontend" x="375" y="155" width="220" height="95"/>
   <text class="label" x="485" y="190">Decode2 + C expand</text>

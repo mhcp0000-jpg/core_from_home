@@ -4,10 +4,10 @@
 
 2026-09-02에 공식 EEMBC CoreMark source를 현재 RV32 OoO SoC에서 2회
 실행했다. 알려진 2K performance CRC가 모두 일치했고 HostIF exit code 0으로
-완료했다. 1차 frontend/predictor 튜닝 후 측정 결과는 **604,885 cycles**,
-**576,450 retired instructions**, **IPC 0.952991**, **추정 3.306414
-CoreMark/MHz**다. 최초 공개 baseline 대비 cycle은 **11.64% 감소**, IPC는
-**13.17% 증가**했다.
+완료했다. 2차 frontend 튜닝 후 측정 결과는 **548,343 cycles**,
+**576,450 retired instructions**, **IPC 1.051258**, **추정 3.647352
+CoreMark/MHz**다. 직전 tournament-predictor baseline 대비 cycle은 **9.35%
+감소**, IPC와 CoreMark/MHz는 **10.31% 증가**했다.
 
 이 값은 RTL 구조 비교용 **non-certified implementation estimate**다. 실행이
 CoreMark의 공식 최소 10초 조건보다 짧으므로 공식 제출 또는 타 제품의 공인
@@ -26,7 +26,7 @@ CoreMark 점수와 직접 비교하는 용도로 사용하면 안 된다.
 | Optimization | `-O2` |
 | Code memory | ITIM `0x8000_0000`, 128 KiB |
 | Data/stack | DTIM `0x8002_0000`, 128 KiB |
-| ELF footprint | text 11,260 B, data 12 B, bss 2,068 B |
+| ELF footprint | text 11,284 B, data 12 B, bss 2,068 B |
 
 공식 algorithm source는 repository에 복제하거나 수정하지 않았다. runner가
 clean upstream checkout과 commit을 검사하고, 이 저장소의
@@ -53,16 +53,16 @@ status `0x00000009`는 bit 0(known 2K performance seed)과 bit 3(shorter than
 timed region 전후의 machine CSR을 RV32 high-low-high 순서로 안정적으로 읽었다.
 
 ```text
-cycles                 = 604885
+cycles                 = 548343
 retired instructions   = 576450
-cycles / iteration     = 604885 / 2 = 302442.5
+cycles / iteration     = 548343 / 2 = 274171.5
 instructions / iter.   = 576450 / 2 = 288225
-IPC                    = 576450 / 604885 = 0.952991
-estimated CoreMark/MHz = 2 * 1000000 / 604885 = 3.306414
+IPC                    = 576450 / 548343 = 1.051258
+estimated CoreMark/MHz = 2 * 1000000 / 548343 = 3.647352
 ```
 
 예를 들어 향후 합성 결과가 100 MHz이고 TIM이 core와 1:1로 동작한다면 단순
-cycle estimate는 약 330.64 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
+cycle estimate는 약 364.74 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
 실제 Fmax를 측정한 결과가 아니다.
 
 ## 이 workload가 발견한 RTL 결함
@@ -92,18 +92,23 @@ software가 timed region 경계에 HostIF marker를 기록하고 testbench profi
 | marker 포함 profile baseline | 688,060 | 0.837790 | 2.906723 |
 | IFU/I-Fabric same-cycle handoff | 653,304 | 0.882361 | 3.061362 |
 | PC bimodal predictor | 614,717 | 0.937749 | 3.253530 |
-| bimodal/gshare tournament | **604,885** | **0.952991** | **3.306414** |
+| bimodal/gshare tournament | 604,885 | 0.952991 | 3.306414 |
+| + 16-entry target/loop block buffer | **548,343** | **1.051258** | **3.647352** |
+| 32-entry capacity experiment | 548,318 | 1.051306 | 3.647518 |
 
-최종 profiler의 marker-window 604,932 cycles에는 marker 처리 차이가 포함된다.
-핵심 관측값은 branch mispredict 32,738회, frontend empty 221,771 cycles,
-IQ nonempty/no-issue 115,981 cycles, ROB-head incomplete 196,067 cycles,
-unknown older-store-address load stall 41,100 cycles, D-memory wait 42,494 cycles다.
-event는 서로 겹칠 수 있으며 cycle 감소량으로 단순 합산하지 않는다.
+최종 profiler의 marker-window 548,390 cycles에는 marker 처리 차이가 포함된다.
+핵심 관측값은 branch mispredict 33,619회, frontend empty 137,139 cycles,
+IQ nonempty/no-issue 113,792 cycles, ROB-head incomplete 150,352 cycles,
+unknown older-store-address load stall 43,700 cycles, D-memory wait 50,353 cycles다.
+frontend empty는 queue-zero 103,885와 incomplete-instruction 33,254로 분해됐고,
+predicted redirect 64,863회 중 target-buffer hit는 45,957회였다. event는 서로
+겹칠 수 있으며 cycle 감소량으로 단순 합산하지 않는다.
 
 branch checkpoint 8→16, LQ 24→32 증설은 성능 변화가 없어 되돌렸다. lane-1
-load 동시 retire도 최종 predictor 구성에서 112 cycles 느려져 되돌렸다. 현재
-채택한 변경은 IF response와 다음 request의 same-cycle handoff, 그리고 branch별로
-bimodal/global component를 선택하는 tournament predictor뿐이다.
+load 동시 retire도 최종 predictor 구성에서 112 cycles 느려져 되돌렸다. target
+buffer 16→32 entry는 25 cycle만 줄어 추가 면적을 정당화하지 못해 되돌렸다.
+현재 채택한 변경은 IF response/next-request same-cycle handoff, tournament
+predictor, redirect-cycle target request와 16-entry target/loop block buffer다.
 
 ## 보존 파일
 

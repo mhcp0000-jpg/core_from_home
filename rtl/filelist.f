@@ -19,6 +19,7 @@ rtl/soc/rv_soc_top.sv
 rtl/rv_ooo_pkg.sv
 rtl/frontend/rv_c_expander.sv
 rtl/frontend/rv_fetch_queue.sv
+rtl/frontend/rv_fetch_target_buffer.sv
 rtl/frontend/rv_branch_predictor.sv
 rtl/backend/rv_decode2.sv
 rtl/backend/rv_lsq_order_check.sv

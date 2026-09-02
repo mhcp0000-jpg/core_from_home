@@ -2,6 +2,7 @@ module rv_frontend #(
   parameter int unsigned XLEN          = 32,
   parameter int unsigned PADDR_WIDTH   = 32,
   parameter int unsigned FETCH_BYTES   = 16,
+  parameter int unsigned TARGET_BUFFER_ENTRIES = 16,
   parameter logic [XLEN-1:0] RESET_VECTOR = 'h8000_0000
 ) (
   input  logic                                  clk_i,
@@ -79,6 +80,17 @@ module rv_frontend #(
   logic response_fire;
   logic request_fire;
   logic response_releases_slot;
+  logic request_slot_available;
+  logic memory_fill_valid;
+  logic target_buffer_fill_valid;
+  logic target_buffer_lookup_hit;
+  logic [FETCH_BYTES*8-1:0] target_buffer_lookup_data;
+  logic redirect_uses_target_buffer;
+  logic target_replay_valid_q;
+  logic [PADDR_WIDTH-1:0] target_replay_addr_q;
+  logic [3:0] target_replay_epoch_q;
+  logic [FETCH_BYTES*8-1:0] target_replay_data_q;
+  logic target_replay_fire;
   logic [1:0][XLEN-1:0] sequential_pc;
   logic [1:0] prediction_taken, prediction_fire;
   logic [1:0][XLEN-1:0] prediction_target;
@@ -111,18 +123,34 @@ module rv_frontend #(
   // fault; a stale response from an old epoch may release the slot normally.
   assign response_releases_slot = response_fire &&
     (!response_is_current || (imem_rsp_resp_i == 2'b00));
-  assign imem_req_valid_o = !frontend_redirect_valid &&
-                            (!outstanding_q || response_releases_slot) &&
-                            !fault_stop_q &&
-                            (queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES));
-  assign imem_req_addr_o = next_request_addr_q;
+  assign request_slot_available = !outstanding_q || response_releases_slot;
+  assign redirect_uses_target_buffer = predicted_redirect_fire &&
+                                       target_buffer_lookup_hit &&
+                                       !redirect_valid_i;
+  // A redirect target may issue on the redirect cycle when the old request
+  // slot is free.  A target-buffer hit supplies the block locally instead.
+  assign imem_req_valid_o = request_slot_available &&
+                            (!fault_stop_q || frontend_redirect_valid) &&
+                            (queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES)) &&
+                            (!frontend_redirect_valid ||
+                             !redirect_uses_target_buffer);
+  assign imem_req_addr_o = frontend_redirect_valid ? redirect_block_addr :
+                                                     next_request_addr_q;
   assign imem_req_id_o = next_id_q;
-  assign imem_req_epoch_o = epoch_q;
+  assign imem_req_epoch_o = frontend_redirect_valid ? epoch_q + 1'b1 : epoch_q;
   assign request_fire = imem_req_valid_o && imem_req_ready_i;
 
-  assign queue_fill_valid = imem_rsp_valid_i && response_is_current &&
-                            !frontend_redirect_valid;
-  assign imem_rsp_ready_o = response_is_current ? queue_fill_ready : 1'b1;
+  assign memory_fill_valid = imem_rsp_valid_i && response_is_current &&
+                             !frontend_redirect_valid &&
+                             !target_replay_valid_q;
+  assign queue_fill_valid = target_replay_valid_q || memory_fill_valid;
+  assign target_replay_fire = target_replay_valid_q && queue_fill_ready;
+  // A stale response never needs the queue.  A current response waits while
+  // the single fill port is replaying a target-buffer line.
+  assign imem_rsp_ready_o = response_is_current ?
+    (!target_replay_valid_q && queue_fill_ready) : 1'b1;
+  assign target_buffer_fill_valid = response_fire && response_is_current &&
+                                    (imem_rsp_resp_i == 2'b00);
 
   assign fetch_valid_o[0] = redirect_valid_i ? 1'b0 : queue_valid[0];
   assign fetch_valid_o[1] = redirect_valid_i ? 1'b0 :
@@ -185,6 +213,20 @@ module rv_frontend #(
     .commit_taken_i(predictor_commit_taken_i)
   );
 
+  rv_fetch_target_buffer #(
+    .PADDR_WIDTH(PADDR_WIDTH), .FETCH_BYTES(FETCH_BYTES),
+    .ENTRIES(TARGET_BUFFER_ENTRIES)
+  ) u_target_buffer (
+    .clk_i, .rst_ni, .invalidate_i(redirect_valid_i),
+    .lookup_valid_i(predicted_redirect_fire),
+    .lookup_addr_i(redirect_block_addr),
+    .lookup_hit_o(target_buffer_lookup_hit),
+    .lookup_data_o(target_buffer_lookup_data),
+    .fill_valid_i(target_buffer_fill_valid),
+    .fill_addr_i(outstanding_addr_q),
+    .fill_data_i(imem_rsp_data_i)
+  );
+
   rv_fetch_queue #(
     .XLEN         (XLEN),
     .PADDR_WIDTH  (PADDR_WIDTH),
@@ -196,11 +238,14 @@ module rv_frontend #(
     .rst_ni,
     .fill_valid_i      (queue_fill_valid),
     .fill_ready_o      (queue_fill_ready),
-    .fill_addr_i       (outstanding_addr_q),
-    .fill_id_i         (imem_rsp_id_i),
-    .fill_epoch_i      (imem_rsp_epoch_i),
-    .fill_data_i       (imem_rsp_data_i),
-    .fill_resp_i       (imem_rsp_resp_i),
+    .fill_addr_i       (target_replay_valid_q ? target_replay_addr_q :
+                                                  outstanding_addr_q),
+    .fill_id_i         (target_replay_valid_q ? 4'h0 : imem_rsp_id_i),
+    .fill_epoch_i      (target_replay_valid_q ? target_replay_epoch_q :
+                                                  imem_rsp_epoch_i),
+    .fill_data_i       (target_replay_valid_q ? target_replay_data_q :
+                                                  imem_rsp_data_i),
+    .fill_resp_i       (target_replay_valid_q ? 2'b00 : imem_rsp_resp_i),
     .redirect_valid_i     (frontend_redirect_valid),
     .redirect_pc_i        (frontend_redirect_pc),
     .new_epoch_i       (epoch_q + 1'b1),
@@ -226,13 +271,17 @@ module rv_frontend #(
       outstanding_epoch_q <= '0;
       outstanding_addr_q <= '0;
       fault_stop_q <= 1'b0;
+      target_replay_valid_q <= 1'b0;
+      target_replay_addr_q <= '0;
+      target_replay_epoch_q <= '0;
+      target_replay_data_q <= '0;
     end else begin
       if (request_fire) begin
         outstanding_q <= 1'b1;
-        outstanding_id_q <= next_id_q;
-        outstanding_epoch_q <= epoch_q;
-        outstanding_addr_q <= next_request_addr_q;
-        next_request_addr_q <= next_request_addr_q + FETCH_BYTES_VALUE;
+        outstanding_id_q <= imem_req_id_o;
+        outstanding_epoch_q <= imem_req_epoch_o;
+        outstanding_addr_q <= imem_req_addr_o;
+        next_request_addr_q <= imem_req_addr_o + FETCH_BYTES_VALUE;
         next_id_q <= next_id_q + 1'b1;
       end
 
@@ -244,10 +293,23 @@ module rv_frontend #(
           fault_stop_q <= 1'b1;
       end
 
+      if (target_replay_fire)
+        target_replay_valid_q <= 1'b0;
+
       if (frontend_redirect_valid) begin
         epoch_q <= epoch_q + 1'b1;
-        next_request_addr_q <= redirect_block_addr;
+        if (!request_fire)
+          next_request_addr_q <= redirect_block_addr +
+            (redirect_uses_target_buffer ? FETCH_BYTES_VALUE : '0);
         fault_stop_q <= 1'b0;
+        if (redirect_uses_target_buffer) begin
+          target_replay_valid_q <= 1'b1;
+          target_replay_addr_q <= redirect_block_addr;
+          target_replay_epoch_q <= epoch_q + 1'b1;
+          target_replay_data_q <= target_buffer_lookup_data;
+        end else begin
+          target_replay_valid_q <= 1'b0;
+        end
       end
     end
   end
@@ -266,6 +328,25 @@ module rv_frontend #(
       (imem_rsp_id_i == outstanding_id_q);
   endproperty
   assert property (p_response_id_matches_outstanding);
+
+  property p_target_replay_uses_current_epoch;
+    @(posedge clk_i) disable iff (!rst_ni)
+      target_replay_valid_q |-> (target_replay_epoch_q == epoch_q);
+  endproperty
+  assert property (p_target_replay_uses_current_epoch);
+
+  property p_target_hit_suppresses_memory_request;
+    @(posedge clk_i) disable iff (!rst_ni)
+      redirect_uses_target_buffer |-> !imem_req_valid_o;
+  endproperty
+  assert property (p_target_hit_suppresses_memory_request);
+
+  property p_stale_response_never_fills_frontend_state;
+    @(posedge clk_i) disable iff (!rst_ni)
+      response_fire && !response_is_current |->
+      (!memory_fill_valid && !target_buffer_fill_valid);
+  endproperty
+  assert property (p_stale_response_never_fills_frontend_state);
 `endif
 
   logic unused_queue_empty;

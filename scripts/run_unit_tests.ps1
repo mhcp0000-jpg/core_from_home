@@ -89,6 +89,13 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_fetch_target_buffer_tb"
+    Files = @(
+      "rtl/frontend/rv_fetch_target_buffer.sv",
+      "tb/unit/frontend/rv_fetch_target_buffer_tb.sv"
+    )
+  },
+  @{
     Top = "rv_lsu_pipe_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",

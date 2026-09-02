@@ -15,6 +15,13 @@ module rv_perf_profiler #(
   input logic       imem_req_ready_i,
   input logic       imem_rsp_valid_i,
   input logic       imem_rsp_ready_i,
+  input logic       frontend_redirect_i,
+  input logic       predicted_redirect_i,
+  input logic       architectural_redirect_i,
+  input logic       target_buffer_hit_i,
+  input logic       target_replay_valid_i,
+  input logic       fetch_outstanding_i,
+  input logic [6:0] fetch_queue_bytes_i,
 
   input logic [1:0] decode_valid_i,
   input logic       dispatch_fire_i,
@@ -65,6 +72,11 @@ module rv_perf_profiler #(
   longint unsigned issue_zero_q, issue_one_q, issue_two_q;
   longint unsigned retire_zero_q, retire_one_q, retire_two_q;
   longint unsigned frontend_empty_q, frontend_backpressure_q;
+  longint unsigned frontend_empty_queue_zero_q, frontend_empty_partial_q;
+  longint unsigned frontend_empty_outstanding_q, frontend_empty_replay_q;
+  longint unsigned frontend_redirect_q, predicted_redirect_q;
+  longint unsigned architectural_redirect_q, target_buffer_hit_q;
+  longint unsigned redirect_refill_empty_q;
   longint unsigned imem_requests_q, imem_responses_q, imem_wait_q;
   longint unsigned dispatch_stall_q, rename_stall_q, branch_stall_q;
   longint unsigned rob_stall_q, iq_stall_q, lsq_dispatch_stall_q;
@@ -79,6 +91,7 @@ module rv_perf_profiler #(
   longint unsigned lq_occupancy_sum_q, sq_occupancy_sum_q;
   longint unsigned rob_occupancy_max_q, iq_occupancy_max_q;
   longint unsigned lq_occupancy_max_q, sq_occupancy_max_q;
+  logic redirect_refill_q;
 
   function automatic int unsigned pop2(input logic [1:0] value);
     return value[0] + value[1];
@@ -92,6 +105,11 @@ module rv_perf_profiler #(
     issue_zero_q = 0; issue_one_q = 0; issue_two_q = 0;
     retire_zero_q = 0; retire_one_q = 0; retire_two_q = 0;
     frontend_empty_q = 0; frontend_backpressure_q = 0;
+    frontend_empty_queue_zero_q = 0; frontend_empty_partial_q = 0;
+    frontend_empty_outstanding_q = 0; frontend_empty_replay_q = 0;
+    frontend_redirect_q = 0; predicted_redirect_q = 0;
+    architectural_redirect_q = 0; target_buffer_hit_q = 0;
+    redirect_refill_empty_q = 0; redirect_refill_q = 1'b0;
     imem_requests_q = 0; imem_responses_q = 0; imem_wait_q = 0;
     dispatch_stall_q = 0; rename_stall_q = 0; branch_stall_q = 0;
     rob_stall_q = 0; iq_stall_q = 0; lsq_dispatch_stall_q = 0;
@@ -124,6 +142,15 @@ module rv_perf_profiler #(
       $fwrite(perf_fd, "  \"issue_cycles_0_1_2\": [%0d, %0d, %0d],\n", issue_zero_q, issue_one_q, issue_two_q);
       $fwrite(perf_fd, "  \"retire_cycles_0_1_2\": [%0d, %0d, %0d],\n", retire_zero_q, retire_one_q, retire_two_q);
       $fwrite(perf_fd, "  \"frontend_empty_cycles\": %0d,\n", frontend_empty_q);
+      $fwrite(perf_fd, "  \"frontend_empty_queue_zero_cycles\": %0d,\n", frontend_empty_queue_zero_q);
+      $fwrite(perf_fd, "  \"frontend_empty_partial_instruction_cycles\": %0d,\n", frontend_empty_partial_q);
+      $fwrite(perf_fd, "  \"frontend_empty_with_fetch_outstanding_cycles\": %0d,\n", frontend_empty_outstanding_q);
+      $fwrite(perf_fd, "  \"frontend_empty_with_target_replay_cycles\": %0d,\n", frontend_empty_replay_q);
+      $fwrite(perf_fd, "  \"frontend_redirects\": %0d,\n", frontend_redirect_q);
+      $fwrite(perf_fd, "  \"predicted_redirects\": %0d,\n", predicted_redirect_q);
+      $fwrite(perf_fd, "  \"architectural_redirects\": %0d,\n", architectural_redirect_q);
+      $fwrite(perf_fd, "  \"target_buffer_hits\": %0d,\n", target_buffer_hit_q);
+      $fwrite(perf_fd, "  \"redirect_refill_empty_cycles\": %0d,\n", redirect_refill_empty_q);
       $fwrite(perf_fd, "  \"frontend_backpressure_cycles\": %0d,\n", frontend_backpressure_q);
       $fwrite(perf_fd, "  \"imem_requests\": %0d,\n", imem_requests_q);
       $fwrite(perf_fd, "  \"imem_responses\": %0d,\n", imem_responses_q);
@@ -195,7 +222,30 @@ module rv_perf_profiler #(
         case (dispatch_count) 0: dispatch_zero_q=dispatch_zero_q+1; 1: dispatch_one_q=dispatch_one_q+1; default: dispatch_two_q=dispatch_two_q+1; endcase
         case (issue_count) 0: issue_zero_q=issue_zero_q+1; 1: issue_one_q=issue_one_q+1; default: issue_two_q=issue_two_q+1; endcase
         case (retire_count) 0: retire_zero_q=retire_zero_q+1; 1: retire_one_q=retire_one_q+1; default: retire_two_q=retire_two_q+1; endcase
-        if (!(|fetch_valid_i)) frontend_empty_q = frontend_empty_q + 1;
+        if (frontend_redirect_i) begin
+          frontend_redirect_q = frontend_redirect_q + 1;
+        end
+        if (predicted_redirect_i) predicted_redirect_q = predicted_redirect_q + 1;
+        if (architectural_redirect_i)
+          architectural_redirect_q = architectural_redirect_q + 1;
+        if (target_buffer_hit_i) target_buffer_hit_q = target_buffer_hit_q + 1;
+        if (!(|fetch_valid_i)) begin
+          frontend_empty_q = frontend_empty_q + 1;
+          if (fetch_queue_bytes_i == 0)
+            frontend_empty_queue_zero_q = frontend_empty_queue_zero_q + 1;
+          else
+            frontend_empty_partial_q = frontend_empty_partial_q + 1;
+          if (fetch_outstanding_i)
+            frontend_empty_outstanding_q = frontend_empty_outstanding_q + 1;
+          if (target_replay_valid_i)
+            frontend_empty_replay_q = frontend_empty_replay_q + 1;
+          if (redirect_refill_q)
+            redirect_refill_empty_q = redirect_refill_empty_q + 1;
+        end
+        if (frontend_redirect_i)
+          redirect_refill_q = 1'b1;
+        else if (|fetch_valid_i)
+          redirect_refill_q = 1'b0;
         if ((|fetch_valid_i) && !(|fetch_ready_i)) frontend_backpressure_q = frontend_backpressure_q + 1;
         if (imem_req_valid_i && imem_req_ready_i) imem_requests_q = imem_requests_q + 1;
         if (imem_rsp_valid_i && imem_rsp_ready_i) imem_responses_q = imem_responses_q + 1;

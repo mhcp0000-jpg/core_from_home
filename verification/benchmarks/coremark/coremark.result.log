@@ -1,4 +1,4 @@
-COREMARK SHORT RTL RUN PASS
+﻿COREMARK SHORT RTL RUN PASS
 Classification        : non-certified implementation estimate
 Upstream commit       : 1f483d5b8316753a742cbf5590caf5bd0a4e4777
 Toolchain             : xPack RISC-V GCC 15.2.0-1
@@ -6,20 +6,23 @@ ISA / ABI             : rv32imc_zicsr_zifencei / ilp32
 Compiler optimization : -O2
 Memory                : 128 KiB ITIM + 128 KiB DTIM, 1:1 local
 Iterations            : 2
-Cycles                : 604885
-Cycles / iteration    : 302,442.500
+Cycles                : 548343
+Cycles / iteration    : 274,171.500
 Retired instructions  : 576450
 Instructions / iter.   : 288,225.000
-IPC                   : 0.952991
-Estimated CoreMark/MHz: 3.306414
-Profiler cycles       : 604932
-Branch mispredicts    : 32738
-Frontend empty cycles : 221771
-IQ no-issue cycles    : 115981
-ROB-head wait cycles  : 196067
+IPC                   : 1.051258
+Estimated CoreMark/MHz: 3.647352
+Profiler cycles       : 548390
+Branch mispredicts    : 33619
+Frontend empty cycles : 137139
+  queue zero / partial : 103885 / 33254
+Target-buffer hits    : 45957 / 64863 predicted redirects
+Redirect refill empty : 108904
+IQ no-issue cycles    : 113792
+ROB-head wait cycles  : 150352
 seedcrc / list        : 0xe9f5 / 0xe714
 matrix / state        : 0x1fd7 / 0x8e3a
 final CRC             : 0x72be
 Status word           : 0x00000009
 Official 10-second rule: NOT MET (expected for short RTL run)
-ELF size              :   11284	     12	   2068	  13364	   3434	C:\rv_build\coremark_profile_final\coremark.elf
+ELF size              :   11284	     12	   2068	  13364	   3434	C:\rv_build\coremark_target_buffer\coremark.elf

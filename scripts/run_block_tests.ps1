@@ -55,6 +55,11 @@ $tests = @(
               "tb/unit/frontend/rv_branch_predictor_tb.sv")
   },
   @{
+    Top = "rv_fetch_target_buffer_tb"
+    Files = @("rtl/frontend/rv_fetch_target_buffer.sv",
+              "tb/unit/frontend/rv_fetch_target_buffer_tb.sv")
+  },
+  @{
     Top = "rv_axi_bridge_tb"
     Files = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",

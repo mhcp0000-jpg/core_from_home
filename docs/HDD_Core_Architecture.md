@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Performance baseline v1.11.1 (IPC 1.2 bottleneck/optimization plan) |
+| 상태 | Performance baseline v1.12.0 (target/loop block buffer 구현·검증) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -20,7 +20,7 @@
 |---|---|
 | ISA | RV32IMFC + Zicsr + Zifencei, little-endian |
 | Privilege | M/U 구현, `HAS_SMODE` 확장 frame, PMP 8 entries |
-| Frontend | 128-bit fetch, 64-byte fetch queue, 2-wide align/decode, C 지원 |
+| Frontend | 128-bit fetch, 64-byte fetch queue, 16-entry target/loop block buffer, 2-wide align/decode, C 지원 |
 | Predictor | 256-entry 4-way BTB, 2 Ki bimodal + 2 Ki gshare + 2 Ki chooser tournament, 16-entry RAS |
 | OoO window | ROB 48, branch checkpoint 8 |
 | Rename | INT/FP RAT+RRAT, INT/FP PRF 각 80 entries |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, 1차 CoreMark profile/튜닝 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 기존 directed 회귀와 C loop가 통과했으며 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 604,885 cycles, 576,450 instret, IPC 0.952991, 비공식 추정 3.306414 CoreMark/MHz를 기록했다. 최초 공개 baseline 대비 cycle은 11.64% 감소하고 IPC는 13.17% 증가했다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
+현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, 2차 CoreMark frontend 튜닝 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하며, correct predicted-taken target은 16-entry block buffer에서 재공급한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 기존 directed 회귀와 C loop가 통과했으며 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 548,343 cycles, 576,450 instret, IPC 1.051258, 비공식 추정 3.647352 CoreMark/MHz를 기록했다. 직전 v1.11 baseline 대비 cycle은 9.35% 감소하고 IPC는 10.31% 증가했다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
 
 ## 1. 목적과 성능 포지션
 
@@ -130,7 +130,7 @@ flowchart TB
     subgraph FE["Frontend - maximum 2 instructions/cycle"]
       direction LR
       PRED["Predict<br/>BTB 256 x 4-way<br/>tournament 3 x 2048 / RAS 16"]
-      FETCH["IFU PMP check + fetch<br/>reject stale epoch responses"]
+      FETCH["IFU PMP check + fetch<br/>target/loop block buffer 16<br/>reject stale epoch responses"]
       FQ["Fetch queue + align<br/>16/32-bit boundaries"]
       PRED --> FETCH --> FQ
     end
@@ -316,10 +316,11 @@ cd ../company_rv_core
 | Branch checkpoints | 8 | RAT/free-list 즉시 복구 |
 | Fetch block | 16 bytes | C 포함 2개 이상 명령어 정렬 여유 |
 | Fetch queue | 64 bytes | TIM/AXI 응답과 decode decouple |
+| Target/loop block buffer | 16 × 16 bytes, direct-mapped | correct predicted-taken target의 재요청/리필 지연 제거 |
 | ITIM / DTIM | 각 128 KiB | 초기 deterministic memory |
 | TIM banks | 2 × 64-bit 1R1W | dual fetch/data bandwidth |
 | Main AXI | A32/D64/ID6 | Host burst와 16-byte fetch 지원 |
-| I outstanding fetch | 4 blocks | non-local AXI fetch latency 은닉 |
+| I outstanding fetch | 1 block | 현재 PMP/fabric response ordering baseline; 2~4개는 후속 확장 |
 | RAS | 16 entries | call/return 예측 |
 | BTB | 256 entries, 4-way | 강한 IFU 기준선 |
 | Direction predictor | 2 Ki bimodal + 2 Ki gshare + 2 Ki chooser tournament, 2-bit | local/global branch 특성에 적응 |
@@ -373,7 +374,10 @@ lane 0만 유효하거나 lane 1이 decode 단계에서 제거된 경우에는 �
 - C expansion은 decode 입력에서 canonical 32-bit instruction으로 변환하지만 original raw bits와 length는 trace/exception을 위해 보존한다.
 - taken prediction 뒤의 동일 bundle younger instruction은 무효화한다.
 - redirect는 fetch epoch를 증가시키며 이전 epoch의 outstanding AXI response를 폐기한다.
-- non-local fetch는 64-bit AXI beat 두 개의 INCR burst로 16-byte block을 만들고 최대 4 block을 outstanding으로 둔다.
+- 현재 IFU는 instruction request 한 block만 outstanding으로 둔다. response를 accept하는 cycle에는 다음 request를 동시에 accept할 수 있다.
+- predicted-taken redirect cycle에 request slot이 비어 있거나 기존 response가 끝나면 target block request를 즉시 발행한다.
+- target/loop block buffer가 hit하면 외부 request 대신 다음 cycle에 해당 16-byte block을 fetch queue로 replay한다.
+- non-local fetch는 64-bit AXI beat 두 개의 INCR burst로 16-byte block을 만든다. 2~4 outstanding은 PMP fault response와 I-Fabric response ordering table을 함께 확장한 뒤 적용한다.
 
 ITIM bank mapping은 64-bit beat 기준으로 `bank = address[3]`, `row = (address - ITIM_BASE)[16:4]`이다. 16-byte aligned IFU fetch는 bank0과 bank1을 한 번씩 읽으므로 매 cycle 128-bit 공급이 가능하다.
 
@@ -395,6 +399,16 @@ I local fabric은 IFU request와 Main Xbar inbound access를 Boot ROM 또는 ITI
 - `valid && !ready`인 request/response payload는 변하지 않는다.
 - flush된 epoch의 fetch data는 decode queue에 들어갈 수 없다.
 - fetch fault는 해당 instruction의 ROB entry까지 전달되며 speculative fetch 시점에 즉시 trap하지 않는다.
+- architectural redirect와 `FENCE.I`는 target/loop block buffer valid를 모두 지운다.
+- buffer hit replay와 current memory response는 fetch queue의 단일 fill port를 동시에 사용할 수 없다. replay가 우선하며 memory response는 ready를 낮춰 보존한다.
+
+### 6.4 Target/loop block buffer
+
+`rv_fetch_target_buffer`는 16-byte fetch block 16개를 보존하는 direct-mapped 구조다. 각 entry는 valid, physical block tag, 128-bit data를 저장하며 기본 용량은 `IF_TARGET_BUFFER_ENTRIES`로 parameter화한다. 이는 일반적인 coherent I-cache가 아니라, 이미 정상 응답을 받은 backward branch target을 짧게 재사용해 correct predicted-taken branch마다 64-byte queue 전체를 다시 채우는 비용을 줄이는 frontend 전용 buffer다.
+
+memory response가 current epoch이고 OKAY일 때 `outstanding_addr_q`의 aligned block을 fill한다. predicted redirect의 aligned target을 같은 cycle에 combinational lookup하고 hit이면 새 epoch, target address, 128-bit data를 replay register에 잡는다. redirect edge에서 fetch queue를 먼저 비우고 다음 cycle replay를 queue fill port에 넣으며, sequential request pointer는 target 다음 block으로 이동한다. miss이면 redirect cycle request slot을 사용할 수 있을 때 target request를 즉시 보낸다. old-epoch response는 queue와 buffer를 갱신하지 않고 slot만 해제한다.
+
+direct-mapped 16-entry와 32-entry CoreMark A/B는 각각 548,343 cycle과 548,318 cycle로 차이가 25 cycle뿐이었다. 따라서 추가 256-byte data/tag 면적을 정당화하지 못해 16-entry를 기본값으로 유지했다. 실행 중 Host/LSU가 ITIM을 수정한 뒤에는 반드시 `FENCE.I`를 실행해야 하며, architectural redirect가 buffer 전체를 invalidate하므로 self-modifying code가 stale block을 재사용하지 않는다.
 
 ### 6.3 branch predictor
 
@@ -756,7 +770,7 @@ forwarding 선택 규칙:
 
 - 초기 `FENCE`는 conservative full fence로 구현한다: older load 완료, SQ의 older store commit, store buffer drain, outstanding D-AXI response 완료 후 younger memory operation을 허용한다.
 - `FENCE.I`는 위 data ordering을 만족한 뒤 IFU fetch queue와 outstanding fetch epoch를 invalidate하고 현재 다음 PC에서 refetch한다.
-- 초기 TIM에는 I-cache가 없으므로 cache invalidate는 필요 없지만 ITIM write가 fetch queue에 남아 있을 수 있으므로 frontend flush는 필수다.
+- 초기 TIM에는 일반 I-cache가 없지만 target/loop block buffer와 fetch queue가 instruction block을 보존하므로 `FENCE.I` architectural redirect에서 둘 다 invalidate한다.
 
 ### 11.9 초기 TIM과 향후 cache
 
@@ -1132,7 +1146,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_clint` | Implemented | single clock, sync active-low reset | base/size, clock/timebase Hz |
 | `rv_d_fabric` | Implemented | single clock, sync active-low reset | DTIM/CLINT map, ROB sequence, fairness bound |
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
-| `rv_frontend`, `rv_fetch_queue` | Implemented candidate: 2-wide predictor redirect integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/epoch |
+| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry target replay | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Implemented candidate: RV32IMFC execution/recovery paths integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
@@ -1250,7 +1264,7 @@ Parameter:
 
 Local ITIM fetch는 같은 row의 bank0을 `data[63:0]`, bank1을 `data[127:64]`로 묶고 accept 다음 cycle 반환한다. Local Boot ROM fetch는 read-only 64-bit port를 low/high 순서로 두 번 사용한다. Xbar inbound ITIM write는 독립 write port를 사용하므로 IFU ITIM read와 동시 가능하며 같은 row이면 write-first data가 fetch에 보인다. inbound ITIM read가 기다리면 최대 8번의 IFU local grant 뒤 inbound read를 강제로 선택한다. inbound Boot ROM request는 진행 중인 IFU Boot ROM block과 serialize한다. inbound non-I-local access는 outbound로 loop하지 않고 SLVERR를 반환한다.
 
-현재 M1 baseline은 IFU block 한 건만 outstanding으로 처리하며 non-local block을 low/high 두 local beat로 순차 변환한다. 최종 frontend 목표인 최대 4 outstanding은 Main AXI bridge와 ID queue 구현 단계에서 확장한다. 이 제한은 기능 correctness용 구현 상태이며 Section 6의 최종 성능 목표를 변경하지 않는다.
+현재 baseline은 IFU block 한 건만 outstanding으로 처리하며 non-local block을 low/high 두 local beat로 순차 변환한다. target/loop buffer로 correct predicted-taken miss 비용을 먼저 줄였고, 최대 4 outstanding은 Main AXI bridge, I-Fabric response queue와 PMP fault ordering을 함께 확장하는 조건부 성능 단계로 둔다.
 
 ### 15.15 TIM과 CLINT leaf interface
 
@@ -1310,7 +1324,7 @@ top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral i
 
 | Group | 핵심 signal | 계약 |
 |---|---|---|
-| IFU | `imem_req_{valid,ready,addr,id,epoch}`, `imem_rsp_{valid,ready,id,epoch,data,resp}` | 16-byte aligned block, 최대 4 outstanding, redirect epoch 반환 |
+| IFU | `imem_req_{valid,ready,addr,id,epoch}`, `imem_rsp_{valid,ready,id,epoch,data,resp}` | 16-byte aligned block, 현재 1 outstanding, redirect epoch 반환 |
 | Dual LSU | `dmem_req_*[1:0]`, `dmem_rsp_*[1:0]` | 두 64-bit local request/response lane, 8-bit ROB sequence |
 | Interrupt/debug | `irq_software/timer/external`, `debug_halt_req` | commit boundary에서 precise accept |
 | Retire trace | lane별 valid/PC/instruction/rd/write-data/trap | commit한 instruction만 valid |
@@ -1531,7 +1545,7 @@ full queue에서도 그 cycle에 accept되는 candidate slot을 dispatch가 즉�
 | `SQ_INDEX_WIDTH` | 4 | `$clog2(SQ_ENTRIES)` |
 | `SB_INDEX_WIDTH` | 4 | `$clog2(STORE_BUFFER_ENTRIES)` |
 | `EXEC_PORTS` | 5 | INT0, INT1, MEM0, MEM1, FP |
-| `FETCH_ID_WIDTH/EPOCH_WIDTH` | 4/4 | 최대 4 outstanding을 baseline으로 사용 |
+| `FETCH_ID_WIDTH/EPOCH_WIDTH` | 4/4 | interface 확장 폭; 현재 active outstanding은 1개, epoch는 redirect generation |
 | `DMEM_ID_WIDTH` | 6 | bit5 route kind + bit[4:0] queue index |
 
 `decoded_uop_t`는 다음 field를 정확히 가진다.
@@ -1580,7 +1594,7 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 - response: `imem_rsp_valid_i/ready_o`, echo `id/epoch`, `imem_rsp_data_i[FETCH_BYTES*8-1:0]`, `imem_rsp_resp_i[1:0]`
 - backend: `fetch_valid_o[1:0]/fetch_ready_i[1:0]`, lane별 `pc[XLEN-1:0]`, raw `instr[31:0]`, `inst_len_e`, `prediction_meta_t`, `fetch_fault`
 
-요청 주소는 `FETCH_BYTES` aligned다. 최대 4개 ID를 동시에 사용하며 ID는 response handshake 전 재사용하지 않는다. response epoch가 현재 epoch와 다르면 data를 queue에 넣지 않되 response는 받아 버린다. block 경계에 걸친 32-bit instruction은 인접 block이 모두 준비될 때까지 발행하지 않는다.
+요청 주소는 `FETCH_BYTES` aligned다. 현재 RTL은 한 ID만 outstanding으로 사용하며 response를 accept하는 cycle에 다음 ID request를 handoff할 수 있다. predicted redirect는 target-buffer hit가 아니면 같은 cycle에 target request를 만들고, hit이면 memory request 없이 다음 cycle replay한다. response epoch가 현재 epoch와 다르면 data를 queue/buffer에 넣지 않되 response는 받아 버린다. block 경계에 걸친 32-bit instruction은 인접 block이 모두 준비될 때까지 발행하지 않는다.
 
 #### `rv_fetch_queue`
 
@@ -1591,6 +1605,16 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 | control | `redirect_valid_i`, `redirect_pc_i`, `new_epoch_i[3:0]`, `empty_o`, `byte_count_o[6:0]` | redirect가 fill/consume보다 우선 |
 
 queue는 같은 cycle fill과 최대 8-byte consume를 허용한다. access fault가 표시된 block의 첫 instruction PC에서 `EXC_INST_ACCESS_FAULT`를 만들고 그 이후 byte는 redirect까지 architectural instruction으로 내보내지 않는다.
+
+#### `rv_fetch_target_buffer`
+
+| Port group | exact signal | 계약 |
+|---|---|---|
+| lookup | `lookup_valid_i`, `lookup_addr_i[PADDR_WIDTH-1:0]`, `lookup_hit_o`, `lookup_data_o[FETCH_BYTES*8-1:0]` | aligned predicted target을 조합 조회 |
+| fill | `fill_valid_i`, `fill_addr_i[PADDR_WIDTH-1:0]`, `fill_data_i[FETCH_BYTES*8-1:0]` | current-epoch OKAY memory response만 해당 direct-map entry에 기록 |
+| control | `clk_i`, `rst_ni`, `invalidate_i` | reset 또는 architectural redirect에서 모든 valid clear |
+
+parameter는 `PADDR_WIDTH`, `FETCH_BYTES`, `ENTRIES`이며 `FETCH_BYTES`와 `ENTRIES`는 2의 거듭제곱이어야 한다. index는 `address[OFFSET_BITS +: INDEX_BITS]`, tag는 그 상위 address bit다. lookup/fill 주소는 block aligned여야 하고, 같은 cycle invalidate와 fill이면 invalidate가 우선한다. data RAM은 1 read/1 write 형태로 합성 가능하며 기본 16-entry 저장량은 data 256 bytes와 valid/tag다.
 
 #### `rv_c_expander`
 
@@ -1716,7 +1740,7 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 `rv_fence_controller`는 ROB-head FENCE/FENCE.I request, predecessor/successor mask, sequence와 next PC를 받고, `lsu_memory_idle_i`와 `i_fabric_idle_i` 조건에서 destination 없는 completion을 만든다. 현재 cacheless baseline에서 LSU memory-idle은 older load 완료, SQ→store-buffer 이동, committed store drain, direct device transaction 완료를 모두 포함한다. FENCE.I completion은 frontend flush-required와 redirect PC도 생성하며, 실제 architectural redirect는 해당 instruction이 retire된 뒤 trap controller의 한-cycle redirect 경로로 발생한다. predecessor/successor mask는 향후 cache/coherent fabric의 선택적 ordering을 위해 interface에 보존하지만 초기 구현은 보수적으로 모든 memory class를 drain한다.
 
-baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝난 후 완료한다. FENCE.I도 같은 조건을 기다리고 fetch queue/outstanding epoch를 폐기한 뒤 fence 다음 PC에서 refetch한다. 초기 ITIM에 I-cache는 없으므로 cache invalidate port는 0개지만 향후 `icache_invalidate_valid/ready` hook을 추가할 위치를 controller boundary로 고정한다. fence는 단일 serializing uop이며 younger memory/CSR issue를 차단한다.
+baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝난 후 완료한다. FENCE.I도 같은 조건을 기다리고 fetch queue/outstanding epoch와 target/loop block buffer를 폐기한 뒤 fence 다음 PC에서 refetch한다. 일반 I-cache invalidate port는 아직 없지만 target buffer는 architectural redirect로 내부 invalidate하며, 향후 `icache_invalidate_valid/ready` hook을 추가할 위치를 controller boundary로 고정한다. fence는 단일 serializing uop이며 younger memory/CSR issue를 차단한다.
 
 ### 15.36 DPI ELF loader와 Host AXI BFM exact boundary
 
@@ -1919,15 +1943,18 @@ cycle로 해석하면 안 된다.
 | marker 포함 동일 build baseline | 688,060 | 0.837790 | 2.906723 | profiler A/B 기준 |
 | response/request 동시 handoff | 653,304 | 0.882361 | 3.061362 | IFU/I-Fabric bubble 제거 |
 | PC bimodal 선택 | 614,717 | 0.937749 | 3.253530 | CoreMark에서 단독 gshare보다 우수 |
-| tournament predictor | **604,885** | **0.952991** | **3.306414** | 채택 baseline |
+| tournament predictor | 604,885 | 0.952991 | 3.306414 | v1.11 baseline |
+| 16-entry target/loop block buffer | **548,343** | **1.051258** | **3.647352** | 채택 baseline |
+| 32-entry target/loop block buffer | 548,318 | 1.051306 | 3.647518 | 25-cycle 이득뿐이므로 원복 |
 
-최종 profile window는 604,932 cycles이며 branch 136,355회 중 mispredict
-32,738회, frontend-empty 221,771 cycles, IQ가 비어 있지 않지만 issue가 없는
-cycle 115,981회, ROB head incomplete 196,067회, 미확정 older-store 때문에 load가
-막힌 cycle 41,100회, D-memory request wait 42,494회다. 이는 다음 우선순위를
-분기 target/direction 개선, fetch buffering/redirect latency, dependency와 FU
-availability 분해, conservative LSQ의 안전한 speculation/replay 순으로 둔다는
-근거다.
+최종 16-entry profile window는 548,390 cycles이며 branch 136,903회 중 mispredict
+33,619회, frontend-empty 137,139 cycles, IQ가 비어 있지 않지만 issue가 없는
+cycle 113,792회, ROB head incomplete 150,352회, 미확정 older-store 때문에 load가
+막힌 cycle 43,700회, D-memory request wait 50,353회다. target-buffer hit는
+45,957/64,863 predicted redirect이며 external I-memory request는
+434,845→412,232회로 줄었다. 기존에 가장 컸던 frontend/ROB wait는 감소했지만
+branch miss, issue dependency와 conservative LSQ/D-memory 비중은 상대적으로
+커졌으므로 다음 우선순위는 이들을 원인별로 분해하는 것이다.
 
 branch checkpoint를 8→16, LQ를 24→32로 늘린 실험은 cycle을 줄이지 못해
 baseline 용량으로 되돌렸다. lane-1 load의 동시 retire도 112 cycles 느려져
@@ -1936,23 +1963,23 @@ store/load retirement의 기존 single-copy 경계를 유지한다. 즉 자원 �
 
 #### 18.6.2 IPC 1.2 목표와 병목 개선 계획
 
-현재 architectural 측정값 576,450 instructions와 604,885 cycles에서 IPC 1.2를
+현재 architectural 측정값 576,450 instructions와 548,343 cycles에서 IPC 1.2를
 달성하려면 같은 instruction stream을 최대 480,375 cycles에 끝내야 한다. 즉
-현재보다 최소 124,510 cycles, 약 20.6%를 추가로 줄여야 한다. 단순히 queue
+현재보다 최소 67,968 cycles, 약 12.4%를 추가로 줄여야 한다. 단순히 queue
 entry를 늘리는 방식으로는 부족하며 frontend 공급, branch recovery, dependency,
 memory ordering을 순서대로 분해한다.
 
 | 관측 지표 | 값 | 전체 profile 대비 | 1차 해석 |
 |---|---:|---:|---|
-| fetched/dispatched | 673,242 / 604,932 cycles | 1.113 uop/cycle | wrong-path 포함 공급량부터 IPC 1.2 미만 |
-| branch mispredict | 32,738 / 136,355 resolve | 24.0% | direction/target/recovery의 최우선 병목 |
-| frontend empty | 221,771 cycles | 36.7% | 완전한 instruction을 공급하지 못함 |
-| IQ nonempty/no issue | 115,981 cycles | 19.2% | operand/FU/port/WB 원인 분해 필요 |
-| ROB-head incomplete | 196,067 cycles | 32.4% | oldest producer 또는 memory 완료 대기 |
-| unknown older-store load stall | 41,100 cycles | 6.8% | conservative LSQ ordering 비용 |
-| D-memory request wait | 42,494 cycles | 7.0% | bank/fabric/store-drain 원인 분해 필요 |
-| branch checkpoint stall | 23,104 cycles | 3.8% | checkpoint 수보다 branch 해소 속도와 연동 |
-| lane-1 retire blocked | 31,788 cycles | 5.3% | 단독 완화 A/B는 성능 이득 없음 |
+| fetched/dispatched | 703,190 / 548,390 cycles | 1.282 uop/cycle | 공급 폭은 1.2를 넘지만 wrong-path 포함 |
+| branch mispredict | 33,619 / 136,903 resolve | 24.6% | direction/target/recovery의 최우선 병목 |
+| frontend empty | 137,139 cycles | 25.0% | v1.11보다 38.2% 감소, 여전히 가장 큰 frontend event |
+| IQ nonempty/no issue | 113,792 cycles | 20.8% | operand/FU/port/WB 원인 분해 필요 |
+| ROB-head incomplete | 150,352 cycles | 27.4% | oldest producer 또는 memory 완료 대기 |
+| unknown older-store load stall | 43,700 cycles | 8.0% | conservative LSQ ordering 비용 |
+| D-memory request wait | 50,353 cycles | 9.2% | bank/fabric/store-drain 원인 분해 필요 |
+| branch checkpoint stall | 35,470 cycles | 6.5% | wrong-path 공급 증가와 branch 해소 속도에 연동 |
+| lane-1 retire blocked | 32,668 cycles | 6.0% | 단독 완화 A/B는 성능 이득 없음 |
 
 위 event는 동시에 발생할 수 있으므로 표의 비율을 합산하지 않는다. 특히
 profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라는 뜻이
@@ -1962,32 +1989,37 @@ profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라�
 
 ##### A. Frontend empty의 RTL 원인과 개선
 
-현재 `rv_frontend`는 predicted-taken instruction이 consume되면
+v1.11의 `rv_frontend`는 predicted-taken instruction이 consume되면
 `frontend_redirect_valid`를 만들고 64-byte fetch queue를 비운다. 이는 target
 경로 정확성을 위해 필요하지만, **정확히 예측한 taken branch도 매번 target
-refill latency를 지불**한다. 같은 redirect cycle에는 `imem_req_valid`가
-차단되며, instruction side는 한 요청만 outstanding으로 유지한다. 이미
+refill latency를 지불**했다. 같은 redirect cycle에는 `imem_req_valid`가
+차단됐고 instruction side는 한 요청만 outstanding으로 유지했다. 이미
 sequential block 요청이 진행 중이면 epoch만 stale로 바꾸고 해당 응답이
 돌아올 때까지 기다린 뒤 target을 요청한다. CoreMark의 반복 loop처럼
 backward taken branch가 많은 code에서 이 동작이 반복된다.
 
-최종 profile에서 I-memory request wait는 0이고 request/response는 각각
+v1.11 profile에서 I-memory request wait는 0이고 request/response는 각각
 434,845회로 동일하다. 따라서 현재 empty의 주원인은 I-Arbiter가 요청을
 거절하거나 response를 잃는 문제가 아니라 **redirect 정책, single-outstanding,
 target refill 지연**으로 판단한다.
 
-개선 순서는 다음과 같다.
+v1.12에서 다음 변경을 적용했다.
 
-1. redirect가 확정된 cycle에도 target address request를 만들 수 있도록 request
-   state 전이를 재구성한다.
-2. 2~4 entry outstanding table에 ID, address, epoch를 보관하고 stale sequential
-   response를 기다리지 않은 채 target request를 발행한다.
-3. current epoch response만 target fetch queue에 삽입하고 stale response는 즉시
-   폐기한다. `stale_epoch -> !queue_fill` assertion을 유지한다.
-4. backward loop target block을 보존하는 소형 loop/target buffer를 profile로
-   정당화한 뒤 추가한다.
-5. `frontend_empty`를 redirect-refill, stale-response wait, straight-line underflow,
-   cross-block incomplete-instruction으로 나눈 counter를 추가한다.
+1. request slot이 가능한 predicted redirect cycle에 target address request를 바로
+   만들도록 state 전이를 재구성했다.
+2. current-epoch OKAY response만 16-entry direct-mapped target/loop block buffer에
+   보존하고, hit target은 memory request 대신 다음 cycle queue fill로 replay한다.
+3. stale response는 queue/buffer를 갱신하지 않고 slot만 해제한다. replay와 current
+   response가 겹치면 replay가 fill port를 우선 사용하고 response에 backpressure한다.
+4. `frontend_empty`를 queue-zero와 incomplete-instruction으로 나누고, outstanding,
+   target replay, redirect-refill 상태를 중첩 counter로 추가했다.
+5. 16→32 entry 실험은 25 cycle만 줄어 면적 대비 이득이 없어 16 entry로 유지했다.
+
+그 결과 frontend-empty는 221,771→137,139 cycle(-38.2%), architectural cycle은
+604,885→548,343(-9.35%)가 됐다. current implementation은 여전히 memory/PMP fault
+ordering을 단순하게 유지하기 위해 external request 한 건만 outstanding으로 둔다.
+2~4 outstanding table은 target buffer miss와 straight-line underflow가 다음 profile의
+주원인으로 확인될 때 I-Fabric response FIFO와 PMP fault adapter를 함께 변경한다.
 
 ##### B. Branch prediction과 recovery
 
@@ -2025,8 +2057,10 @@ bank mapping을 바꾼다.
 
 | 단계 | 변경 | 채택 조건 |
 |---|---|---|
-| P0 | 원인별 frontend/branch/issue/ROB/D-memory counter | 합계가 아니라 cycle별 원인을 재현 가능 |
-| P1 | redirect-cycle target request + 2~4 outstanding IF | stale epoch decode 0, 기존 trace/CRC PASS, CoreMark cycle 감소 |
+| P0a 완료 | frontend queue-zero/partial/outstanding/replay/redirect-refill counter | CoreMark JSON에 원인별 수치 보존 |
+| P1a 완료 | redirect-cycle target request + 16-entry target/loop block buffer | CRC/exit PASS, cycle 9.35% 감소 |
+| P1b 조건부 | 2~4 outstanding IF + I-Fabric/PMP response ordering table | miss/straight-line latency가 다음 우선 병목일 때만 착수 |
+| P0b | branch subtype, issue/FU/WB, ROB-head class, D-bank counter | 다음 RTL 변경의 primary cause 확정 |
 | P2 | loop/local-history/target predictor와 early recovery | branch 종류별 miss 및 redirect penalty 감소 |
 | P3 | operand/FU/WB 병목에 근거한 issue-path 변경 | 평균 useful dispatch/issue가 1.2를 초과 |
 | P4 | speculative load + violation replay | store-load ordering assertion와 directed replay PASS |
@@ -2173,3 +2207,4 @@ orphan speculative response 생성을 방지한다.
 | v1.10.0 | 공식 CoreMark source 고정 commit을 사용하는 RV32 bare-metal TIM port와 Windows/Linux runner 추가. 2-iteration short RTL run의 CRC 검증, mcycle/minstret 기반 cycle·IPC·CoreMark/MHz 추정, ordered HostIF result packet과 비공식 결과 분류 계약을 정의 |
 | v1.11.0 | CoreMark timed-region profiler와 JSON artifact를 추가. IFU/I-Fabric response→request bubble을 제거하고 bimodal/gshare/chooser tournament predictor를 채택해 최초 baseline 대비 cycle 11.64% 감소, IPC 13.17% 증가. checkpoint/LQ 증설과 lane-1 load retire는 A/B상 이득이 없어 원복 |
 | v1.11.1 | IPC 1.2 목표에 필요한 124,510-cycle 절감량을 정의하고 frontend empty의 predicted-taken queue flush/single-outstanding/stale-response 원인, branch 종류별 계측, issue/ROB dependency 분해, speculative load replay와 단계별 correctness·성능·PPA gate를 문서화 |
+| v1.12.0 | predicted redirect cycle target request와 16-entry direct-mapped target/loop block buffer/replay를 frontend에 추가. queue-zero/partial/outstanding/replay/redirect-refill profiler와 buffer 단위 회귀를 추가하고 CoreMark CRC/exit를 유지하며 604,885→548,343 cycle, IPC 0.952991→1.051258을 달성. 32-entry는 25-cycle 이득뿐이라 16-entry 유지 |

@@ -1,5 +1,5 @@
 
-C:\rv_build\coremark_profile_final\coremark.elf:     file format elf32-littleriscv
+C:\rv_build\coremark_target_buffer\coremark.elf:     file format elf32-littleriscv
 
 
 Disassembly of section .text:
