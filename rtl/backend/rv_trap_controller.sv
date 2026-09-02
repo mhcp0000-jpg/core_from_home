@@ -129,6 +129,33 @@ module rv_trap_controller #(
       redirect_pending_q |-> !csr_trap_valid_o;
   endproperty
   assert property (p_pending_redirect_blocks_trap);
+
+  property p_interrupt_payload_is_precise;
+    @(posedge clk_i) disable iff (!rst_ni)
+      csr_trap_valid_o && csr_trap_is_interrupt_o |->
+        !rob_trap_valid_i &&
+        (csr_trap_pc_o == architectural_next_pc_q) &&
+        (csr_trap_next_pc_o == architectural_next_pc_q) &&
+        (csr_trap_tval_o == '0);
+  endproperty
+  assert property (p_interrupt_payload_is_precise);
+
+  property p_exception_payload_is_preserved;
+    @(posedge clk_i) disable iff (!rst_ni)
+      rob_trap_valid_i && !redirect_pending_q |->
+        (csr_trap_pc_o == rob_trap_pc_i) &&
+        (csr_trap_cause_o == 6'(rob_trap_cause_i)) &&
+        (csr_trap_tval_o == rob_trap_tval_i);
+  endproperty
+  assert property (p_exception_payload_is_preserved);
+
+  property p_trap_redirects_to_csr_vector;
+    @(posedge clk_i) disable iff (!rst_ni)
+      csr_trap_valid_o |->
+        architectural_redirect_valid_o &&
+        (architectural_redirect_pc_o == csr_trap_vector_i);
+  endproperty
+  assert property (p_trap_redirects_to_csr_vector);
 `endif
 
 endmodule

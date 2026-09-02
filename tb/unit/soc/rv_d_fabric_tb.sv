@@ -233,6 +233,31 @@ module rv_d_fabric_tb;
         (t_rsp_data[1] != 64'haaaa_bbbb_cccc_dddd))
       $fatal(1, "different-bank dual read data mismatch");
 
+    // A requester may consume one response and accept its next request on the
+    // same edge.  The response must retain the old ID/data while the following
+    // cycle returns the newly accepted transaction; outstanding depth remains
+    // exactly one throughout the handoff.
+    @(negedge clk);
+    set_request(0, 6'h12, DTIM_BASE_ADDR + 32'h0, 1'b0, '0, '0,
+                8'h12, 1'b0);
+    @(posedge clk);
+    if (!t_req_ready[0]) $fatal(1, "first handoff request was not accepted");
+    @(negedge clk);
+    if (!t_rsp_valid[0] || (t_rsp_id[0] != 6'h12) ||
+        (t_rsp_data[0] != 64'h1111_2222_3333_4444))
+      $fatal(1, "first handoff response metadata mismatch");
+    set_request(0, 6'h13, DTIM_BASE_ADDR + 32'h8, 1'b0, '0, '0,
+                8'h13, 1'b0);
+    #1;
+    if (!t_req_ready[0])
+      $fatal(1, "response/next-request same-cycle handoff was blocked");
+    @(posedge clk);
+    @(negedge clk);
+    clear_request(0);
+    if (!t_rsp_valid[0] || (t_rsp_id[0] != 6'h13) ||
+        (t_rsp_data[0] != 64'haaaa_bbbb_cccc_dddd))
+      $fatal(1, "second handoff response metadata mismatch");
+
     // Same-bank collision: sequence 0x10 is older than 0x20, so LSU1 wins.
     @(negedge clk);
     set_request(0, 6'h20, DTIM_BASE_ADDR + 32'h0, 1'b0, '0, '0,

@@ -1538,6 +1538,28 @@ module rv_backend #(
     (^port_mem_unsigned)^
     (^lsq_dispatch_lq_valid)^(^lsq_dispatch_sq_valid);
 
+`ifndef SYNTHESIS
+  // An eligible interrupt stops younger dispatch and lets the ROB drain to
+  // the precise architectural boundary selected by rv_trap_controller.
+  property p_interrupt_quiesces_dispatch;
+    @(posedge clk_i) disable iff (!rst_ni)
+      csr_interrupt_pending |-> !dispatch_fire;
+  endproperty
+  assert property (p_interrupt_quiesces_dispatch);
+
+  property p_wfi_sleep_quiesces_dispatch;
+    @(posedge clk_i) disable iff (!rst_ni)
+      wfi_sleep_q |-> !dispatch_fire;
+  endproperty
+  assert property (p_wfi_sleep_quiesces_dispatch);
+
+  property p_head_exception_blocks_normal_retire;
+    @(posedge clk_i) disable iff (!rst_ni)
+      rob_trap_valid |-> !(|retire_fire);
+  endproperty
+  assert property (p_head_exception_blocks_normal_retire);
+`endif
+
   initial begin
     if((XLEN!=32)&&(XLEN!=64))$fatal(1,"Backend XLEN must be 32 or 64");
     if(ROB_ENTRIES>=(1<<(ROB_SEQ_WIDTH-1)))$fatal(1,"ROB sequence space too small");

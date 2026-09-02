@@ -34,11 +34,17 @@ module rv_perf_profiler #(
 
   input logic [1:0] issue_valid_i,
   input logic       iq_empty_i,
+  input logic [1:0] candidate_valid_i,
+  input logic [1:0][4:0] candidate_effective_mask_i,
   input logic [1:0] retire_valid_i,
   input logic [1:0] retire_ready_i,
   input logic [1:0] retire_fire_i,
   input logic       rob_head_valid_i,
   input logic       rob_head_complete_i,
+  input logic [31:0] rob_head_instruction_i,
+  input logic [1:0]  rob_head_inst_len_i,
+  input logic        rob_head_is_load_i,
+  input logic        rob_head_is_store_i,
 
   input logic       branch_resolve_i,
   input logic       branch_mispredict_i,
@@ -88,6 +94,10 @@ module rv_perf_profiler #(
   longint unsigned rob_stall_q, iq_stall_q, lsq_dispatch_stall_q;
   longint unsigned serial_stall_q;
   longint unsigned iq_no_ready_q, rob_head_wait_q, retire_backpressure_q;
+  longint unsigned iq_wait_operand_q, iq_wait_resource_q;
+  longint unsigned iq_wait_arbitration_q, iq_single_port_conflict_q;
+  longint unsigned rob_head_wait_load_q, rob_head_wait_store_q;
+  longint unsigned rob_head_wait_control_q, rob_head_wait_other_q;
   longint unsigned retire_lane1_blocked_q;
   longint unsigned branch_resolve_q, branch_mispredict_q, flush_q;
   longint unsigned conditional_resolve_q, conditional_mispredict_q;
@@ -200,6 +210,10 @@ module rv_perf_profiler #(
     dispatch_stall_q = 0; rename_stall_q = 0; branch_stall_q = 0;
     rob_stall_q = 0; iq_stall_q = 0; lsq_dispatch_stall_q = 0;
     serial_stall_q = 0; iq_no_ready_q = 0; rob_head_wait_q = 0;
+    iq_wait_operand_q = 0; iq_wait_resource_q = 0;
+    iq_wait_arbitration_q = 0; iq_single_port_conflict_q = 0;
+    rob_head_wait_load_q = 0; rob_head_wait_store_q = 0;
+    rob_head_wait_control_q = 0; rob_head_wait_other_q = 0;
     retire_backpressure_q = 0;
     retire_lane1_blocked_q = 0;
     branch_resolve_q = 0; branch_mispredict_q = 0; flush_q = 0;
@@ -259,7 +273,15 @@ module rv_perf_profiler #(
       $fwrite(perf_fd, "  \"lsq_dispatch_stall_cycles\": %0d,\n", lsq_dispatch_stall_q);
       $fwrite(perf_fd, "  \"serializing_stall_cycles\": %0d,\n", serial_stall_q);
       $fwrite(perf_fd, "  \"iq_nonempty_no_issue_cycles\": %0d,\n", iq_no_ready_q);
+      $fwrite(perf_fd, "  \"iq_wait_operand_cycles\": %0d,\n", iq_wait_operand_q);
+      $fwrite(perf_fd, "  \"iq_wait_resource_cycles\": %0d,\n", iq_wait_resource_q);
+      $fwrite(perf_fd, "  \"iq_wait_arbitration_cycles\": %0d,\n", iq_wait_arbitration_q);
+      $fwrite(perf_fd, "  \"iq_single_issue_port_conflict_cycles\": %0d,\n", iq_single_port_conflict_q);
       $fwrite(perf_fd, "  \"rob_head_incomplete_cycles\": %0d,\n", rob_head_wait_q);
+      $fwrite(perf_fd, "  \"rob_head_wait_load_cycles\": %0d,\n", rob_head_wait_load_q);
+      $fwrite(perf_fd, "  \"rob_head_wait_store_cycles\": %0d,\n", rob_head_wait_store_q);
+      $fwrite(perf_fd, "  \"rob_head_wait_control_cycles\": %0d,\n", rob_head_wait_control_q);
+      $fwrite(perf_fd, "  \"rob_head_wait_other_cycles\": %0d,\n", rob_head_wait_other_q);
       $fwrite(perf_fd, "  \"retire_backpressure_cycles\": %0d,\n", retire_backpressure_q);
       $fwrite(perf_fd, "  \"retire_lane1_blocked_cycles\": %0d,\n", retire_lane1_blocked_q);
       $fwrite(perf_fd, "  \"branch_resolutions\": %0d,\n", branch_resolve_q);
@@ -368,7 +390,42 @@ module rv_perf_profiler #(
         if ((|decode_valid_i) && !lsq_ready_i) lsq_dispatch_stall_q = lsq_dispatch_stall_q + 1;
         if ((|decode_valid_i) && serial_block_i) serial_stall_q = serial_stall_q + 1;
         if (!iq_empty_i && !(|issue_valid_i)) iq_no_ready_q = iq_no_ready_q + 1;
-        if (rob_head_valid_i && !rob_head_complete_i) rob_head_wait_q = rob_head_wait_q + 1;
+        if (!iq_empty_i && !(|issue_valid_i)) begin
+          logic any_candidate, any_eligible;
+          any_candidate = |candidate_valid_i;
+          any_eligible = 1'b0;
+          for (integer candidate = 0; candidate < 2; candidate++)
+            any_eligible |= candidate_valid_i[candidate] &&
+                            (|candidate_effective_mask_i[candidate]);
+          if (!any_candidate)
+            iq_wait_operand_q = iq_wait_operand_q + 1;
+          else if (!any_eligible)
+            iq_wait_resource_q = iq_wait_resource_q + 1;
+          else
+            iq_wait_arbitration_q = iq_wait_arbitration_q + 1;
+        end
+        if ((pop2(issue_valid_i) == 1) && (&candidate_valid_i) &&
+            (|candidate_effective_mask_i[0]) &&
+            (|candidate_effective_mask_i[1]) &&
+            ((candidate_effective_mask_i[0] &
+              candidate_effective_mask_i[1]) != 0))
+          iq_single_port_conflict_q = iq_single_port_conflict_q + 1;
+        if (rob_head_valid_i && !rob_head_complete_i) begin
+          rob_head_wait_q = rob_head_wait_q + 1;
+          if (rob_head_is_load_i)
+            rob_head_wait_load_q = rob_head_wait_load_q + 1;
+          else if (rob_head_is_store_i)
+            rob_head_wait_store_q = rob_head_wait_store_q + 1;
+          else if (is_conditional_branch(rob_head_instruction_i,
+                                         rob_head_inst_len_i) ||
+                   is_direct_jump(rob_head_instruction_i,
+                                  rob_head_inst_len_i) ||
+                   is_indirect_jump(rob_head_instruction_i,
+                                    rob_head_inst_len_i))
+            rob_head_wait_control_q = rob_head_wait_control_q + 1;
+          else
+            rob_head_wait_other_q = rob_head_wait_other_q + 1;
+        end
         if ((|retire_valid_i) && !(|retire_ready_i)) retire_backpressure_q = retire_backpressure_q + 1;
         if (retire_valid_i[1] && retire_fire_i[0] && !retire_fire_i[1])
           retire_lane1_blocked_q = retire_lane1_blocked_q + 1;

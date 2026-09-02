@@ -114,6 +114,8 @@ module rv_d_fabric #(
   logic [MASTER_COUNT-1:0][63:0] rsp_buffer_data_q;
   axi_resp_e [MASTER_COUNT-1:0] rsp_buffer_resp_q;
   mem_replay_reason_e [MASTER_COUNT-1:0] rsp_buffer_replay_q;
+  logic [MASTER_COUNT-1:0] response_fire;
+  logic [MASTER_COUNT-1:0] request_accept;
 
   rv_local_mem_if #(
     .ADDR_WIDTH    (32),
@@ -187,6 +189,9 @@ module rv_d_fabric #(
     rsp_ready[2]     = xbar_in_bus.rsp_ready;
   end
 
+  assign response_fire = rsp_valid & rsp_ready;
+  assign request_accept = req_valid & req_ready;
+
   always_comb begin
     lsu0_bus.req_ready   = req_ready[0];
     lsu0_bus.rsp_valid   = rsp_valid[0];
@@ -214,7 +219,13 @@ module rv_d_fabric #(
   // never allowed to loop back to the outbound port.
   always_comb begin
     for (int unsigned master = 0; master < MASTER_COUNT; master++) begin
-      request_active[master] = req_valid[master] && !busy_q[master];
+      // A consumed response releases the requester's single outstanding slot
+      // combinationally.  This permits a response/next-request handoff on the
+      // same edge without increasing the number of in-flight transactions.
+      // The old response continues to use accepted_id_q/source_q while the new
+      // request metadata is installed only at the edge.
+      request_active[master] = req_valid[master] &&
+                               (!busy_q[master] || response_fire[master]);
       dtim_hit[master] = addr_in_region(req_addr[master], DTIM_BASE_ADDR,
                                         size_kb_to_bytes(DTIM_SIZE_KB));
       dtim_offset[master] = req_addr[master] - DTIM_BASE_ADDR;
@@ -555,22 +566,6 @@ module rv_d_fabric #(
         outbound_owner_q <= outbound_selected;
 
       for (int unsigned master = 0; master < MASTER_COUNT; master++) begin
-        if (req_valid[master] && req_ready[master]) begin
-          busy_q[master]        <= 1'b1;
-          accepted_id_q[master] <= req_id[master];
-          if (error_accept[master]) begin
-            source_q[master]      <= RSP_SOURCE_ERROR;
-            error_valid_q[master] <= 1'b1;
-          end else if (dtim_hit[master]) begin
-            source_q[master] <= dtim_offset[master][3] ?
-                                RSP_SOURCE_BANK1 : RSP_SOURCE_BANK0;
-          end else if (clint_hit[master]) begin
-            source_q[master] <= RSP_SOURCE_CLINT;
-          end else begin
-            source_q[master] <= RSP_SOURCE_OUTBOUND;
-          end
-        end
-
         if (pulse_valid[master] && !rsp_buffer_valid_q[master]) begin
           if (rsp_ready[master]) begin
             busy_q[master]   <= 1'b0;
@@ -600,6 +595,25 @@ module rv_d_fabric #(
           busy_q[master]   <= 1'b0;
           source_q[master] <= RSP_SOURCE_NONE;
         end
+
+        // Install a newly accepted request after response retirement so a
+        // same-cycle handoff leaves the requester busy with the new request,
+        // rather than letting the old response's clear win the NBA ordering.
+        if (request_accept[master]) begin
+          busy_q[master]        <= 1'b1;
+          accepted_id_q[master] <= req_id[master];
+          if (error_accept[master]) begin
+            source_q[master]      <= RSP_SOURCE_ERROR;
+            error_valid_q[master] <= 1'b1;
+          end else if (dtim_hit[master]) begin
+            source_q[master] <= dtim_offset[master][3] ?
+                                RSP_SOURCE_BANK1 : RSP_SOURCE_BANK0;
+          end else if (clint_hit[master]) begin
+            source_q[master] <= RSP_SOURCE_CLINT;
+          end else begin
+            source_q[master] <= RSP_SOURCE_OUTBOUND;
+          end
+        end
       end
     end
   end
@@ -612,6 +626,20 @@ module rv_d_fabric #(
         |-> req_committed[master];
     endproperty
     assert property (p_no_uncommitted_write_accept);
+
+    property p_busy_accept_requires_response_handoff;
+      @(posedge clk_i) disable iff (!rst_ni)
+        busy_q[master] && request_accept[master]
+        |-> response_fire[master];
+    endproperty
+    assert property (p_busy_accept_requires_response_handoff);
+
+    property p_handoff_retains_new_request_busy;
+      @(posedge clk_i) disable iff (!rst_ni)
+        response_fire[master] && request_accept[master]
+        |=> busy_q[master];
+    endproperty
+    assert property (p_handoff_retains_new_request_busy);
   end
 
   property p_xbar_inbound_never_loops_outbound;

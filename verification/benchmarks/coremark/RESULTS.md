@@ -4,10 +4,10 @@
 
 2026-09-02에 공식 EEMBC CoreMark source를 현재 RV32 OoO SoC에서 2회
 실행했다. 알려진 2K performance CRC가 모두 일치했고 HostIF exit code 0으로
-완료했다. compressed control-flow의 raw encoding을 predictor resolve까지 보존한
-최종 측정 결과는 **483,143 cycles**, **576,450 retired instructions**, **IPC
-1.193125**, **추정 4.139561 CoreMark/MHz**다. 직전 v1.12.1 baseline 대비
-cycle은 **9.49% 감소**, IPC는 **10.49% 증가**했다.
+완료했다. D-Fabric response consume과 next-request accept를 같은 cycle에 수행하는
+최종 측정 결과는 **464,335 cycles**, **576,450 retired instructions**, **IPC
+1.241453**, **추정 4.307235 CoreMark/MHz**다. 직전 v1.12.2 baseline 대비
+cycle은 **3.89% 감소**, IPC는 **4.05% 증가**했다. predictor는 변경하지 않았다.
 
 이 값은 RTL 구조 비교용 **non-certified implementation estimate**다. 실행이
 CoreMark의 공식 최소 10초 조건보다 짧으므로 공식 제출 또는 타 제품의 공인
@@ -53,16 +53,16 @@ status `0x00000009`는 bit 0(known 2K performance seed)과 bit 3(shorter than
 timed region 전후의 machine CSR을 RV32 high-low-high 순서로 안정적으로 읽었다.
 
 ```text
-cycles                 = 483143
+cycles                 = 464335
 retired instructions   = 576450
-cycles / iteration     = 483143 / 2 = 241571.5
+cycles / iteration     = 464335 / 2 = 232167.5
 instructions / iter.   = 576450 / 2 = 288225
-IPC                    = 576450 / 483143 = 1.193125
-estimated CoreMark/MHz = 2 * 1000000 / 483143 = 4.139561
+IPC                    = 576450 / 464335 = 1.241453
+estimated CoreMark/MHz = 2 * 1000000 / 464335 = 4.307235
 ```
 
 예를 들어 향후 합성 결과가 100 MHz이고 TIM이 core와 1:1로 동작한다면 단순
-cycle estimate는 약 413.96 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
+cycle estimate는 약 430.72 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
 실제 Fmax를 측정한 결과가 아니다.
 
 ## 이 workload가 발견한 RTL 결함
@@ -98,15 +98,15 @@ software가 timed region 경계에 HostIF marker를 기록하고 testbench profi
 | + zero-bubble target redirect/fill | 537,249 | 1.072966 | 3.722669 |
 | + split store-address/data issue | **533,820** | **1.079858** | **3.746581** |
 | + raw compressed-branch resolve | **483,143** | **1.193125** | **4.139561** |
+| + D-Fabric response/request handoff | **464,335** | **1.241453** | **4.307235** |
 
-최종 profiler의 marker-window 483,190 cycles에는 marker 처리 차이가 포함된다.
-핵심 관측값은 branch mispredict 7,477회, frontend empty 54,547 cycles,
-IQ nonempty/no-issue 103,442 cycles, ROB-head incomplete 118,573 cycles,
-unknown older-store-address load stall 24,043 cycles, D-memory wait 60,828 cycles다.
-frontend empty는 queue-zero 43,584와 incomplete-instruction 10,963으로 분해됐고,
-predicted redirect 82,541회 중 target-buffer hit는 62,879회였다. replay register
-counter는 0이며 target hit 다음 cycle의 empty는 2,566회다. event는 서로 겹칠 수
-있으므로 cycle 감소량으로 단순 합산하지 않는다.
+최종 profiler의 marker-window 464,382 cycles에는 marker 처리 차이가 포함된다.
+핵심 관측값은 branch mispredict 7,680회, frontend empty 56,988 cycles,
+IQ nonempty/no-issue 83,718 cycles, ROB-head incomplete 103,125 cycles,
+unknown older-store-address load stall 24,020 cycles, D-memory wait 12,173 cycles다.
+IQ no-issue는 operand 82,730, resource 988, arbitration 0으로 분해됐고 ROB-head
+incomplete는 load 91,457, store 1,483, control 1,213, other 8,972로 분해됐다.
+event는 서로 겹칠 수 있으므로 cycle 감소량으로 단순 합산하지 않는다.
 
 branch checkpoint 8→16, LQ 24→32 증설은 성능 변화가 없어 되돌렸다. lane-1
 load 동시 retire도 최종 predictor 구성에서 112 cycles 느려져 되돌렸다. target
@@ -115,7 +115,14 @@ raw C-branch resolve 적용 후 checkpoint 8→16 재실험도 426 cycle만 감�
 유지했다. ROB 64/checkpoint 16 조합도 607 cycle 이득뿐이라 ROB 48을 유지했다.
 현재 채택한 변경은 IF response/next-request same-cycle handoff, tournament
 predictor, redirect-cycle target request, 16-entry target/loop block buffer,
-redirect+queue-fill 원자 처리와 split store-address/data issue다.
+redirect+queue-fill 원자 처리, split store-address/data issue와 D-Fabric
+response/next-request handoff다.
+
+D-Fabric 변경은 이전 response의 ID/data/source가 반환되는 같은 cycle에 다음
+request를 accept한다. clock edge에서 old transaction을 retire한 뒤 next metadata를
+설치하므로 outstanding 깊이는 여전히 1이다. LSQ ordering, flush cycle의 speculative
+load 차단, ROB-head store commit visibility는 바꾸지 않았다. 이 변경만으로
+D-memory wait는 60,828→12,173(-80.0%), cycle은 483,143→464,335(-3.89%)가 됐다.
 
 split store는 base가 먼저 준비되면 address-only phase로 SQ address/mask를 확정한다.
 store data가 늦으면 동일 IQ entry가 ROB sequence와 SQ index를 유지하다 data

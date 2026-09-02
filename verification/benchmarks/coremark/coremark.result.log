@@ -6,23 +6,23 @@ ISA / ABI             : rv32imc_zicsr_zifencei / ilp32
 Compiler optimization : -O2
 Memory                : 128 KiB ITIM + 128 KiB DTIM, 1:1 local
 Iterations            : 2
-Cycles                : 483143
-Cycles / iteration    : 241,571.500
+Cycles                : 464335
+Cycles / iteration    : 232,167.500
 Retired instructions  : 576450
 Instructions / iter.   : 288,225.000
-IPC                   : 1.193125
-Estimated CoreMark/MHz: 4.139561
-Profiler cycles       : 483190
-Branch mispredicts    : 7477
-Frontend empty cycles : 54547
-  queue zero / partial : 43584 / 10963
-Target-buffer hits    : 62879 / 82541 predicted redirects
-Redirect refill empty : 36387
-IQ no-issue cycles    : 103442
-ROB-head wait cycles  : 118573
+IPC                   : 1.241453
+Estimated CoreMark/MHz: 4.307235
+Profiler cycles       : 464382
+Branch mispredicts    : 7680
+Frontend empty cycles : 56988
+  queue zero / partial : 45894 / 11094
+Target-buffer hits    : 62257 / 82065 predicted redirects
+Redirect refill empty : 36263
+IQ no-issue cycles    : 83718
+ROB-head wait cycles  : 103125
 seedcrc / list        : 0xe9f5 / 0xe714
 matrix / state        : 0x1fd7 / 0x8e3a
 final CRC             : 0x72be
 Status word           : 0x00000009
 Official 10-second rule: NOT MET (expected for short RTL run)
-ELF size              :   11284	     12	   2068	  13364	   3434	C:\rv_build\coremark_cresolve\coremark.elf
+ELF size              :   11284	     12	   2068	  13364	   3434	C:\rv_build\coremark_dhandoff\coremark.elf

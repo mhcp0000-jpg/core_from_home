@@ -136,6 +136,14 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_trap_controller_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_trap_controller.sv",
+      "tb/unit/backend/rv_trap_controller_tb.sv"
+    )
+  },
+  @{
     Top = "rv_exec_result_buffer_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",

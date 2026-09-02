@@ -162,13 +162,27 @@ module rv_csr_file_tb;
     if (illegal || (value != 32'hdead_beef))
       $fatal(1, "committed mscratch write was lost");
 
-    // Enable machine software interrupt and global interrupt.
-    write_csr(12'h304, 32'h0000_0008);
+    // Enable every machine interrupt and global delivery.  The architectural
+    // priority is MEIP > MSIP > MTIP, while any locally enabled source wakes
+    // WFI even before it is selected for trap delivery.
+    write_csr(12'h304, 32'h0000_0888);
     write_csr(12'h300, 32'h0000_0008);
+    irq_timer = 1'b1;
     irq_software = 1'b1;
+    irq_external = 1'b1;
     #1;
-    if (!interrupt_pending || !wfi_wake || (interrupt_cause != 6'd3))
-      $fatal(1, "MSIP eligibility is wrong");
+    if (!interrupt_pending || !wfi_wake || (interrupt_cause != 6'd11))
+      $fatal(1, "MEIP priority/eligibility is wrong");
+    irq_external = 1'b0;
+    #1;
+    if (!interrupt_pending || (interrupt_cause != 6'd3))
+      $fatal(1, "MSIP priority over MTIP is wrong");
+    irq_software = 1'b0;
+    #1;
+    if (!interrupt_pending || (interrupt_cause != 6'd7))
+      $fatal(1, "MTIP fallback eligibility is wrong");
+    irq_timer = 1'b0;
+    irq_software = 1'b1;
 
     // Vectored mtvec selects BASE + 4*cause for an interrupt.
     write_csr(12'h305, 32'h8000_0001);
