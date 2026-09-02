@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Performance baseline v1.11.0 (instrumented CoreMark and tournament predictor) |
+| 상태 | Performance baseline v1.11.1 (IPC 1.2 bottleneck/optimization plan) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -1934,6 +1934,109 @@ baseline 용량으로 되돌렸다. lane-1 load의 동시 retire도 112 cycles �
 store/load retirement의 기존 single-copy 경계를 유지한다. 즉 자원 수 증가는
 측정으로 이득이 입증될 때만 baseline에 반영한다.
 
+#### 18.6.2 IPC 1.2 목표와 병목 개선 계획
+
+현재 architectural 측정값 576,450 instructions와 604,885 cycles에서 IPC 1.2를
+달성하려면 같은 instruction stream을 최대 480,375 cycles에 끝내야 한다. 즉
+현재보다 최소 124,510 cycles, 약 20.6%를 추가로 줄여야 한다. 단순히 queue
+entry를 늘리는 방식으로는 부족하며 frontend 공급, branch recovery, dependency,
+memory ordering을 순서대로 분해한다.
+
+| 관측 지표 | 값 | 전체 profile 대비 | 1차 해석 |
+|---|---:|---:|---|
+| fetched/dispatched | 673,242 / 604,932 cycles | 1.113 uop/cycle | wrong-path 포함 공급량부터 IPC 1.2 미만 |
+| branch mispredict | 32,738 / 136,355 resolve | 24.0% | direction/target/recovery의 최우선 병목 |
+| frontend empty | 221,771 cycles | 36.7% | 완전한 instruction을 공급하지 못함 |
+| IQ nonempty/no issue | 115,981 cycles | 19.2% | operand/FU/port/WB 원인 분해 필요 |
+| ROB-head incomplete | 196,067 cycles | 32.4% | oldest producer 또는 memory 완료 대기 |
+| unknown older-store load stall | 41,100 cycles | 6.8% | conservative LSQ ordering 비용 |
+| D-memory request wait | 42,494 cycles | 7.0% | bank/fabric/store-drain 원인 분해 필요 |
+| branch checkpoint stall | 23,104 cycles | 3.8% | checkpoint 수보다 branch 해소 속도와 연동 |
+| lane-1 retire blocked | 31,788 cycles | 5.3% | 단독 완화 A/B는 성능 이득 없음 |
+
+위 event는 동시에 발생할 수 있으므로 표의 비율을 합산하지 않는다. 특히
+profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라는 뜻이
+아니다. `fetch_valid[1:0]`이 모두 0인 cycle을 세므로 queue가 비었거나, 남은
+2 bytes 뒤에 32-bit instruction이 걸쳐 있어 완전한 명령어를 만들지 못한
+상태도 포함한다.
+
+##### A. Frontend empty의 RTL 원인과 개선
+
+현재 `rv_frontend`는 predicted-taken instruction이 consume되면
+`frontend_redirect_valid`를 만들고 64-byte fetch queue를 비운다. 이는 target
+경로 정확성을 위해 필요하지만, **정확히 예측한 taken branch도 매번 target
+refill latency를 지불**한다. 같은 redirect cycle에는 `imem_req_valid`가
+차단되며, instruction side는 한 요청만 outstanding으로 유지한다. 이미
+sequential block 요청이 진행 중이면 epoch만 stale로 바꾸고 해당 응답이
+돌아올 때까지 기다린 뒤 target을 요청한다. CoreMark의 반복 loop처럼
+backward taken branch가 많은 code에서 이 동작이 반복된다.
+
+최종 profile에서 I-memory request wait는 0이고 request/response는 각각
+434,845회로 동일하다. 따라서 현재 empty의 주원인은 I-Arbiter가 요청을
+거절하거나 response를 잃는 문제가 아니라 **redirect 정책, single-outstanding,
+target refill 지연**으로 판단한다.
+
+개선 순서는 다음과 같다.
+
+1. redirect가 확정된 cycle에도 target address request를 만들 수 있도록 request
+   state 전이를 재구성한다.
+2. 2~4 entry outstanding table에 ID, address, epoch를 보관하고 stale sequential
+   response를 기다리지 않은 채 target request를 발행한다.
+3. current epoch response만 target fetch queue에 삽입하고 stale response는 즉시
+   폐기한다. `stale_epoch -> !queue_fill` assertion을 유지한다.
+4. backward loop target block을 보존하는 소형 loop/target buffer를 profile로
+   정당화한 뒤 추가한다.
+5. `frontend_empty`를 redirect-refill, stale-response wait, straight-line underflow,
+   cross-block incomplete-instruction으로 나눈 counter를 추가한다.
+
+##### B. Branch prediction과 recovery
+
+현재 aggregate mispredict 비율은 약 24%지만 direction miss, BTB target miss,
+indirect JALR, RAS, predicted-taken target mismatch가 분리되어 있지 않다. 따라서
+다음 변경 전 profiler에 branch type, component 선택, actual/predicted direction,
+target mismatch와 redirect-to-first-valid latency를 기록한다. conditional direction이
+주원인이면 local-history 또는 loop predictor를 tournament에 추가하고, indirect
+target이 주원인이면 BTB tag/way와 target predictor를 우선한다. 더 큰 TAGE 계열은
+합성 면적·Fmax와 비교한 뒤 채택한다. predictor 정확도뿐 아니라 branch resolve를
+앞당겨 wrong-path window와 checkpoint 점유시간을 함께 줄여야 한다.
+
+##### C. Issue, execution, writeback, ROB
+
+평균 issue는 1.006 uop/cycle이고 IQ가 비어 있지 않은 무발행 cycle이 115,981회다.
+현 counter만으로는 source operand 미준비, 동일 실행 포트 충돌, divider/FPU busy,
+writeback source backpressure를 구분할 수 없다. 각 원인을 mutually exclusive한
+primary reason과 중첩 event로 계수하고 ROB-head instruction class 및 producer
+latency histogram을 추가한다. integer multiplier는 고정 2-cycle, throughput
+1/cycle이므로 MUL count와 dependent-MUL chain 또는 WB 대기가 확인되기 전에는
+stage 수나 multiplier 수를 변경하지 않는다. ROB max 48, IQ max 38이고 IQ capacity
+stall은 0이므로 단순 window 증설도 우선순위가 아니다.
+
+##### D. LSQ와 D-memory
+
+초기 LSQ는 older store 주소가 하나라도 미확정이면 younger load를 막아 41,100
+stall cycle을 만든다. 1차 correctness baseline은 유지하되 다음 성능 단계에서
+speculative load, store-address resolution violation detection, dependent-uop
+squash/replay와 generation-tagged response를 함께 구현한다. replay가 없는 load
+추월은 허용하지 않는다. D-memory wait 42,494 cycles는 two-LSU bank conflict,
+committed store drain, inbound AXI와 local target별로 나눈 후 arbitration 또는
+bank mapping을 바꾼다.
+
+##### E. 적용 순서와 성능 gate
+
+| 단계 | 변경 | 채택 조건 |
+|---|---|---|
+| P0 | 원인별 frontend/branch/issue/ROB/D-memory counter | 합계가 아니라 cycle별 원인을 재현 가능 |
+| P1 | redirect-cycle target request + 2~4 outstanding IF | stale epoch decode 0, 기존 trace/CRC PASS, CoreMark cycle 감소 |
+| P2 | loop/local-history/target predictor와 early recovery | branch 종류별 miss 및 redirect penalty 감소 |
+| P3 | operand/FU/WB 병목에 근거한 issue-path 변경 | 평균 useful dispatch/issue가 1.2를 초과 |
+| P4 | speculative load + violation replay | store-load ordering assertion와 directed replay PASS |
+| Final | 조합 A/B 및 합성 | CoreMark IPC ≥1.2, 전체 회귀 PASS, Fmax/PPA 보고 |
+
+모든 단계는 같은 pinned CoreMark source, ELF option, TIM latency로 변경 전후를
+비교한다. CRC/exit만 맞고 instruction count가 달라지는 결과는 성능 개선으로
+채택하지 않는다. 각각의 최적화는 독립 commit으로 측정하며 효과가 없으면
+baseline에서 제거한다.
+
 첫 CoreMark 장기 실행은 recovery cycle의 stale load-response alias를 발견했다.
 flush와 같은 cycle에 pre-flush candidate가 read request를 발행하면 LSQ는 해당
 younger entry를 제거한 뒤 response가 도착하기 전에 index를 재사용할 수 있다.
@@ -2069,3 +2172,4 @@ orphan speculative response 생성을 방지한다.
 | v1.9.3 | Windows/Linux 공통 대화형 project configurator 추가. 새 폴더 복제 시 전체 memory map, mtvec, parameterized BootROM WFI image, linker/C/assembly 주소, 기본 DPI ELF와 artifact 경로를 한 번에 생성하고 JSON/H/INC/ENV 산출물 및 플랫폼별 runner로 재현하도록 정의 |
 | v1.10.0 | 공식 CoreMark source 고정 commit을 사용하는 RV32 bare-metal TIM port와 Windows/Linux runner 추가. 2-iteration short RTL run의 CRC 검증, mcycle/minstret 기반 cycle·IPC·CoreMark/MHz 추정, ordered HostIF result packet과 비공식 결과 분류 계약을 정의 |
 | v1.11.0 | CoreMark timed-region profiler와 JSON artifact를 추가. IFU/I-Fabric response→request bubble을 제거하고 bimodal/gshare/chooser tournament predictor를 채택해 최초 baseline 대비 cycle 11.64% 감소, IPC 13.17% 증가. checkpoint/LQ 증설과 lane-1 load retire는 A/B상 이득이 없어 원복 |
+| v1.11.1 | IPC 1.2 목표에 필요한 124,510-cycle 절감량을 정의하고 frontend empty의 predicted-taken queue flush/single-outstanding/stale-response 원인, branch 종류별 계측, issue/ROB dependency 분해, speculative load replay와 단계별 correctness·성능·PPA gate를 문서화 |
