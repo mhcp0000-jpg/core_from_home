@@ -44,6 +44,8 @@ module rv_fetch_queue #(
   logic [XLEN-1:0] head_pc_q;
   logic [XLEN-1:0] head_pc_d;
   logic [PADDR_WIDTH-1:0] head_paddr;
+  logic [PADDR_WIDTH-1:0] redirect_paddr;
+  logic [PADDR_WIDTH-1:0] fill_reference_paddr;
 
   integer unsigned length0;
   integer unsigned length1;
@@ -56,8 +58,10 @@ module rv_fetch_queue #(
 
   if (PADDR_WIDTH >= XLEN) begin : g_head_paddr_extend
     assign head_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, head_pc_q};
+    assign redirect_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, redirect_pc_i};
   end else begin : g_head_paddr_truncate
     assign head_paddr = head_pc_q[PADDR_WIDTH-1:0];
+    assign redirect_paddr = redirect_pc_i[PADDR_WIDTH-1:0];
   end
 
   always_comb begin
@@ -110,16 +114,21 @@ module rv_fetch_queue #(
 
   always_comb begin
     count_integer = count_q;
-    fill_address_delta = head_paddr - fill_addr_i;
+    // A redirect and a fill may arrive together when the target-block buffer
+    // hits.  In that case the new PC, rather than the discarded queue head,
+    // selects the first useful byte in the aligned fetch block.
+    fill_reference_paddr = redirect_valid_i ? redirect_paddr : head_paddr;
+    fill_address_delta = fill_reference_paddr - fill_addr_i;
     fill_skip = 0;
-    if ((count_q == 0) &&
-        (head_paddr >= fill_addr_i) &&
-        (head_paddr <
+    if (((count_q == 0) || redirect_valid_i) &&
+        (fill_reference_paddr >= fill_addr_i) &&
+        (fill_reference_paddr <
          (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES)))) begin
       fill_skip = fill_address_delta[FETCH_ADDR_LSB-1:0];
     end
     fill_count = FETCH_BYTES - fill_skip;
-    fill_ready_o = (count_integer + fill_count) <= QUEUE_BYTES;
+    fill_ready_o = redirect_valid_i ? (fill_count <= QUEUE_BYTES) :
+      ((count_integer + fill_count) <= QUEUE_BYTES);
   end
 
   always_comb begin
@@ -137,40 +146,54 @@ module rv_fetch_queue #(
         consume_bytes += length1;
     end
 
-    if (consume_bytes != 0) begin
-      for (int unsigned index = 0; index < QUEUE_BYTES; index++) begin
-        if ((index + consume_bytes) < count_q) begin
-          byte_d[index] = byte_q[index + consume_bytes];
-          fault_d[index] = fault_q[index + consume_bytes];
-        end else begin
-          byte_d[index] = '0;
-          fault_d[index] = 1'b0;
-        end
-      end
-      count_d = count_q - COUNT_WIDTH'(consume_bytes);
-      head_pc_d = head_pc_q + XLEN'(consume_bytes);
-    end
-
-    if (fill_valid_i && fill_ready_o) begin
-      for (int unsigned source = 0; source < FETCH_BYTES; source++) begin
-        if (source >= fill_skip) begin
-          byte_d[count_integer - consume_bytes + source - fill_skip] =
-            fill_data_i[source*8 +: 8];
-          fault_d[count_integer - consume_bytes + source - fill_skip] =
-            (fill_resp_i != 2'b00);
-        end
-      end
-      count_d = count_q - COUNT_WIDTH'(consume_bytes) +
-                COUNT_WIDTH'(fill_count);
-    end
-
     if (redirect_valid_i) begin
+      // Redirect owns the queue state.  A simultaneous fill is the block for
+      // the new target and is installed atomically, eliminating the former
+      // redirect-empty/replay cycle.  Bytes preceding an unaligned target PC
+      // are intentionally skipped.
       for (int unsigned index = 0; index < QUEUE_BYTES; index++) begin
         byte_d[index] = '0;
         fault_d[index] = 1'b0;
       end
       count_d = '0;
       head_pc_d = redirect_pc_i;
+
+      if (fill_valid_i && fill_ready_o) begin
+        for (int unsigned source = 0; source < FETCH_BYTES; source++) begin
+          if (source >= fill_skip) begin
+            byte_d[source - fill_skip] = fill_data_i[source*8 +: 8];
+            fault_d[source - fill_skip] = (fill_resp_i != 2'b00);
+          end
+        end
+        count_d = COUNT_WIDTH'(fill_count);
+      end
+    end else begin
+      if (consume_bytes != 0) begin
+        for (int unsigned index = 0; index < QUEUE_BYTES; index++) begin
+          if ((index + consume_bytes) < count_q) begin
+            byte_d[index] = byte_q[index + consume_bytes];
+            fault_d[index] = fault_q[index + consume_bytes];
+          end else begin
+            byte_d[index] = '0;
+            fault_d[index] = 1'b0;
+          end
+        end
+        count_d = count_q - COUNT_WIDTH'(consume_bytes);
+        head_pc_d = head_pc_q + XLEN'(consume_bytes);
+      end
+
+      if (fill_valid_i && fill_ready_o) begin
+        for (int unsigned source = 0; source < FETCH_BYTES; source++) begin
+          if (source >= fill_skip) begin
+            byte_d[count_integer - consume_bytes + source - fill_skip] =
+              fill_data_i[source*8 +: 8];
+            fault_d[count_integer - consume_bytes + source - fill_skip] =
+              (fill_resp_i != 2'b00);
+          end
+        end
+        count_d = count_q - COUNT_WIDTH'(consume_bytes) +
+                  COUNT_WIDTH'(fill_count);
+      end
     end
   end
 
@@ -199,6 +222,12 @@ module rv_fetch_queue #(
   always_comb begin
     assert (!out_valid_o[1] || out_valid_o[0]);
     assert (count_q <= QUEUE_BYTES);
+    if (redirect_valid_i && fill_valid_i) begin
+      assert (fill_ready_o);
+      assert ((redirect_paddr >= fill_addr_i) &&
+              (redirect_paddr <
+               (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES))));
+    end
   end
 `endif
 

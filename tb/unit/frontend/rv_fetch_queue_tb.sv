@@ -130,7 +130,27 @@ module rv_fetch_queue_tb;
         (cross_out_pc[0] != 32'h100e))
       $fatal(1, "Cross-block 32-bit assembly failed");
 
-    redirect_pc = 32'h2000;
+    // A target-buffer hit supplies redirect and aligned block together.  The
+    // queue must discard the old path and expose the unaligned target bytes
+    // immediately after this edge, without an empty replay cycle.
+    redirect_pc = 32'h2002;
+    fill_addr = 32'h2000;
+    fill_data = '0;
+    fill_data[2*8 +: 16] = 16'h0001;
+    fill_data[4*8 +: 32] = 32'h0010_0093;
+    fill_valid = 1'b1;
+    redirect_valid = 1'b1;
+    @(posedge clk);
+    fill_valid = 1'b0;
+    redirect_valid = 1'b0;
+    #1;
+    if ((out_valid != 2'b11) ||
+        (out_pc[0] != 32'h2002) || (out_pc[1] != 32'h2004) ||
+        (out_instruction[0] != 32'h0000_0001) ||
+        (out_instruction[1] != 32'h0010_0093))
+      $fatal(1, "Atomic redirect/fill did not expose target instructions");
+
+    redirect_pc = 32'h3000;
     redirect_valid = 1'b1;
     @(posedge clk);
     redirect_valid = 1'b0;

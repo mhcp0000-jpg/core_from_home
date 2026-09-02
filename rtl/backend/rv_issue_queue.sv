@@ -93,6 +93,10 @@ module rv_issue_queue #(
                                                    candidate_lq_index_o,
   output logic [SELECT_WIDTH-1:0][SQ_INDEX_WIDTH-1:0]
                                                    candidate_sq_index_o,
+  output logic [SELECT_WIDTH-1:0]
+                                                   candidate_store_address_valid_o,
+  output logic [SELECT_WIDTH-1:0]
+                                                   candidate_store_data_valid_o,
 
   input  logic                                  flush_all_i,
   input  logic                                  flush_younger_i,
@@ -135,12 +139,18 @@ module rv_issue_queue #(
   logic [CHECKPOINT_ID_WIDTH-1:0] checkpoint_id_q [0:ENTRIES-1];
   logic [LQ_INDEX_WIDTH-1:0] lq_index_q [0:ENTRIES-1];
   logic [SQ_INDEX_WIDTH-1:0] sq_index_q [0:ENTRIES-1];
+  // A store may use an LSU port once for address generation and remain in the
+  // IQ until its data source becomes ready.  This exposes the older-store
+  // address to the LSQ early without making the store architecturally visible.
+  logic store_address_issued_q [0:ENTRIES-1];
+  logic [2:0] source_ready_now [0:ENTRIES-1];
   logic [ENTRIES-1:0] ready_now;
   logic [ENTRIES-1:0] selected_mask;
   logic [SELECT_WIDTH-1:0] select_found;
   logic [ENTRIES-1:0] available_slots;
   logic [ENTRIES-1:0] allocation_slots_work;
   logic [1:0] allocation_found;
+  logic [SELECT_WIDTH-1:0] candidate_final_phase;
   logic [2:0] requested_dispatch_count;
   logic dispatch_fire;
 
@@ -177,19 +187,26 @@ module rv_issue_queue #(
 
   always_comb begin
     for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-      ready_now[entry] = valid_q[entry];
       for (int unsigned source = 0; source < 3; source++) begin
-        if (src_used_q[entry][source]) begin
-          case (source)
-            0: ready_now[entry] &= src_ready_q[entry][source] ||
-                 tag_wakes(src0_class_q[entry], src_phys_q[entry][source]);
-            1: ready_now[entry] &= src_ready_q[entry][source] ||
-                 tag_wakes(src1_class_q[entry], src_phys_q[entry][source]);
-            default: ready_now[entry] &= src_ready_q[entry][source] ||
-                 tag_wakes(src2_class_q[entry], src_phys_q[entry][source]);
-          endcase
-        end
+        source_ready_now[entry][source] = !src_used_q[entry][source];
+        case (source)
+          0: source_ready_now[entry][source] |=
+               src_ready_q[entry][source] ||
+               tag_wakes(src0_class_q[entry], src_phys_q[entry][source]);
+          1: source_ready_now[entry][source] |=
+               src_ready_q[entry][source] ||
+               tag_wakes(src1_class_q[entry], src_phys_q[entry][source]);
+          default: source_ready_now[entry][source] |=
+               src_ready_q[entry][source] ||
+               tag_wakes(src2_class_q[entry], src_phys_q[entry][source]);
+        endcase
       end
+      if (fu_q[entry] == FU_STORE)
+        ready_now[entry] = valid_q[entry] &&
+          (store_address_issued_q[entry] ? source_ready_now[entry][1] :
+                                          source_ready_now[entry][0]);
+      else
+        ready_now[entry] = valid_q[entry] && (&source_ready_now[entry]);
     end
   end
 
@@ -220,6 +237,9 @@ module rv_issue_queue #(
     candidate_checkpoint_id_o     = '0;
     candidate_lq_index_o          = '0;
     candidate_sq_index_o          = '0;
+    candidate_store_address_valid_o = '0;
+    candidate_store_data_valid_o  = '0;
+    candidate_final_phase         = '0;
     selected_mask                 = '0;
     select_found                  = '0;
 
@@ -287,6 +307,15 @@ module rv_issue_queue #(
             lq_index_q[candidate_index_o[slot]];
           candidate_sq_index_o[slot] =
             sq_index_q[candidate_index_o[slot]];
+          candidate_store_address_valid_o[slot] =
+            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
+            !store_address_issued_q[candidate_index_o[slot]];
+          candidate_store_data_valid_o[slot] =
+            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
+            source_ready_now[candidate_index_o[slot]][1];
+          candidate_final_phase[slot] =
+            (fu_q[candidate_index_o[slot]] != FU_STORE) ||
+            source_ready_now[candidate_index_o[slot]][1];
         end
       end
     end
@@ -296,7 +325,8 @@ module rv_issue_queue #(
     for (int unsigned entry = 0; entry < ENTRIES; entry++)
       available_slots[entry] = !valid_q[entry];
     for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-      if (candidate_valid_o[slot] && candidate_accept_i[slot])
+      if (candidate_valid_o[slot] && candidate_accept_i[slot] &&
+          candidate_final_phase[slot])
         available_slots[candidate_index_o[slot]] = 1'b1;
     end
 
@@ -358,6 +388,7 @@ module rv_issue_queue #(
         checkpoint_id_q[entry] <= '0;
         lq_index_q[entry] <= '0;
         sq_index_q[entry] <= '0;
+        store_address_issued_q[entry] <= 1'b0;
       end
     end else if (flush_younger_i) begin
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
@@ -402,8 +433,12 @@ module rv_issue_queue #(
       end
 
       for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-        if (candidate_valid_o[slot] && candidate_accept_i[slot])
-          valid_q[candidate_index_o[slot]] <= 1'b0;
+        if (candidate_valid_o[slot] && candidate_accept_i[slot]) begin
+          if (candidate_final_phase[slot])
+            valid_q[candidate_index_o[slot]] <= 1'b0;
+          else
+            store_address_issued_q[candidate_index_o[slot]] <= 1'b1;
+        end
       end
 
       if (dispatch_fire) begin
@@ -459,6 +494,7 @@ module rv_issue_queue #(
               dispatch_checkpoint_id_i[lane];
             lq_index_q[dispatch_index_o[lane]] <= dispatch_lq_index_i[lane];
             sq_index_q[dispatch_index_o[lane]] <= dispatch_sq_index_i[lane];
+            store_address_issued_q[dispatch_index_o[lane]] <= 1'b0;
           end
         end
       end
@@ -488,6 +524,15 @@ module rv_issue_queue #(
         candidate_accept_i[slot] |-> candidate_valid_o[slot];
     endproperty
     assert property (p_accept_requires_candidate);
+
+    property p_partial_store_accept_is_address_only;
+      @(posedge clk_i) disable iff (!rst_ni)
+        candidate_accept_i[slot] &&
+        (candidate_fu_o[slot] == FU_STORE) &&
+        !candidate_store_data_valid_o[slot]
+        |-> candidate_store_address_valid_o[slot];
+    endproperty
+    assert property (p_partial_store_accept_is_address_only);
   end
 
   if (SELECT_WIDTH > 1) begin : g_distinct_candidate_assert

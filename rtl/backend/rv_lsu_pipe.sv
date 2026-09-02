@@ -16,6 +16,8 @@ module rv_lsu_pipe #(
   input  logic [ROB_SEQ_WIDTH-1:0]          issue_rob_sequence_i,
   input  logic                              issue_is_load_i,
   input  logic                              issue_is_store_i,
+  input  logic                              issue_address_valid_i,
+  input  logic                              issue_store_data_valid_i,
   input  logic                              issue_lq_valid_i,
   input  logic [LQ_INDEX_WIDTH-1:0]         issue_lq_index_i,
   input  logic                              issue_sq_valid_i,
@@ -185,8 +187,9 @@ module rv_lsu_pipe #(
         update_memory_size_q <= memory_size_i;
         update_byte_mask_q <= generated_mask;
         update_store_data_q <= generated_store_data;
-        update_address_valid_q <= 1'b1;
-        update_store_data_valid_q <= issue_is_store_i;
+        update_address_valid_q <= issue_address_valid_i;
+        update_store_data_valid_q <= issue_is_store_i &&
+                                     issue_store_data_valid_i;
         update_exception_valid_q <= misaligned;
         update_exception_cause_q <= issue_is_store_i ?
           EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
@@ -208,6 +211,14 @@ module rv_lsu_pipe #(
                update_exception_tval_o});
   endproperty
   assert property (p_update_stable_when_stalled);
+
+  property p_store_phase_validity;
+    @(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
+      update_valid_o &&
+      (update_address_valid_o || update_store_data_valid_o)
+      |-> update_is_load_o || update_is_store_o;
+  endproperty
+  assert property (p_store_phase_validity);
 `endif
 
   initial begin : p_parameter_checks

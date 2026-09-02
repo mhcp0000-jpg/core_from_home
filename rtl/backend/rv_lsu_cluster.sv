@@ -43,6 +43,8 @@ module rv_lsu_cluster #(
   input  logic [1:0][ROB_SEQ_WIDTH-1:0]         issue_sequence_i,
   input  logic [1:0]                            issue_is_load_i,
   input  logic [1:0]                            issue_is_store_i,
+  input  logic [1:0]                            issue_address_valid_i,
+  input  logic [1:0]                            issue_store_data_valid_i,
   input  logic [1:0]                            issue_lq_valid_i,
   input  logic [1:0][LQ_INDEX_WIDTH-1:0]        issue_lq_index_i,
   input  logic [1:0]                            issue_sq_valid_i,
@@ -207,6 +209,8 @@ module rv_lsu_cluster #(
       .issue_rob_sequence_i(issue_sequence_i[lane]),
       .issue_is_load_i(issue_is_load_i[lane]),
       .issue_is_store_i(issue_is_store_i[lane]),
+      .issue_address_valid_i(issue_address_valid_i[lane]),
+      .issue_store_data_valid_i(issue_store_data_valid_i[lane]),
       .issue_lq_valid_i(issue_lq_valid_i[lane]),
       .issue_lq_index_i(issue_lq_index_i[lane]),
       .issue_sq_valid_i(issue_sq_valid_i[lane]),
@@ -286,8 +290,14 @@ module rv_lsu_cluster #(
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
+      // A split store-data phase recomputes the same effective address for
+      // PMP/exception checking but does not overwrite the SQ address-valid
+      // bit.  Loads always arrive as a single address phase.
       pmp_check_valid[lane] = agu_update_valid[lane] &&
-        agu_update_address_valid[lane] && !agu_update_exception[lane];
+        (agu_update_address_valid[lane] ||
+         (agu_update_is_store[lane] &&
+          agu_update_store_data_valid[lane])) &&
+        !agu_update_exception[lane];
       pmp_access[lane] = agu_update_is_store[lane] ? 3'b010 : 3'b001;
       pmp_privilege[lane] = current_privilege_i;
       agu_effective_exception[lane] = agu_update_exception[lane] ||
@@ -300,8 +310,11 @@ module rv_lsu_cluster #(
           EXC_STORE_ACCESS_FAULT : EXC_LOAD_ACCESS_FAULT;
         agu_effective_tval[lane] = XLEN'(pmp_fault_address[lane]);
       end
-      agu_completion_needed[lane] = agu_update_is_store[lane] ||
-                                    agu_effective_exception[lane];
+      // A store address-only phase updates ordering state but cannot complete
+      // the ROB entry.  Completion waits for store data (and repeats any
+      // address/PMP exception) so commit always sees a fully formed SQ entry.
+      agu_completion_needed[lane] = agu_update_is_store[lane] ?
+        agu_update_store_data_valid[lane] : agu_effective_exception[lane];
       agu_device[lane] = is_device_address(agu_update_address[lane]);
       agu_to_lsq_valid[lane] = agu_update_valid[lane] &&
         !flush_valid_i &&
@@ -707,6 +720,12 @@ module rv_lsu_cluster #(
       if (flush_valid_i)
         assert (!(dmem_req_valid_o[lane] && !dmem_req_write_o[lane]));
       assert (!(load_forward_valid[lane] && load_memory_read[lane]));
+      if (agu_update_valid[lane] && agu_update_is_store[lane] &&
+          agu_update_address_valid[lane] &&
+          !agu_update_store_data_valid[lane])
+        assert (!completion_valid_o[lane]);
+      if (completion_valid_o[lane] && agu_update_is_store[lane])
+        assert (agu_update_store_data_valid[lane]);
     end
     if (memory_idle_o)
       assert (store_buffer_empty_o && !load_outstanding &&

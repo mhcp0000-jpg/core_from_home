@@ -68,6 +68,8 @@ module rv_issue_queue_tb;
   logic [1:0][2:0] candidate_checkpoint_id;
   logic [1:0][4:0] candidate_lq_index;
   logic [1:0][3:0] candidate_sq_index;
+  logic [1:0] candidate_store_address_valid;
+  logic [1:0] candidate_store_data_valid;
   logic flush_all;
   logic flush_younger;
   logic [ROB_SEQ_WIDTH-1:0] flush_sequence;
@@ -143,6 +145,8 @@ module rv_issue_queue_tb;
     .candidate_checkpoint_id_o (candidate_checkpoint_id),
     .candidate_lq_index_o      (candidate_lq_index),
     .candidate_sq_index_o      (candidate_sq_index),
+    .candidate_store_address_valid_o(candidate_store_address_valid),
+    .candidate_store_data_valid_o(candidate_store_data_valid),
     .flush_all_i               (flush_all),
     .flush_younger_i           (flush_younger),
     .flush_sequence_i          (flush_sequence),
@@ -319,6 +323,54 @@ module rv_issue_queue_tb;
     if ((candidate_valid != 2'b01) ||
         (candidate_sequence[0] != 8'd30))
       $fatal(1, "Surviving IQ entry lost same-cycle flush wakeup");
+
+    candidate_accept = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+
+    // Store base is ready while store data (p11) is not.  The first accepted
+    // phase must keep the entry resident and expose only its address.  A later
+    // data wakeup emits the final phase and releases the entry.
+    dispatch_valid = 2'b01;
+    dispatch_sequence[0] = 8'd40;
+    dispatch_fu[0] = FU_STORE;
+    dispatch_src_used[0] = 3'b011;
+    dispatch_src_class[0][0] = REG_INT;
+    dispatch_src_class[0][1] = REG_INT;
+    dispatch_src_phys[0][0] = 7'd10;
+    dispatch_src_phys[0][1] = 7'd11;
+    dispatch_src_ready[0] = 3'b001;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    #1;
+    if ((candidate_valid != 2'b01) ||
+        !candidate_store_address_valid[0] ||
+        candidate_store_data_valid[0])
+      $fatal(1, "Store address did not issue independently of store data");
+    candidate_accept = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    #1;
+    if ((count != 1) || (candidate_valid != 0))
+      $fatal(1, "Address-only store phase did not remain in IQ");
+
+    writeback_valid[0] = 1'b1;
+    writeback_phys[0] = 7'd11;
+    #1;
+    if ((candidate_valid != 2'b01) ||
+        candidate_store_address_valid[0] ||
+        !candidate_store_data_valid[0])
+      $fatal(1, "Store data wakeup did not create final store phase");
+    candidate_accept = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    #1;
+    if (!empty)
+      $fatal(1, "Final store-data phase did not release IQ entry");
 
     $display("rv_issue_queue_tb PASS");
     $finish;

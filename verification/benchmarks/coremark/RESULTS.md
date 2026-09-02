@@ -4,10 +4,10 @@
 
 2026-09-02에 공식 EEMBC CoreMark source를 현재 RV32 OoO SoC에서 2회
 실행했다. 알려진 2K performance CRC가 모두 일치했고 HostIF exit code 0으로
-완료했다. 2차 frontend 튜닝 후 측정 결과는 **548,343 cycles**,
-**576,450 retired instructions**, **IPC 1.051258**, **추정 3.647352
-CoreMark/MHz**다. 직전 tournament-predictor baseline 대비 cycle은 **9.35%
-감소**, IPC와 CoreMark/MHz는 **10.31% 증가**했다.
+완료했다. zero-bubble target refill과 split store-address/data issue 적용 후
+측정 결과는 **533,820 cycles**, **576,450 retired instructions**, **IPC
+1.079858**, **추정 3.746581 CoreMark/MHz**다. 직전 v1.12.0 target-buffer
+baseline 대비 cycle은 **2.65% 감소**, IPC는 **2.72% 증가**했다.
 
 이 값은 RTL 구조 비교용 **non-certified implementation estimate**다. 실행이
 CoreMark의 공식 최소 10초 조건보다 짧으므로 공식 제출 또는 타 제품의 공인
@@ -53,16 +53,16 @@ status `0x00000009`는 bit 0(known 2K performance seed)과 bit 3(shorter than
 timed region 전후의 machine CSR을 RV32 high-low-high 순서로 안정적으로 읽었다.
 
 ```text
-cycles                 = 548343
+cycles                 = 533820
 retired instructions   = 576450
-cycles / iteration     = 548343 / 2 = 274171.5
+cycles / iteration     = 533820 / 2 = 266910
 instructions / iter.   = 576450 / 2 = 288225
-IPC                    = 576450 / 548343 = 1.051258
-estimated CoreMark/MHz = 2 * 1000000 / 548343 = 3.647352
+IPC                    = 576450 / 533820 = 1.079858
+estimated CoreMark/MHz = 2 * 1000000 / 533820 = 3.746581
 ```
 
 예를 들어 향후 합성 결과가 100 MHz이고 TIM이 core와 1:1로 동작한다면 단순
-cycle estimate는 약 364.74 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
+cycle estimate는 약 374.66 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
 실제 Fmax를 측정한 결과가 아니다.
 
 ## 이 workload가 발견한 RTL 결함
@@ -93,22 +93,33 @@ software가 timed region 경계에 HostIF marker를 기록하고 testbench profi
 | IFU/I-Fabric same-cycle handoff | 653,304 | 0.882361 | 3.061362 |
 | PC bimodal predictor | 614,717 | 0.937749 | 3.253530 |
 | bimodal/gshare tournament | 604,885 | 0.952991 | 3.306414 |
-| + 16-entry target/loop block buffer | **548,343** | **1.051258** | **3.647352** |
+| + 16-entry target/loop block buffer | 548,343 | 1.051258 | 3.647352 |
 | 32-entry capacity experiment | 548,318 | 1.051306 | 3.647518 |
+| + zero-bubble target redirect/fill | 537,249 | 1.072966 | 3.722669 |
+| + split store-address/data issue | **533,820** | **1.079858** | **3.746581** |
 
-최종 profiler의 marker-window 548,390 cycles에는 marker 처리 차이가 포함된다.
-핵심 관측값은 branch mispredict 33,619회, frontend empty 137,139 cycles,
-IQ nonempty/no-issue 113,792 cycles, ROB-head incomplete 150,352 cycles,
-unknown older-store-address load stall 43,700 cycles, D-memory wait 50,353 cycles다.
-frontend empty는 queue-zero 103,885와 incomplete-instruction 33,254로 분해됐고,
-predicted redirect 64,863회 중 target-buffer hit는 45,957회였다. event는 서로
-겹칠 수 있으며 cycle 감소량으로 단순 합산하지 않는다.
+최종 profiler의 marker-window 533,867 cycles에는 marker 처리 차이가 포함된다.
+핵심 관측값은 branch mispredict 33,832회, frontend empty 106,010 cycles,
+IQ nonempty/no-issue 103,803 cycles, ROB-head incomplete 142,131 cycles,
+unknown older-store-address load stall 23,551 cycles, D-memory wait 46,051 cycles다.
+frontend empty는 queue-zero 69,821와 incomplete-instruction 36,189로 분해됐고,
+predicted redirect 64,364회 중 target-buffer hit는 45,157회였다. replay register
+counter는 0이며 target hit 다음 cycle의 empty는 2,405회다. event는 서로 겹칠 수
+있으므로 cycle 감소량으로 단순 합산하지 않는다.
 
 branch checkpoint 8→16, LQ 24→32 증설은 성능 변화가 없어 되돌렸다. lane-1
 load 동시 retire도 최종 predictor 구성에서 112 cycles 느려져 되돌렸다. target
 buffer 16→32 entry는 25 cycle만 줄어 추가 면적을 정당화하지 못해 되돌렸다.
+zero-bubble 적용 후 checkpoint 8→16 재실험도 544 cycle만 감소해 8개를 유지했다.
 현재 채택한 변경은 IF response/next-request same-cycle handoff, tournament
-predictor, redirect-cycle target request와 16-entry target/loop block buffer다.
+predictor, redirect-cycle target request, 16-entry target/loop block buffer,
+redirect+queue-fill 원자 처리와 split store-address/data issue다.
+
+split store는 base가 먼저 준비되면 address-only phase로 SQ address/mask를 확정한다.
+store data가 늦으면 동일 IQ entry가 ROB sequence와 SQ index를 유지하다 data
+writeback에 다시 wakeup된다. data-only phase는 기존 주소를 보존하고 이 최종
+phase에서만 ROB store completion을 만든다. 따라서 load ordering stall을 줄이면서
+uncommitted store의 외부 visibility는 여전히 ROB-head commit으로 제한된다.
 
 ## 보존 파일
 

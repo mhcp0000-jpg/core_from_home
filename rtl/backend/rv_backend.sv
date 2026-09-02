@@ -501,6 +501,7 @@ module rv_backend #(
   logic [1:0][CP_WIDTH-1:0] cand_cp_id;
   logic [1:0][LQ_WIDTH-1:0] cand_lq_index;
   logic [1:0][SQ_WIDTH-1:0] cand_sq_index;
+  logic [1:0] cand_store_address_valid, cand_store_data_valid;
 
   rv_issue_queue #(
     .XLEN(XLEN), .ENTRIES(IQ_ENTRIES), .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),
@@ -554,6 +555,8 @@ module rv_backend #(
     .candidate_checkpoint_valid_o(cand_cp_valid),
     .candidate_checkpoint_id_o(cand_cp_id),.candidate_lq_index_o(cand_lq_index),
     .candidate_sq_index_o(cand_sq_index),
+    .candidate_store_address_valid_o(cand_store_address_valid),
+    .candidate_store_data_valid_o(cand_store_data_valid),
     .flush_all_i(flush_valid&&flush_all),
     .flush_younger_i(flush_valid&&!flush_all),.flush_sequence_i(flush_sequence),
     .count_o(iq_count),.empty_o(iq_empty),.full_o(iq_full)
@@ -649,6 +652,7 @@ module rv_backend #(
   logic [4:0][2:0] port_rounding;
   logic [4:0][LQ_WIDTH-1:0] port_lq_index;
   logic [4:0][SQ_WIDTH-1:0] port_sq_index;
+  logic [4:0] port_store_address_valid, port_store_data_valid;
   reg_class_e [4:0] port_dst_class;
   logic [4:0][PHYS_TAG_WIDTH-1:0] port_dst_phys;
   inst_len_e [4:0] port_len;
@@ -659,6 +663,7 @@ module rv_backend #(
     port_operation='0;port_dst_valid='0;
     port_use_pc='0;port_use_immediate='0;port_word='0;port_mem_unsigned='0;
     port_mem_size='0;port_rounding='0;port_lq_index='0;port_sq_index='0;
+    port_store_address_valid='0;port_store_data_valid='0;
     port_dst_class='0;port_dst_phys='0;
     port_len='0;port_prediction='0;
     for(int unsigned port=0;port<5;port++) if(port_valid[port]) begin
@@ -684,6 +689,10 @@ module rv_backend #(
       port_mem_unsigned[port]=cand_mem_unsigned[port_candidate[port]];
       port_lq_index[port]=cand_lq_index[port_candidate[port]];
       port_sq_index[port]=cand_sq_index[port_candidate[port]];
+      port_store_address_valid[port]=
+        cand_store_address_valid[port_candidate[port]];
+      port_store_data_valid[port]=
+        cand_store_data_valid[port_candidate[port]];
     end
   end
 
@@ -847,6 +856,7 @@ module rv_backend #(
   // from the youngest older SQ/SB entry; stores become externally visible only
   // when the corresponding ROB head commits into the store buffer.
   logic [1:0] lsu_issue_valid, lsu_issue_is_load, lsu_issue_is_store;
+  logic [1:0] lsu_issue_address_valid, lsu_issue_store_data_valid;
   logic [1:0][ROB_SEQ_WIDTH-1:0] lsu_issue_sequence;
   logic [1:0] lsu_issue_lq_valid, lsu_issue_sq_valid;
   logic [1:0][LQ_WIDTH-1:0] lsu_issue_lq_index;
@@ -874,6 +884,10 @@ module rv_backend #(
       lsu_issue_sequence[lane] = port_sequence[2+lane];
       lsu_issue_is_load[lane] = port_fu[2+lane] == FU_LOAD;
       lsu_issue_is_store[lane] = port_fu[2+lane] == FU_STORE;
+      lsu_issue_address_valid[lane] = lsu_issue_is_load[lane] ||
+        port_store_address_valid[2+lane];
+      lsu_issue_store_data_valid[lane] =
+        lsu_issue_is_store[lane] && port_store_data_valid[2+lane];
       lsu_issue_lq_valid[lane] = port_fu[2+lane] == FU_LOAD;
       lsu_issue_lq_index[lane] = port_lq_index[2+lane];
       lsu_issue_sq_valid[lane] = port_fu[2+lane] == FU_STORE;
@@ -909,6 +923,8 @@ module rv_backend #(
     .issue_valid_i(lsu_issue_valid), .issue_ready_o(lsu_issue_ready),
     .issue_sequence_i(lsu_issue_sequence),
     .issue_is_load_i(lsu_issue_is_load), .issue_is_store_i(lsu_issue_is_store),
+    .issue_address_valid_i(lsu_issue_address_valid),
+    .issue_store_data_valid_i(lsu_issue_store_data_valid),
     .issue_lq_valid_i(lsu_issue_lq_valid), .issue_lq_index_i(lsu_issue_lq_index),
     .issue_sq_valid_i(lsu_issue_sq_valid), .issue_sq_index_i(lsu_issue_sq_index),
     .issue_base_i(lsu_issue_base), .issue_immediate_i(lsu_issue_immediate),

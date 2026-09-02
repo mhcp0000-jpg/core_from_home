@@ -621,18 +621,21 @@ module rv_lsq #(
               lq_completed_q[agu_lq_index_i[lane]] <= 1'b1;
           end
           if (agu_sq_valid_i[lane]) begin
-            sq_address_q[agu_sq_index_i[lane]] <= agu_address_i[lane];
-            sq_mask_q[agu_sq_index_i[lane]] <= agu_mask_i[lane];
-            sq_data_q[agu_sq_index_i[lane]] <= agu_store_data_i[lane];
-            sq_address_valid_q[agu_sq_index_i[lane]] <=
-              agu_address_valid_i[lane];
-            sq_data_valid_q[agu_sq_index_i[lane]] <=
-              agu_store_data_valid_i[lane];
-            sq_device_q[agu_sq_index_i[lane]] <= agu_device_i[lane];
-            sq_exception_q[agu_sq_index_i[lane]] <=
-              agu_exception_valid_i[lane];
-            sq_exception_cause_q[agu_sq_index_i[lane]] <=
-              agu_exception_cause_i[lane];
+            if (agu_address_valid_i[lane]) begin
+              sq_address_q[agu_sq_index_i[lane]] <= agu_address_i[lane];
+              sq_mask_q[agu_sq_index_i[lane]] <= agu_mask_i[lane];
+              sq_address_valid_q[agu_sq_index_i[lane]] <= 1'b1;
+              sq_device_q[agu_sq_index_i[lane]] <= agu_device_i[lane];
+            end
+            if (agu_store_data_valid_i[lane]) begin
+              sq_data_q[agu_sq_index_i[lane]] <= agu_store_data_i[lane];
+              sq_data_valid_q[agu_sq_index_i[lane]] <= 1'b1;
+            end
+            if (agu_exception_valid_i[lane]) begin
+              sq_exception_q[agu_sq_index_i[lane]] <= 1'b1;
+              sq_exception_cause_q[agu_sq_index_i[lane]] <=
+                agu_exception_cause_i[lane];
+            end
           end
         end
 

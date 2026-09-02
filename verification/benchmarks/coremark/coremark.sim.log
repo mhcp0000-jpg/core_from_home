@@ -1,13 +1,11 @@
 ﻿- V e r i l a t i o n   R e p o r t: Verilator 5.050 2026-07-01 rev v5.050-60-g3d2421f3b (mod)
-- Verilator: Built from 16.008 MB sources in 57 modules, into 25.277 MB in 35 C++ files needing 0.042 MB
-- Verilator: Walltime 3.587 s (elab=0.170, cvt=2.849, bld=0.000); cpu 0.000 s on 1 threads; allocated 209.125 MB
-make: Entering directory 'C:/rv_build/coremark_target_buffer/soc_elf_build'
+- Verilator: Built from 16.091 MB sources in 57 modules, into 27.136 MB in 36 C++ files needing 0.042 MB
+- Verilator: Walltime 3.924 s (elab=0.165, cvt=3.186, bld=0.000); cpu 3.609 s on 1 threads; allocated 220.273 MB
+make: Entering directory 'C:/rv_build/coremark_splitstore_build'
+g++ -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -Os  -c -o elf_loader.o U:/tb/e2e/dpi/elf_loader.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated.o C:\\rv_toolchains\\verilator-5.050/include/verilated.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_dpi.o C:\\rv_toolchains\\verilator-5.050/include/verilated_dpi.cpp
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_timing.o C:\\rv_toolchains\\verilator-5.050/include/verilated_timing.cpp
-g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_threads.o C:\\rv_toolchains\\verilator-5.050/include/verilated_threads.cpp
-g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.fast.gch
-g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.slow.gch
 C:\rv_toolchains\verilator-5.050/include/verilated.cpp:78:10: warning: 'STDOUT_FILENO' redefined
    78 | # define STDOUT_FILENO _fileno(stdout)
       |          ^~~~~~~~~~~~~
@@ -27,24 +25,9 @@ C:\rv_toolchains\verilator-5.050/include/verilated.cpp:79:10: warning: 'STDERR_F
 C:/rv_toolchains/w64devkit-2.9.1/w64devkit/include/stdio.h:76:9: note: this is the location of the previous definition
    76 | #define STDERR_FILENO   2
       |         ^~~~~~~~~~~~~
+g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -c -o verilated_threads.o C:\\rv_toolchains\\verilator-5.050/include/verilated_threads.cpp
 In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
                  from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:32:
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  147 | XXTERN typedef void* svScope;
-      |                      ^~~~~~~
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  150 | XXTERN typedef void* svOpenArrayHandle;
-      |                      ^~~~~~~~~~~~~~~~~
-In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
-                 from Vrv_soc_dpi_tb__pch.h:21:
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  147 | XXTERN typedef void* svScope;
-      |                      ^~~~~~~
-C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
-  150 | XXTERN typedef void* svOpenArrayHandle;
-      |                      ^~~~~~~~~~~~~~~~~
-In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
-                 from Vrv_soc_dpi_tb__pch.h:21:
 C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
   147 | XXTERN typedef void* svScope;
       |                      ^~~~~~~
@@ -249,6 +232,24 @@ C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:810:5: warning: 'int 
 C:\rv_toolchains\verilator-5.050/include/verilated_dpi.cpp:814:6: warning: 'void svAckDisabledState()' redeclared without dllimport attribute: previous dllimport ignored [-Wattributes]
   814 | void svAckDisabledState() {
       |      ^~~~~~~~~~~~~~~~~~
+g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.fast.gch
+g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -x c++-header Vrv_soc_dpi_tb__pch.h -o Vrv_soc_dpi_tb__pch.h.slow.gch
+In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
+                 from Vrv_soc_dpi_tb__pch.h:21:
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  147 | XXTERN typedef void* svScope;
+      |                      ^~~~~~~
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  150 | XXTERN typedef void* svOpenArrayHandle;
+      |                      ^~~~~~~~~~~~~~~~~
+In file included from C:\rv_toolchains\verilator-5.050/include/verilated_dpi.h:34,
+                 from Vrv_soc_dpi_tb__pch.h:21:
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:147:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  147 | XXTERN typedef void* svScope;
+      |                      ^~~~~~~
+C:\rv_toolchains\verilator-5.050/include/vltstd/svdpi.h:150:22: warning: 'dllimport' attribute ignored [-Wattributes]
+  150 | XXTERN typedef void* svOpenArrayHandle;
+      |                      ^~~~~~~~~~~~~~~~~
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb__ConstPool__0__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__0__Slow.cpp
@@ -257,6 +258,7 @@ g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__3__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__4__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__5__Slow.cpp
+g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb___024root__6__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb_rv_axi4_if__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb_rv_axi4_if__0__Slow.cpp
 g++  -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.slow -c Vrv_soc_dpi_tb_rv_local_mem_if__Slow.cpp
@@ -286,14 +288,14 @@ g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\
 g++ -Os -std=c++17 -I.  -MMD -IC:\\rv_toolchains\\verilator-5.050/include -IC:\\rv_toolchains\\verilator-5.050/include/vltstd -DVERILATOR=1 -DVM_COVERAGE=0 -DVM_SC=0 -DVM_TIMING=1 -DVM_TRACE=0 -DVM_TRACE_FST=0 -DVM_TRACE_VCD=0 -DVM_TRACE_SAIF=0 -DVM_VPI=0 -faligned-new -fcf-protection=none -Wno-bool-operation -Wno-int-in-bool-context -Wno-shadow -Wno-sign-compare -Wno-subobject-linkage -Wno-tautological-compare -Wno-uninitialized -Wno-unused-but-set-parameter -Wno-unused-but-set-variable -Wno-unused-parameter -Wno-unused-variable    -DVL_TIME_CONTEXT   -fcoroutines -include Vrv_soc_dpi_tb__pch.h.fast -c Vrv_soc_dpi_tb__Dpi.cpp
 g++  -static-libstdc++ -static-libgcc  -static-libstdc++ -static-libgcc  -static-libstdc++ -static-libgcc elf_loader.o verilated.o verilated_dpi.o verilated_timing.o verilated_threads.o Vrv_soc_dpi_tb__ALL.a   -lwinpthread  -lwinpthread  -lwinpthread   -o Vrv_soc_dpi_tb
 rm Vrv_soc_dpi_tb__ALL.verilator_deplist.tmp
-make: Leaving directory 'C:/rv_build/coremark_target_buffer/soc_elf_build'
+make: Leaving directory 'C:/rv_build/coremark_splitstore_build'
 DPI ELF load complete entry=80000000 flags=00000001
 [host-event kind=0 data=0x50460001]
 [host-event kind=0 data=0x50460002]
-PERF profile written: C:\rv_build\coremark_target_buffer\coremark.perf.json cycles=548390 retired=576462
+PERF profile written: C:\rv_build\coremark_splitstore\coremark.perf.json cycles=533867 retired=576462
 [host-event kind=0 data=0x434d0001]
 [host-event kind=0 data=0x00000002]
-[host-event kind=0 data=0x00085df7]
+[host-event kind=0 data=0x0008253c]
 [host-event kind=0 data=0x00000000]
 [host-event kind=0 data=0x0008cbc2]
 [host-event kind=0 data=0x00000000]
@@ -305,7 +307,7 @@ PERF profile written: C:\rv_build\coremark_target_buffer\coremark.perf.json cycl
 [host-event kind=0 data=0x00000009]
 [host-event kind=1 data=0x00000000]
 [host-finish code=0]
-- U:/tb/e2e/dpi\rv_soc_dpi_tb.sv:148: Verilog $finish
+- U:/tb/e2e/dpi\rv_soc_dpi_tb.sv:147: Verilog $finish
 - S i m u l a t i o n   R e p o r t: Verilator 5.050 2026-07-01
-- Verilator: $finish at 6us; walltime 4.309 s; speed 1.337 us/s
-- Verilator: cpu 0.000 s on 1 threads; allocated 6 MB
+- Verilator: $finish at 6us; walltime 4.424 s; speed 1.265 us/s
+- Verilator: cpu 4.234 s on 1 threads; allocated 7 MB

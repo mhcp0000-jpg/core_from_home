@@ -401,6 +401,26 @@ module rv_lsq_tb;
         (load_stall_reason[0] != LSQ_STALL_STORE_DATA))
       $fatal(1, "Older store without data did not block load");
 
+    // Supply only the delayed store data.  The SQ must retain the address and
+    // mask from the prior address phase and forward without a memory read.
+    @(negedge clk);
+    agu_valid = 2'b01;
+    agu_sequence[0] = 8'd10;
+    agu_sq_valid = 2'b01;
+    agu_sq_index[0] = saved_sq0;
+    agu_store_data[0] = 64'h0000_0000_dead_beef;
+    agu_address_valid[0] = 1'b0;
+    agu_store_data_valid[0] = 1'b1;
+    @(posedge clk);
+    @(negedge clk);
+    agu_valid = '0;
+    agu_sq_valid = '0;
+    #1;
+    if (!load_candidate_valid[0] || !load_forward_valid[0] ||
+        load_memory_read[0] ||
+        (load_forward_data[0] != 64'h0000_0000_dead_beef))
+      $fatal(1, "Split store data phase lost SQ address or forwarding state");
+
     reset_dut();
     dispatch_single_load(8'd30);
     saved_lq0 = saved_lq1;

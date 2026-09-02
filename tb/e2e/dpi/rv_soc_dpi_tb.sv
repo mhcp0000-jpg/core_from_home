@@ -89,7 +89,6 @@ module rv_soc_dpi_tb;
     .predicted_redirect_i(u_dut.u_core.u_frontend.predicted_redirect_fire),
     .architectural_redirect_i(u_dut.u_core.redirect_valid),
     .target_buffer_hit_i(u_dut.u_core.u_frontend.redirect_uses_target_buffer),
-    .target_replay_valid_i(u_dut.u_core.u_frontend.target_replay_valid_q),
     .fetch_outstanding_i(u_dut.u_core.u_frontend.outstanding_q),
     .fetch_queue_bytes_i(u_dut.u_core.u_frontend.queue_byte_count),
     .decode_valid_i(u_dut.u_core.u_backend.dec_valid),
