@@ -4,10 +4,10 @@
 
 2026-09-02에 공식 EEMBC CoreMark source를 현재 RV32 OoO SoC에서 2회
 실행했다. 알려진 2K performance CRC가 모두 일치했고 HostIF exit code 0으로
-완료했다. zero-bubble target refill과 split store-address/data issue 적용 후
-측정 결과는 **533,820 cycles**, **576,450 retired instructions**, **IPC
-1.079858**, **추정 3.746581 CoreMark/MHz**다. 직전 v1.12.0 target-buffer
-baseline 대비 cycle은 **2.65% 감소**, IPC는 **2.72% 증가**했다.
+완료했다. compressed control-flow의 raw encoding을 predictor resolve까지 보존한
+최종 측정 결과는 **483,143 cycles**, **576,450 retired instructions**, **IPC
+1.193125**, **추정 4.139561 CoreMark/MHz**다. 직전 v1.12.1 baseline 대비
+cycle은 **9.49% 감소**, IPC는 **10.49% 증가**했다.
 
 이 값은 RTL 구조 비교용 **non-certified implementation estimate**다. 실행이
 CoreMark의 공식 최소 10초 조건보다 짧으므로 공식 제출 또는 타 제품의 공인
@@ -53,16 +53,16 @@ status `0x00000009`는 bit 0(known 2K performance seed)과 bit 3(shorter than
 timed region 전후의 machine CSR을 RV32 high-low-high 순서로 안정적으로 읽었다.
 
 ```text
-cycles                 = 533820
+cycles                 = 483143
 retired instructions   = 576450
-cycles / iteration     = 533820 / 2 = 266910
+cycles / iteration     = 483143 / 2 = 241571.5
 instructions / iter.   = 576450 / 2 = 288225
-IPC                    = 576450 / 533820 = 1.079858
-estimated CoreMark/MHz = 2 * 1000000 / 533820 = 3.746581
+IPC                    = 576450 / 483143 = 1.193125
+estimated CoreMark/MHz = 2 * 1000000 / 483143 = 4.139561
 ```
 
 예를 들어 향후 합성 결과가 100 MHz이고 TIM이 core와 1:1로 동작한다면 단순
-cycle estimate는 약 374.66 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
+cycle estimate는 약 413.96 CoreMark/sec다. 이는 예시 환산일 뿐 현재 RTL의
 실제 Fmax를 측정한 결과가 아니다.
 
 ## 이 workload가 발견한 RTL 결함
@@ -97,20 +97,22 @@ software가 timed region 경계에 HostIF marker를 기록하고 testbench profi
 | 32-entry capacity experiment | 548,318 | 1.051306 | 3.647518 |
 | + zero-bubble target redirect/fill | 537,249 | 1.072966 | 3.722669 |
 | + split store-address/data issue | **533,820** | **1.079858** | **3.746581** |
+| + raw compressed-branch resolve | **483,143** | **1.193125** | **4.139561** |
 
-최종 profiler의 marker-window 533,867 cycles에는 marker 처리 차이가 포함된다.
-핵심 관측값은 branch mispredict 33,832회, frontend empty 106,010 cycles,
-IQ nonempty/no-issue 103,803 cycles, ROB-head incomplete 142,131 cycles,
-unknown older-store-address load stall 23,551 cycles, D-memory wait 46,051 cycles다.
-frontend empty는 queue-zero 69,821와 incomplete-instruction 36,189로 분해됐고,
-predicted redirect 64,364회 중 target-buffer hit는 45,157회였다. replay register
-counter는 0이며 target hit 다음 cycle의 empty는 2,405회다. event는 서로 겹칠 수
+최종 profiler의 marker-window 483,190 cycles에는 marker 처리 차이가 포함된다.
+핵심 관측값은 branch mispredict 7,477회, frontend empty 54,547 cycles,
+IQ nonempty/no-issue 103,442 cycles, ROB-head incomplete 118,573 cycles,
+unknown older-store-address load stall 24,043 cycles, D-memory wait 60,828 cycles다.
+frontend empty는 queue-zero 43,584와 incomplete-instruction 10,963으로 분해됐고,
+predicted redirect 82,541회 중 target-buffer hit는 62,879회였다. replay register
+counter는 0이며 target hit 다음 cycle의 empty는 2,566회다. event는 서로 겹칠 수
 있으므로 cycle 감소량으로 단순 합산하지 않는다.
 
 branch checkpoint 8→16, LQ 24→32 증설은 성능 변화가 없어 되돌렸다. lane-1
 load 동시 retire도 최종 predictor 구성에서 112 cycles 느려져 되돌렸다. target
 buffer 16→32 entry는 25 cycle만 줄어 추가 면적을 정당화하지 못해 되돌렸다.
-zero-bubble 적용 후 checkpoint 8→16 재실험도 544 cycle만 감소해 8개를 유지했다.
+raw C-branch resolve 적용 후 checkpoint 8→16 재실험도 426 cycle만 감소해 8개를
+유지했다. ROB 64/checkpoint 16 조합도 607 cycle 이득뿐이라 ROB 48을 유지했다.
 현재 채택한 변경은 IF response/next-request same-cycle handoff, tournament
 predictor, redirect-cycle target request, 16-entry target/loop block buffer,
 redirect+queue-fill 원자 처리와 split store-address/data issue다.
@@ -120,6 +122,16 @@ store data가 늦으면 동일 IQ entry가 ROB sequence와 SQ index를 유지하
 writeback에 다시 wakeup된다. data-only phase는 기존 주소를 보존하고 이 최종
 phase에서만 ROB store completion을 만든다. 따라서 load ordering stall을 줄이면서
 uncommitted store의 외부 visibility는 여전히 ROB-head commit으로 제한된다.
+
+compressed instruction은 execution에서 canonical 32-bit expansion을 사용하지만,
+predictor query/resolve/commit은 instruction length와 일치하는 raw encoding을 사용해야
+한다. 기존 backend는 resolve metadata에 canonical instruction을 저장하면서 length는
+`INST_LEN_16`으로 유지했다. 이 조합은 C.Bxx/C.J/C.JR/C.JALR 분류와 PHT/BTB/RAS
+학습 및 mispredict history recovery를 누락시켰다. raw instruction을 보존하도록
+수정한 결과 branch mispredict는 33,832→7,477(-77.9%), frontend empty는
+106,010→54,547(-48.5%), architectural cycle은 533,820→483,143(-9.49%)가 됐다.
+최종 branch profile은 conditional 106,465/7,195(resolve/miss), direct jump
+11,233/0, indirect jump 4,333/282, call 3,659/4, return 3,694/278이다.
 
 ## 보존 파일
 

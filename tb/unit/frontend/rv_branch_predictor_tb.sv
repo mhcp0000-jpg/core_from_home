@@ -152,6 +152,46 @@ module rv_branch_predictor_tb;
     if (!prediction_taken[0] || (prediction_target[0] != 32'h0000_0408))
       $fatal(1, "Conditional PHT/target training failed");
 
+    // Resolve receives the raw 16-bit encoding, not its canonical 32-bit
+    // expansion.  A taken C.BNEZ must therefore train the same PHT entry used
+    // by the frontend query and recover history as a conditional branch.
+    @(negedge clk);
+    clear_inputs();
+    query_valid[0] = 1'b1;
+    query_pc[0] = 32'h0000_0502;
+    query_instruction[0] = 32'h0000_fb69; // c.bnez a4,-46
+    query_inst_len[0] = INST_LEN_16;
+    #1;
+    if (prediction_taken[0])
+      $fatal(1, "Compressed conditional reset prediction was not weak-not-taken");
+    branch_meta = prediction_meta[0];
+
+    @(negedge clk);
+    clear_inputs();
+    resolve_valid = 1'b1;
+    resolve_pc = 32'h0000_0502;
+    resolve_instruction = 32'h0000_fb69;
+    resolve_inst_len = INST_LEN_16;
+    resolve_taken = 1'b1;
+    resolve_target = 32'h0000_04d4;
+    resolve_mispredict = 1'b1;
+    resolve_prediction = branch_meta;
+    @(posedge clk);
+
+    @(negedge clk);
+    clear_inputs();
+    redirect_valid = 1'b1;
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    query_valid[0] = 1'b1;
+    query_pc[0] = 32'h0000_0502;
+    query_instruction[0] = 32'h0000_fb69;
+    query_inst_len[0] = INST_LEN_16;
+    #1;
+    if (!prediction_taken[0] || (prediction_target[0] != 32'h0000_04d4))
+      $fatal(1, "Compressed conditional PHT training failed");
+
     // The tournament chooser moves only when the component predictions
     // disagree.  Two globally-correct samples cross the weak-bimodal reset
     // state; two bimodal-correct samples move it back.

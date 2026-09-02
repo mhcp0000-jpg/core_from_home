@@ -42,6 +42,12 @@ module rv_perf_profiler #(
 
   input logic       branch_resolve_i,
   input logic       branch_mispredict_i,
+  input logic [31:0] branch_instruction_i,
+  input logic [1:0]  branch_inst_len_i,
+  input logic        branch_predicted_taken_i,
+  input logic [31:0] branch_predicted_target_i,
+  input logic        branch_actual_taken_i,
+  input logic [31:0] branch_actual_target_i,
   input logic       flush_valid_i,
 
   input logic [1:0] load_candidate_present_i,
@@ -84,6 +90,13 @@ module rv_perf_profiler #(
   longint unsigned iq_no_ready_q, rob_head_wait_q, retire_backpressure_q;
   longint unsigned retire_lane1_blocked_q;
   longint unsigned branch_resolve_q, branch_mispredict_q, flush_q;
+  longint unsigned conditional_resolve_q, conditional_mispredict_q;
+  longint unsigned direct_resolve_q, direct_mispredict_q;
+  longint unsigned indirect_resolve_q, indirect_mispredict_q;
+  longint unsigned call_resolve_q, call_mispredict_q;
+  longint unsigned return_resolve_q, return_mispredict_q;
+  longint unsigned branch_direction_mispredict_q;
+  longint unsigned branch_target_mispredict_q;
   longint unsigned load_unknown_addr_q, load_store_data_q;
   longint unsigned load_partial_q, load_bank_q, load_device_q;
   longint unsigned dmem_wait_q;
@@ -95,6 +108,77 @@ module rv_perf_profiler #(
 
   function automatic int unsigned pop2(input logic [1:0] value);
     return value[0] + value[1];
+  endfunction
+
+  function automatic logic is_conditional_branch(
+    input logic [31:0] instruction,
+    input logic [1:0] length
+  );
+    if (length == 2'd1)
+      return (instruction[1:0] == 2'b01) &&
+             ((instruction[15:13] == 3'b110) ||
+              (instruction[15:13] == 3'b111));
+    return instruction[6:0] == 7'b1100011;
+  endfunction
+
+  function automatic logic is_direct_jump(
+    input logic [31:0] instruction,
+    input logic [1:0] length
+  );
+    if (length == 2'd1)
+      return (instruction[1:0] == 2'b01) &&
+             ((instruction[15:13] == 3'b101) ||
+              (instruction[15:13] == 3'b001));
+    return instruction[6:0] == 7'b1101111;
+  endfunction
+
+  function automatic logic is_indirect_jump(
+    input logic [31:0] instruction,
+    input logic [1:0] length
+  );
+    if (length == 2'd1)
+      return (instruction[1:0] == 2'b10) &&
+             ((instruction[15:12] == 4'b1000) ||
+              (instruction[15:12] == 4'b1001)) &&
+             (instruction[6:2] == 0) && (instruction[11:7] != 0);
+    return (instruction[6:0] == 7'b1100111) &&
+           (instruction[14:12] == 0);
+  endfunction
+
+  function automatic logic is_call_instruction(
+    input logic [31:0] instruction,
+    input logic [1:0] length
+  );
+    logic [4:0] destination;
+    if (length == 2'd1)
+      return ((instruction[1:0] == 2'b01) &&
+              (instruction[15:13] == 3'b001)) ||
+             ((instruction[1:0] == 2'b10) &&
+              (instruction[15:12] == 4'b1001) &&
+              (instruction[6:2] == 0) && (instruction[11:7] != 0));
+    destination = instruction[11:7];
+    return ((instruction[6:0] == 7'b1101111) ||
+            (instruction[6:0] == 7'b1100111)) &&
+           ((destination == 5'd1) || (destination == 5'd5));
+  endfunction
+
+  function automatic logic is_return_instruction(
+    input logic [31:0] instruction,
+    input logic [1:0] length
+  );
+    logic [4:0] source;
+    if (length == 2'd1)
+      return (instruction[1:0] == 2'b10) &&
+             (instruction[15:12] == 4'b1000) &&
+             (instruction[6:2] == 0) &&
+             ((instruction[11:7] == 5'd1) ||
+              (instruction[11:7] == 5'd5));
+    source = instruction[19:15];
+    return (instruction[6:0] == 7'b1100111) &&
+           (instruction[14:12] == 0) &&
+           (instruction[11:7] == 0) &&
+           ((source == 5'd1) || (source == 5'd5)) &&
+           (instruction[31:20] == 0);
   endfunction
 
   task automatic clear_counters;
@@ -119,6 +203,13 @@ module rv_perf_profiler #(
     retire_backpressure_q = 0;
     retire_lane1_blocked_q = 0;
     branch_resolve_q = 0; branch_mispredict_q = 0; flush_q = 0;
+    conditional_resolve_q = 0; conditional_mispredict_q = 0;
+    direct_resolve_q = 0; direct_mispredict_q = 0;
+    indirect_resolve_q = 0; indirect_mispredict_q = 0;
+    call_resolve_q = 0; call_mispredict_q = 0;
+    return_resolve_q = 0; return_mispredict_q = 0;
+    branch_direction_mispredict_q = 0;
+    branch_target_mispredict_q = 0;
     load_unknown_addr_q = 0; load_store_data_q = 0;
     load_partial_q = 0; load_bank_q = 0; load_device_q = 0;
     dmem_wait_q = 0;
@@ -173,6 +264,18 @@ module rv_perf_profiler #(
       $fwrite(perf_fd, "  \"retire_lane1_blocked_cycles\": %0d,\n", retire_lane1_blocked_q);
       $fwrite(perf_fd, "  \"branch_resolutions\": %0d,\n", branch_resolve_q);
       $fwrite(perf_fd, "  \"branch_mispredicts\": %0d,\n", branch_mispredict_q);
+      $fwrite(perf_fd, "  \"conditional_branch_resolutions\": %0d,\n", conditional_resolve_q);
+      $fwrite(perf_fd, "  \"conditional_branch_mispredicts\": %0d,\n", conditional_mispredict_q);
+      $fwrite(perf_fd, "  \"direct_jump_resolutions\": %0d,\n", direct_resolve_q);
+      $fwrite(perf_fd, "  \"direct_jump_mispredicts\": %0d,\n", direct_mispredict_q);
+      $fwrite(perf_fd, "  \"indirect_jump_resolutions\": %0d,\n", indirect_resolve_q);
+      $fwrite(perf_fd, "  \"indirect_jump_mispredicts\": %0d,\n", indirect_mispredict_q);
+      $fwrite(perf_fd, "  \"call_resolutions\": %0d,\n", call_resolve_q);
+      $fwrite(perf_fd, "  \"call_mispredicts\": %0d,\n", call_mispredict_q);
+      $fwrite(perf_fd, "  \"return_resolutions\": %0d,\n", return_resolve_q);
+      $fwrite(perf_fd, "  \"return_mispredicts\": %0d,\n", return_mispredict_q);
+      $fwrite(perf_fd, "  \"branch_direction_mispredicts\": %0d,\n", branch_direction_mispredict_q);
+      $fwrite(perf_fd, "  \"branch_target_mispredicts\": %0d,\n", branch_target_mispredict_q);
       $fwrite(perf_fd, "  \"flush_cycles\": %0d,\n", flush_q);
       $fwrite(perf_fd, "  \"load_stall_unknown_store_address\": %0d,\n", load_unknown_addr_q);
       $fwrite(perf_fd, "  \"load_stall_store_data\": %0d,\n", load_store_data_q);
@@ -269,9 +372,45 @@ module rv_perf_profiler #(
         if ((|retire_valid_i) && !(|retire_ready_i)) retire_backpressure_q = retire_backpressure_q + 1;
         if (retire_valid_i[1] && retire_fire_i[0] && !retire_fire_i[1])
           retire_lane1_blocked_q = retire_lane1_blocked_q + 1;
-        if (branch_resolve_i) branch_resolve_q = branch_resolve_q + 1;
-        if (branch_resolve_i && branch_mispredict_i)
-          branch_mispredict_q = branch_mispredict_q + 1;
+        if (branch_resolve_i) begin
+          branch_resolve_q = branch_resolve_q + 1;
+          if (is_conditional_branch(branch_instruction_i,
+                                    branch_inst_len_i)) begin
+            conditional_resolve_q = conditional_resolve_q + 1;
+            if (branch_mispredict_i)
+              conditional_mispredict_q = conditional_mispredict_q + 1;
+          end
+          if (is_direct_jump(branch_instruction_i, branch_inst_len_i)) begin
+            direct_resolve_q = direct_resolve_q + 1;
+            if (branch_mispredict_i)
+              direct_mispredict_q = direct_mispredict_q + 1;
+          end
+          if (is_indirect_jump(branch_instruction_i, branch_inst_len_i)) begin
+            indirect_resolve_q = indirect_resolve_q + 1;
+            if (branch_mispredict_i)
+              indirect_mispredict_q = indirect_mispredict_q + 1;
+          end
+          if (is_call_instruction(branch_instruction_i, branch_inst_len_i)) begin
+            call_resolve_q = call_resolve_q + 1;
+            if (branch_mispredict_i)
+              call_mispredict_q = call_mispredict_q + 1;
+          end
+          if (is_return_instruction(branch_instruction_i,
+                                    branch_inst_len_i)) begin
+            return_resolve_q = return_resolve_q + 1;
+            if (branch_mispredict_i)
+              return_mispredict_q = return_mispredict_q + 1;
+          end
+          if (branch_mispredict_i) begin
+            branch_mispredict_q = branch_mispredict_q + 1;
+            if (branch_predicted_taken_i != branch_actual_taken_i)
+              branch_direction_mispredict_q =
+                branch_direction_mispredict_q + 1;
+            else if (branch_actual_taken_i &&
+                     (branch_predicted_target_i != branch_actual_target_i))
+              branch_target_mispredict_q = branch_target_mispredict_q + 1;
+          end
+        end
         if (flush_valid_i) flush_q = flush_q + 1;
         for (int unsigned lane=0; lane<2; lane++) if (load_candidate_present_i[lane] && !load_candidate_valid_i[lane]) begin
           case (load_stall_reason_i[lane])

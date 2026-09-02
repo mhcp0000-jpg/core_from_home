@@ -115,6 +115,14 @@ module rv_soc_dpi_tb;
     .rob_head_complete_i(u_dut.u_core.u_backend.rob_head_complete),
     .branch_resolve_i(u_dut.u_core.u_backend.bp_resolve_valid_o),
     .branch_mispredict_i(u_dut.u_core.u_backend.bp_resolve_mispredict_o),
+    .branch_instruction_i(u_dut.u_core.u_backend.bp_resolve_instruction_o),
+    .branch_inst_len_i(u_dut.u_core.u_backend.bp_resolve_inst_len_o),
+    .branch_predicted_taken_i(
+      u_dut.u_core.u_backend.bp_resolve_prediction_o.taken),
+    .branch_predicted_target_i(
+      u_dut.u_core.u_backend.bp_resolve_prediction_o.target[31:0]),
+    .branch_actual_taken_i(u_dut.u_core.u_backend.bp_resolve_taken_o),
+    .branch_actual_target_i(u_dut.u_core.u_backend.bp_resolve_target_o),
     .flush_valid_i(u_dut.u_core.u_backend.flush_valid),
     .load_candidate_present_i(u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_present),
     .load_candidate_valid_i(u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_valid),

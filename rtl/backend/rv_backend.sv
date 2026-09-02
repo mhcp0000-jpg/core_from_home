@@ -1414,7 +1414,12 @@ module rv_backend #(
         branch_resolved_q[rob_alloc_sequence[lane]]<=1'b0;
         branch_cp_q[rob_alloc_sequence[lane]]<=cp_save_id[lane];
         branch_pc_q[rob_alloc_sequence[lane]]<=dec_pc[lane];
-        branch_instruction_q[rob_alloc_sequence[lane]]<=dec_instruction[lane];
+        // The predictor classifies compressed control flow from the original
+        // 16-bit encoding together with INST_LEN_16.  Execution uses the
+        // canonical expansion in the IQ, but resolve/training must retain the
+        // raw instruction or C.Bxx/C.J/C.JR/C.JALR silently miss all predictor
+        // training and speculative-history recovery.
+        branch_instruction_q[rob_alloc_sequence[lane]]<=dec_raw[lane];
         branch_inst_len_q[rob_alloc_sequence[lane]]<=dec_len[lane];
         branch_prediction_q[rob_alloc_sequence[lane]]<=dec_prediction[lane];
         if(cp_save[lane])cp_sequence_q[cp_save_id[lane]]<=rob_alloc_sequence[lane];

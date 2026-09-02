@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Performance baseline v1.12.1 (zero-bubble target refill + split store-address 구현·검증) |
+| 상태 | Performance baseline v1.12.2 (compressed-branch predictor resolve 수정·검증) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, 3차 CoreMark frontend/LSQ 튜닝 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 533,820 cycles, 576,450 instret, IPC 1.079858, 비공식 추정 3.746581 CoreMark/MHz를 기록했다. v1.12.0 대비 cycle은 2.65% 감소하고 IPC는 2.72% 증가했다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
+현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, 4차 CoreMark branch 튜닝 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 483,143 cycles, 576,450 instret, IPC 1.193125, 비공식 추정 4.139561 CoreMark/MHz를 기록했다. v1.12.1 대비 cycle은 9.49% 감소하고 IPC는 10.49% 증가했다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
 
 ## 1. 목적과 성능 포지션
 
@@ -328,6 +328,33 @@ cd ../company_rv_core
 | PMP entries | 8 | M/U 초기 protection |
 
 모든 용량은 parameter로 노출하되, 검증 configuration은 무분별하게 늘리지 않는다. 최초 sign-off 구성은 `rv32_default`와 `rv64_smoke` 두 개다.
+
+### 4.1 4-Issue 확장성 경계
+
+4-Issue/4-wide 코어로 확장하는 것은 가능하지만 현재 RTL에서 `ISSUE_WIDTH=4` 하나만
+바꾸는 증설은 아니다. `XLEN`, ROB/IQ/LSQ 용량과 일부 execution 구조는 이미
+parameter화됐지만 instruction bundle 폭은 여러 module interface에서 `[1:0]`으로
+고정돼 있다. 다음 항목을 하나의 configuration 변경으로 함께 넓혀야 한다.
+
+| 경로 | 4-wide 변경 요구 |
+|---|---|
+| Fetch/align/decode | cycle당 최대 4개 instruction boundary 생성, taken lane 뒤 younger lane 차단 |
+| Rename/dispatch | 4-lane intra-bundle RAW/WAW bypass, 최대 4개 INT/FP free-tag allocation, ROB/IQ/LSQ 원자 할당 |
+| Predictor/checkpoint | lane별 speculative GHR/RAS 순차 반영, 최대 4개 branch checkpoint 요청과 복구 priority |
+| Issue/select | global 4-grant age/port arbitration, 후보 수 증가에 따른 select critical path 분할 |
+| PRF/bypass | source 최대 12개와 destination 최대 4개의 read/write/bypass bandwidth |
+| Execute/WB | ALU 증설, branch/LSU/FPU port 정책, 최소 4-result completion arbitration |
+| ROB/commit | 4-head prefix retire, trap/store/CSR가 중간 lane에 있을 때 precise stop 규칙 |
+| Memory | dual LSU를 유지하면 memory issue는 최대 2/cycle이며 4-wide integer issue와 독립적으로 제한 |
+
+권장 migration은 먼저 bundle type과 `DISPATCH_WIDTH/ISSUE_WIDTH/COMMIT_WIDTH`를
+분리해 2-wide regression을 유지하고, 다음으로 frontend/rename/commit을 4-wide로
+넓힌 뒤 execution port를 workload에 맞춰 증설하는 순서다. 4-wide가 곧 IPC 2배를
+뜻하지는 않는다. 현재 CoreMark는 2-wide에서 IPC 1.193이고 평균 issue는 약
+1.230 uop/cycle이며 frontend empty, ROB-head incomplete, D-memory wait가 남아 있다.
+따라서 현 단계 baseline은 2-wide를 유지하고 IPC/PPA 측정 후 4-wide configuration을
+별도 milestone로 연다. 4-wide에서도 dual LSU와 2-bank 1R1W DTIM은 유지할 수 있지만
+memory instruction이 3개 이상 준비된 cycle에는 구조적 backpressure가 발생한다.
 
 ## 5. 파이프라인
 
@@ -1147,7 +1174,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_clint` | Implemented | single clock, sync active-low reset | base/size, clock/timebase Hz |
 | `rv_d_fabric` | Implemented | single clock, sync active-low reset | DTIM/CLINT map, ROB sequence, fairness bound |
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
-| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry target replay | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
+| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry atomic target refill | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Implemented candidate: RV32IMFC execution/recovery paths integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
@@ -1627,11 +1654,11 @@ parameter는 `PADDR_WIDTH`, `FETCH_BYTES`, `ENTRIES`이며 `FETCH_BYTES`와 `ENT
 |---|---|---|
 | lookup | `query_valid_i[1:0]`, lane별 `query_pc_i`, raw `query_instruction_i[31:0]`, `query_inst_len_i` | cycle당 두 명령을 분류하고 조회 |
 | prediction | `prediction_taken/target_o[1:0]`, `prediction_meta_o[1:0]`, `prediction_fire_i[1:0]` | 첫 taken lane 이후 lane은 frontend가 무효화; accept된 branch만 speculative state 진행 |
-| resolve | `resolve_valid_i`, PC/instruction/length, actual taken/target, mispredict, original prediction meta | PHT/BTB 학습; mispredict에서 snapshot+actual로 speculative GHR/RAS 복구 |
-| commit | lane별 `commit_valid_i`, PC/instruction/length/taken | precise fallback용 committed GHR/RAS 갱신 |
+| resolve | `resolve_valid_i`, PC/raw instruction/length, actual taken/target, mispredict, original prediction meta | raw encoding과 length는 반드시 일치; PHT/BTB 학습 및 snapshot+actual GHR/RAS 복구 |
+| commit | lane별 `commit_valid_i`, PC/raw instruction/length/taken | precise fallback용 committed GHR/RAS 갱신 |
 | flush | `redirect_valid_i` | resolve-mispredict가 아닌 full architectural redirect는 committed history/RAS로 복구 |
 
-baseline storage는 256-entry 4-way BTB, 각 2048-entry 2-bit인 bimodal/global/chooser table, 16-entry speculative RAS와 committed RAS mirror다. `prediction_meta_t`는 taken/target, lookup 전 11-bit GHR, bimodal/global prediction과 chooser 선택, 8-bit BTB set/way, RAS pointer/count 및 call/return 분류를 보관한다. conditional miss는 tournament direction, direct JAL/C.J는 즉시 계산 target, indirect miss는 not-taken, return은 RAS를 우선한다. predictor가 access fault를 만들 수 없다.
+baseline storage는 256-entry 4-way BTB, 각 2048-entry 2-bit인 bimodal/global/chooser table, 16-entry speculative RAS와 committed RAS mirror다. `prediction_meta_t`는 taken/target, lookup 전 11-bit GHR, bimodal/global prediction과 chooser 선택, 8-bit BTB set/way, RAS pointer/count 및 call/return 분류를 보관한다. conditional miss는 tournament direction, direct JAL/C.J는 즉시 계산 target, indirect miss는 not-taken, return은 RAS를 우선한다. execution/IQ는 C expander의 canonical instruction을 사용하지만 predictor의 query/resolve/commit은 raw 16/32-bit encoding을 사용한다. predictor가 access fault를 만들 수 없다.
 
 #### `rv_decode2`
 
@@ -1949,40 +1976,41 @@ cycle로 해석하면 안 된다.
 | 32-entry target/loop block buffer | 548,318 | 1.051306 | 3.647518 | 25-cycle 이득뿐이므로 원복 |
 | + zero-bubble target redirect/fill | 537,249 | 1.072966 | 3.722669 | 채택 |
 | + split store-address/data issue | **533,820** | **1.079858** | **3.746581** | v1.12.1 채택 baseline |
+| + raw compressed-branch resolve | **483,143** | **1.193125** | **4.139561** | v1.12.2 채택 baseline |
 
-최종 v1.12.1 profile window는 533,867 cycles이며 branch 135,984회 중 mispredict
-33,832회, frontend-empty 106,010 cycles, IQ가 비어 있지 않지만 issue가 없는
-cycle 103,803회, ROB head incomplete 142,131회, 미확정 older-store 때문에 load가
-막힌 cycle 23,551회, D-memory request wait 46,051회다. target-buffer hit는
-45,157/64,364 predicted redirect이고 target hit 다음 cycle에도 fetch가 비는 경우는
-2,405회뿐이다. replay register 호환 counter는 0이다. event는 서로 중첩되므로
+최종 v1.12.2 profile window는 483,190 cycles이며 branch 122,031회 중 mispredict
+7,477회(6.13%), frontend-empty 54,547 cycles, IQ가 비어 있지 않지만 issue가 없는
+cycle 103,442회, ROB head incomplete 118,573회, 미확정 older-store 때문에 load가
+막힌 cycle 24,043회, D-memory request wait 60,828회다. target-buffer hit는
+62,879/82,541 predicted redirect이고 target hit 다음 cycle에도 fetch가 비는 경우는
+2,566회뿐이다. replay register 호환 counter는 0이다. event는 서로 중첩되므로
 각 감소량을 architectural cycle 감소량으로 합산하지 않는다.
 
-v1.12.1에서 branch checkpoint를 8→16으로 다시 측정하면 533,820 기준과 직접
-동일한 조합은 아니지만 zero-bubble-only 기준 537,249→536,705, 544 cycles만
-감소했다. rename snapshot 저장량이 두 배가 되는 비용을 정당화하지 못해 8개를
-유지한다. 기존 LQ 24→32 실험도 이득이 없었고 lane-1 load 동시 retire는 112
-cycles 느려져 기존 single-copy retirement 경계를 유지한다.
+v1.12.2에서 branch checkpoint 8→16을 다시 측정하면 483,143→482,717, 426
+cycles(0.09%)만 감소했다. checkpoint stall은 71,735→56으로 없어졌지만 ROB
+capacity stall이 3,692→30,042로 이동했다. ROB 64와 checkpoint 16을 함께 적용해도
+482,536 cycles로 607 cycles(0.13%) 이득뿐이었다. rename snapshot과 ROB storage
+증가를 정당화하지 못하므로 ROB 48/checkpoint 8을 유지한다.
 
 #### 18.6.2 IPC 1.2 목표와 병목 개선 계획
 
-현재 architectural 측정값 576,450 instructions와 533,820 cycles에서 IPC 1.2를
+현재 architectural 측정값 576,450 instructions와 483,143 cycles에서 IPC 1.2를
 달성하려면 같은 instruction stream을 최대 480,375 cycles에 끝내야 한다. 즉
-현재보다 최소 53,445 cycles, 약 10.0%를 추가로 줄여야 한다. 단순히 queue
-entry를 늘리는 방식으로는 부족하며 frontend 공급, branch recovery, dependency,
-memory ordering을 순서대로 분해한다.
+현재보다 최소 2,768 cycles, 약 0.57%를 추가로 줄여야 한다. 단순히 queue entry를
+늘리기보다 frontend 공급, remaining branch miss, dependency와 memory ordering을
+순서대로 분해한다.
 
 | 관측 지표 | 값 | 전체 profile 대비 | 1차 해석 |
 |---|---:|---:|---|
-| fetched/dispatched | 706,936 / 533,867 cycles | 1.324 uop/cycle | 공급 폭은 1.2를 넘지만 wrong-path 포함 |
-| branch mispredict | 33,832 / 135,984 resolve | 24.9% | direction/target/recovery의 최우선 병목 |
-| frontend empty | 106,010 cycles | 19.9% | zero-bubble 적용 후에도 miss/partial refill이 남음 |
-| IQ nonempty/no issue | 103,803 cycles | 19.4% | operand/FU/port/WB 원인 분해 필요 |
-| ROB-head incomplete | 142,131 cycles | 26.6% | oldest producer 또는 memory 완료 대기 |
-| unknown older-store load stall | 23,551 cycles | 4.4% | split address로 53.4% 감소, conservative 잔여 비용 |
-| D-memory request wait | 46,051 cycles | 8.6% | bank/fabric/store-drain 원인 분해 필요 |
-| branch checkpoint stall | 44,251 cycles | 8.3% | 16-entry A/B 이득이 작아 resolve 개선 우선 |
-| lane-1 retire blocked | 46,183 cycles | 8.7% | 단독 완화 A/B는 성능 이득 없음 |
+| fetched/dispatched | 638,163 / 483,190 cycles | 1.321 uop/cycle | 공급 폭은 1.2를 넘지만 wrong-path 포함 |
+| branch mispredict | 7,477 / 122,031 resolve | 6.13% | conditional 7,195, indirect 282 |
+| frontend empty | 54,547 cycles | 11.3% | C-branch 학습 수정으로 절반 가까이 감소 |
+| IQ nonempty/no issue | 103,442 cycles | 21.4% | operand/FU/port/WB 원인 분해 필요 |
+| ROB-head incomplete | 118,573 cycles | 24.5% | oldest producer 또는 memory 완료 대기 |
+| unknown older-store load stall | 24,043 cycles | 5.0% | conservative ordering 잔여 비용 |
+| D-memory request wait | 60,828 cycles | 12.6% | bank/fabric/store-drain 원인 분해 필요 |
+| branch checkpoint stall | 71,735 cycles | 14.8% | 16-entry가 ROB stall로 이동해 순이득 0.09% |
+| lane-1 retire blocked | 47,855 cycles | 9.9% | 단독 완화 A/B는 성능 이득 없음 |
 
 위 event는 동시에 발생할 수 있으므로 표의 비율을 합산하지 않는다. 특히
 profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라는 뜻이
@@ -2032,14 +2060,27 @@ external request 한 건만 outstanding으로 둔다.
 
 ##### B. Branch prediction과 recovery
 
-현재 aggregate mispredict 비율은 약 24%지만 direction miss, BTB target miss,
-indirect JALR, RAS, predicted-taken target mismatch가 분리되어 있지 않다. 따라서
-다음 변경 전 profiler에 branch type, component 선택, actual/predicted direction,
-target mismatch와 redirect-to-first-valid latency를 기록한다. conditional direction이
-주원인이면 local-history 또는 loop predictor를 tournament에 추가하고, indirect
-target이 주원인이면 BTB tag/way와 target predictor를 우선한다. 더 큰 TAGE 계열은
-합성 면적·Fmax와 비교한 뒤 채택한다. predictor 정확도뿐 아니라 branch resolve를
-앞당겨 wrong-path window와 checkpoint 점유시간을 함께 줄여야 한다.
+v1.12.2 profiler는 branch type과 actual/predicted direction/target을 분리한다.
+초기 계측에서 135,984 resolve 중 약 60,000개 control-flow가 어떤 subtype에도
+분류되지 않았고 33,832 miss 중 33,089가 direction mismatch였다. 원인은 frontend
+query가 raw 16-bit C encoding을 사용하지만 backend resolve metadata가 canonical
+32-bit expansion을 저장하면서 `INST_LEN_16`을 함께 전달한 interface 불일치였다.
+predictor의 compressed classifier는 raw encoding을 기대하므로 해당 C branch는
+PHT/BTB training과 speculative GHR/RAS recovery에서 누락됐다.
+
+backend는 execution/IQ에는 canonical instruction을 유지하되 predictor resolve용
+`branch_instruction_q`에는 `dec_raw`를 저장한다. ROB commit도 원래부터 raw
+instruction을 보존하므로 query/resolve/commit 세 경계가 동일해졌다. predictor unit
+test는 raw C.BNEZ taken resolve가 동일 PHT entry를 학습하는지 검사한다. CoreMark는
+533,820→483,143 cycles(-9.49%), IPC 1.079858→1.193125, mispredict
+33,832→7,477(-77.9%)로 개선됐다. 최종 122,031 resolve는 conditional
+106,465/7,195(resolve/miss), direct 11,233/0, indirect 4,333/282이며 call
+3,659/4와 return 3,694/278은 각 분류와 중첩된다. direction miss는 7,198,
+target miss는 279다.
+
+다음 predictor 개선은 7,195 conditional miss가 반복 loop에서 오는지 PC별로
+분해한 후 local-history 또는 loop predictor를 결정한다. indirect/RAS miss 282개만
+단독 최적화해서는 IPC 1.2까지 필요한 2,768 cycles를 안정적으로 보장하기 어렵다.
 
 ##### C. Issue, execution, writeback, ROB
 
@@ -2076,8 +2117,10 @@ arbitration 또는 bank mapping을 바꾼다.
 | P1a 완료 | redirect-cycle target request + 16-entry target/loop block buffer | CRC/exit PASS, cycle 9.35% 감소 |
 | P1b 완료 | target-buffer redirect+queue fill 원자 처리 | replay counter 0, cycle 추가 2.02% 감소 |
 | P1c 조건부 | 2~4 outstanding IF + I-Fabric/PMP response ordering table | miss/straight-line latency가 다음 우선 병목일 때만 착수 |
-| P0b | branch subtype, issue/FU/WB, ROB-head class, D-bank counter | 다음 RTL 변경의 primary cause 확정 |
-| P2 | loop/local-history/target predictor와 early recovery | branch 종류별 miss 및 redirect penalty 감소 |
+| P0b 일부 완료 | branch subtype/direction/target counter | compressed resolve 계약 오류 확정 및 수정 |
+| P0c | issue/FU/WB, ROB-head class, D-bank counter | 남은 primary cause 확정 |
+| P2a 완료 | raw compressed-branch resolve/training/recovery | mispredict 77.9%, cycle 9.49% 감소 |
+| P2b 조건부 | loop/local-history/target predictor와 early recovery | PC별 conditional miss 근거가 있을 때 적용 |
 | P3a 완료 | split store-address/data issue | unknown-address stall 53.4%, cycle 추가 0.64% 감소 |
 | P3b | operand/FU/WB 병목에 근거한 추가 issue-path 변경 | 평균 useful dispatch/issue가 1.2를 초과 |
 | P4 | speculative load + violation replay | store-load ordering assertion와 directed replay PASS |
@@ -2226,3 +2269,4 @@ orphan speculative response 생성을 방지한다.
 | v1.11.1 | IPC 1.2 목표에 필요한 124,510-cycle 절감량을 정의하고 frontend empty의 predicted-taken queue flush/single-outstanding/stale-response 원인, branch 종류별 계측, issue/ROB dependency 분해, speculative load replay와 단계별 correctness·성능·PPA gate를 문서화 |
 | v1.12.0 | predicted redirect cycle target request와 16-entry direct-mapped target/loop block buffer/replay를 frontend에 추가. queue-zero/partial/outstanding/replay/redirect-refill profiler와 buffer 단위 회귀를 추가하고 CoreMark CRC/exit를 유지하며 604,885→548,343 cycle, IPC 0.952991→1.051258을 달성. 32-entry는 25-cycle 이득뿐이라 16-entry 유지 |
 | v1.12.1 | target-buffer hit의 redirect와 fetch-queue fill을 같은 edge에 원자 처리해 replay register/bubble을 제거하고, IQ store address/data phase 분할로 base-ready 주소를 SQ에 조기 확정. split update는 valid field만 덮어쓰며 store completion/visibility 규칙을 유지. CoreMark CRC/576,450 instret를 보존하면서 548,343→533,820 cycle, IPC 1.051258→1.079858을 달성. checkpoint 16개 재실험은 544-cycle 이득뿐이라 8개 유지 |
+| v1.12.2 | predictor branch subtype/direction/target profiler를 추가하고 backend resolve metadata가 compressed canonical instruction과 `INST_LEN_16`을 섞던 계약 오류를 수정. execution은 canonical instruction, predictor query/resolve/commit은 raw encoding을 사용하도록 분리하고 C.BNEZ 학습 단위 회귀를 추가. CoreMark CRC/576,450 instret를 보존하면서 533,820→483,143 cycle, mispredict 33,832→7,477, IPC 1.079858→1.193125를 달성. ROB 48/checkpoint 8을 유지하고 4-wide migration 경계를 문서화 |
