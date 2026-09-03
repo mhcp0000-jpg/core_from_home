@@ -14,6 +14,7 @@ source "${script_dir}/setup_env.sh"
 VERILOG_SUB="${VERILOG_SUB:-verilog_sub}"
 BUILD_DIR="${HTIF_BUILD_DIR:-${CORE_ROOT}/sim/xcelium/out}"
 TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
+HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES:-100000}"
 RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
 CXX_BIN="${CXX:-g++}"
 COMPILE_SCRIPT="${COMPILE_SCRIPT:-${XCELIUM_DIR}/isrun.scr}"
@@ -63,4 +64,5 @@ printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
   -BINARY="${BINARY}" \
   -SV_LIB="${dpi_library}" \
   -TIMEOUT_CYCLES="${TIMEOUT_CYCLES}" \
+  -HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES}" \
   "$@"

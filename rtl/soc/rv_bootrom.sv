@@ -41,8 +41,14 @@ module rv_bootrom_local #(
   assign bus.rsp_replay = MEM_REPLAY_NONE;
 
   initial begin : p_memory_init
-    if (INIT_FILE != "")
+    if (INIT_FILE != "") begin
+      $display("[BOOTROM][%0t] loading hex file: %s", $time, INIT_FILE);
       $readmemh(INIT_FILE, memory);
+      $display("[BOOTROM][%0t] hex loaded: word[0]=%016h word[1]=%016h depth=%0d",
+               $time, memory[0], memory[1], DEPTH);
+    end else begin
+      $display("[BOOTROM][%0t] WARNING: INIT_FILE is empty", $time);
+    end
   end
 
   always_ff @(posedge clk_i) begin

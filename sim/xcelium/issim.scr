@@ -31,6 +31,7 @@ endif
 set binary = ""
 set sv_lib = "${build_dir}/libcore_htif_dpi.so"
 set timeout_cycles = "2000000"
+set heartbeat_cycles = "100000"
 
 foreach arg ($argv)
   if ("$arg" =~ "-BINARY=*") then
@@ -39,6 +40,8 @@ foreach arg ($argv)
     set sv_lib = `echo "$arg" | sed 's/-SV_LIB=//'`
   else if ("$arg" =~ "-TIMEOUT_CYCLES=*") then
     set timeout_cycles = `echo "$arg" | sed 's/-TIMEOUT_CYCLES=//'`
+  else if ("$arg" =~ "-HEARTBEAT_CYCLES=*") then
+    set heartbeat_cycles = `echo "$arg" | sed 's/-HEARTBEAT_CYCLES=//'`
   endif
 end
 
@@ -80,4 +83,5 @@ exec xrun \
   -sv_lib "$sv_lib" \
   -log "${build_dir}/simulation.log" \
   +elf="$binary" \
-  +timeout_cycles="$timeout_cycles"
+  +timeout_cycles="$timeout_cycles" \
+  +heartbeat_cycles="$heartbeat_cycles"

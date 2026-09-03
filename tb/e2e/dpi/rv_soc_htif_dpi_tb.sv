@@ -111,8 +111,12 @@ module rv_soc_htif_dpi_tb;
       boot_wait <= 1'b0;
     end else begin
       for (int unsigned lane = 0; lane < 2; lane++) begin
-        if (trace_valid[lane] && (trace_instr[lane] == 32'h1050_0073))
+        if (!boot_wait && trace_valid[lane] &&
+            (trace_instr[lane] == 32'h1050_0073)) begin
+          $display("[TB][%0t] Boot ROM WFI retired: lane=%0d pc=0x%08h",
+                   $time, lane, trace_pc[lane]);
           boot_wait <= 1'b1;
+        end
       end
       if (load_failed)
         $fatal(1, "HTIF DPI ELF load/AXI transaction failed");
@@ -134,10 +138,45 @@ module rv_soc_htif_dpi_tb;
     external_irq = '0;
     timeout_cycles = 2_000_000;
     void'($value$plusargs("timeout_cycles=%d", timeout_cycles));
+    $display("[TB][%0t] rv_soc_htif_dpi_tb started; timeout=%0d cycles",
+             $time, timeout_cycles);
     repeat (3) @(posedge clk);
     @(negedge clk);
     rst_n = 1'b1;
+    $display("[TB][%0t] reset deasserted", $time);
     repeat (timeout_cycles) @(posedge clk);
+    $display("[TB][%0t] timeout state: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b",
+             $time, soc_ready, boot_wait, load_done, load_failed);
     $fatal(1, "HTIF DPI simulation timeout");
+  end
+
+  initial begin : p_progress_heartbeat
+    integer heartbeat_cycles;
+    heartbeat_cycles = 100_000;
+    void'($value$plusargs("heartbeat_cycles=%d", heartbeat_cycles));
+    wait (rst_n);
+    if (heartbeat_cycles > 0) begin
+      forever begin
+        repeat (heartbeat_cycles) @(posedge clk);
+        $display("[TB][%0t] heartbeat: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b trace_valid=%b trace_pc=%08h/%08h",
+                 $time, soc_ready, boot_wait, load_done, load_failed,
+                 trace_valid, trace_pc[0], trace_pc[1]);
+      end
+    end
+  end
+
+  initial begin : p_boot_mailbox_monitor
+    wait (rst_n && host_boot_flags[0]);
+    $display("[TB][%0t] boot mailbox ready: entry=0x%08h flags=0x%08h",
+             $time, host_boot_entry, host_boot_flags);
+  end
+
+  initial begin : p_software_interrupt_monitor
+    wait (rst_n);
+    @(posedge u_dut.msip);
+    $display("[TB][%0t] CLINT MSIP asserted; software interrupt is pending",
+             $time);
+    @(negedge u_dut.msip);
+    $display("[TB][%0t] CLINT MSIP cleared by Boot ROM handler", $time);
   end
 endmodule

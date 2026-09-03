@@ -40,6 +40,7 @@ module rv_host_dpi #(
   localparam int unsigned DATA_BYTES = DATA_WIDTH/8;
   localparam int unsigned AXI_SIZE = $clog2(DATA_BYTES);
   localparam int unsigned MAX_BURST_BEATS = 16;
+  localparam int unsigned LOAD_PROGRESS_BYTES = 16*1024;
 
   import "DPI-C" function void host_config(
     input int xlen, input int axi_data_width, input int axi_id_width,
@@ -354,10 +355,13 @@ module rv_host_dpi #(
   task automatic load_segment(input int segment_index);
     longint unsigned segment_address, file_size, memory_size;
     longint unsigned first_beat, final_address, current_beat;
+    longint unsigned loaded_bytes, next_report;
     int unsigned beat_count;
     segment_address = host_segment_paddr(segment_index);
     file_size = host_segment_filesz(segment_index);
     memory_size = host_segment_memsz(segment_index);
+    $display("[HOST-DPI][%0t] segment[%0d] start paddr=0x%08h filesz=%0d memsz=%0d",
+             $time, segment_index, segment_address, file_size, memory_size);
     if (!(address_in_region(segment_address, memory_size,
                             ITIM_BASE_ADDR, ITIM_SIZE_BYTES) ||
           address_in_region(segment_address, memory_size,
@@ -369,6 +373,7 @@ module rv_host_dpi #(
     first_beat = segment_address & ~(longint'(DATA_BYTES-1));
     final_address = segment_address + memory_size;
     current_beat = first_beat;
+    next_report = LOAD_PROGRESS_BYTES;
     while (current_beat < final_address) begin
       beat_count = 0;
       while ((beat_count < MAX_BURST_BEATS) &&
@@ -394,7 +399,17 @@ module rv_host_dpi #(
       axi_write_burst(ADDR_WIDTH'(current_beat), beat_count, AXI_SIZE[2:0]);
       if (load_failed_o) return;
       current_beat += beat_count*DATA_BYTES;
+      loaded_bytes = current_beat - first_beat;
+      if ((loaded_bytes >= next_report) || (current_beat >= final_address)) begin
+        $display("[HOST-DPI][%0t] segment[%0d] load progress %0d/%0d bytes",
+                 $time, segment_index,
+                 (loaded_bytes > memory_size) ? memory_size : loaded_bytes,
+                 memory_size);
+        next_report = ((loaded_bytes / LOAD_PROGRESS_BYTES) + 1) *
+                      LOAD_PROGRESS_BYTES;
+      end
     end
+    $display("[HOST-DPI][%0t] segment[%0d] complete", $time, segment_index);
   endtask
 
   assign host_event_ready_o = 1'b1;
@@ -440,7 +455,13 @@ module rv_host_dpi #(
     htif_exit_code_o = '0;
     next_id_q = '0;
 
-    wait (rst_ni && soc_ready_i && boot_wait_i);
+    $display("[HOST-DPI][%0t] initialized; waiting for reset release", $time);
+    wait (rst_ni);
+    $display("[HOST-DPI][%0t] reset released; waiting for SoC ready", $time);
+    wait (soc_ready_i);
+    $display("[HOST-DPI][%0t] SoC ready; waiting for Boot ROM WFI retire", $time);
+    wait (boot_wait_i);
+    $display("[HOST-DPI][%0t] Boot ROM WFI observed; starting ELF load", $time);
     host_config(XLEN, DATA_WIDTH, ID_WIDTH,
       BOOTROM_BASE_ADDR, BOOTROM_SIZE_BYTES,
       ITIM_BASE_ADDR, ITIM_SIZE_BYTES, DTIM_BASE_ADDR, DTIM_SIZE_BYTES,
@@ -448,9 +469,15 @@ module rv_host_dpi #(
     if (!$value$plusargs("elf=%s", elf_path)) begin
       load_failed_o = 1'b1;
       $error("DPI Host requires +elf=<path>");
-    end else if (!host_open_elf(elf_path)) begin
-      load_failed_o = 1'b1;
-      $error("ELF parser failed: %s", host_last_error());
+    end else begin
+      $display("[HOST-DPI][%0t] opening ELF: %s", $time, elf_path);
+      if (!host_open_elf(elf_path)) begin
+        load_failed_o = 1'b1;
+        $error("ELF parser failed: %s", host_last_error());
+      end else begin
+        $display("[HOST-DPI][%0t] ELF parsed: entry=0x%08h segments=%0d",
+                 $time, host_elf_entry(), host_segment_count());
+      end
     end
 
     if (!load_failed_o) begin
@@ -462,15 +489,34 @@ module rv_host_dpi #(
     end
 
     if (!load_failed_o) begin
+      $display("[HOST-DPI][%0t] all ELF segments loaded", $time);
+      $display("[HOST-DPI][%0t] writing boot entry 0x%08h to 0x%08h",
+               $time, host_elf_entry(),
+               HOSTIF_BASE_ADDR + HOSTIF_BOOT_ENTRY_OFFSET);
       write_register32(HOSTIF_BASE_ADDR + HOSTIF_BOOT_ENTRY_OFFSET,
                        32'(host_elf_entry()));
-      write_register32(HOSTIF_BASE_ADDR + HOSTIF_BOOT_FLAGS_OFFSET, 32'h1);
+      if (!load_failed_o) begin
+        $display("[HOST-DPI][%0t] writing boot-ready flag to 0x%08h",
+                 $time, HOSTIF_BASE_ADDR + HOSTIF_BOOT_FLAGS_OFFSET);
+        write_register32(HOSTIF_BASE_ADDR + HOSTIF_BOOT_FLAGS_OFFSET, 32'h1);
+      end
       // MSIP is deliberately the final write: every PT_LOAD B response and
       // both HostIF mailbox writes have completed before the core wakes.
-      write_register32(CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 32'h1);
+      if (!load_failed_o) begin
+        $display("[HOST-DPI][%0t] asserting software interrupt: CLINT MSIP[0] @ 0x%08h",
+                 $time, CLINT_BASE_ADDR + CLINT_MSIP_OFFSET);
+        write_register32(CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 32'h1);
+        if (!load_failed_o)
+          $display("[HOST-DPI][%0t] CLINT MSIP write acknowledged", $time);
+      end
       load_done_o = !load_failed_o;
-      if (HTIF_ENABLE && !load_failed_o)
+      if (load_done_o)
+        $display("[HOST-DPI][%0t] ELF load complete; core wake-up requested", $time);
+      if (HTIF_ENABLE && !load_failed_o) begin
+        $display("[HOST-DPI][%0t] HTIF server polling TOHOST=0x%08h FROMHOST=0x%08h",
+                 $time, TOHOST_ADDR, FROMHOST_ADDR);
         htif_server_loop();
+      end
     end
   end
 

@@ -99,6 +99,40 @@ csh/tcsh 환경에서는 repository root에서 다음을 사용한다.
 source sim/xcelium/setup_env.csh
 ```
 
+## 시작 로그와 정지 위치 확인
+
+simulation이 시작되면 다음 단계가 순서대로 출력된다.
+
+```text
+[BOOTROM] loading hex file: ...
+[BOOTROM] hex loaded: word[0]=... word[1]=...
+[TB] rv_soc_htif_dpi_tb started ...
+[TB] reset deasserted
+[HOST-DPI] SoC ready; waiting for Boot ROM WFI retire
+[TB] Boot ROM WFI retired ...
+[HOST-DPI] Boot ROM WFI observed; starting ELF load
+[HOST-DPI] opening ELF: ...
+[HOST-DPI] ELF parsed: entry=... segments=...
+[HOST-DPI] segment[N] load progress ...
+[TB] boot mailbox ready ...
+[TB] CLINT MSIP asserted; software interrupt is pending
+[HOST-DPI] CLINT MSIP write acknowledged
+[TB] CLINT MSIP cleared by Boot ROM handler
+```
+
+ELF segment 전송은 16 KiB마다 진행률을 출력한다. 장시간 변화가 없을 때는 기본
+100,000 cycle마다 heartbeat가 현재 `soc_ready`, `boot_wait`, ELF load 상태와 최근
+commit trace PC를 출력한다. 간격은 plusarg로 바꿀 수 있고 `0`이면 끈다.
+
+```bash
+TIMEOUT_CYCLES=5000000 HEARTBEAT_CYCLES=20000 \
+  BINARY=/server/path/program.elf ./sim/xcelium/run_verilog_sub.sh
+```
+
+첫 `[TB]` 로그도 없다면 RTL 실행 전인 elaboration/DPI loading 단계 문제이고,
+`SoC ready` 이후 멈추면 Boot ROM fetch/WFI 경로, segment 진행 중 멈추면 해당 Host AXI
+write의 ready/response 경로를 우선 확인한다.
+
 ## DPI/HTIF 동작
 
 ```text

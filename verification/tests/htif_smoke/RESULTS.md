@@ -20,6 +20,17 @@ time-zero 4-state assertion guard와 IFU/dual-LSU stalled-request hold 수정 �
 80020000 D tohost
 80020008 D fromhost
 80020010 d syscall_block
+[BOOTROM][0] loading hex file: tb/fixtures/bootrom/bootrom_host_jump.hex
+[BOOTROM][0] hex loaded: word[0]=02028293000012b7 word[1]=0080029330529073 depth=512
+[TB][255] Boot ROM WFI retired: lane=0 pc=0x00001018
+[HOST-DPI][255] Boot ROM WFI observed; starting ELF load
+[HOST-DPI][255] ELF parsed: entry=0x80000000 segments=2
+[HOST-DPI][930] segment[0] complete
+[HOST-DPI][1130] segment[1] complete
+[TB][1205] boot mailbox ready: entry=0x80000000 flags=0x00000001
+[TB][1255] CLINT MSIP asserted; software interrupt is pending
+[HOST-DPI][1280] CLINT MSIP write acknowledged
+[TB][1385] CLINT MSIP cleared by Boot ROM handler
 HTIF direct-string print PASS
 HTIF proxy write syscall PASS
 [host-finish code=0]
@@ -31,3 +42,7 @@ HTIF TEST PASS
 RV32IMF/RV32C/M-U privilege ELF의 architectural trace까지 통과했다. 개발 PC에는
 회사 `verilog_sub`/Xcelium이 없으므로 같은 filelist와 DPI shared library의 실제
 Cadence 4-state 실행은 Linux 서버에서 최종 교차 확인한다.
+
+2026-09-03에는 Xcelium 정지 위치를 식별할 수 있도록 위 startup/ELF/MSIP 진단 로그를
+추가한 뒤 같은 HTIF smoke ELF를 다시 실행했다. RTL parse/elaboration과 최종 HTIF
+PASS가 유지됐으며, 16 KiB 단위 ELF 진행률 및 100,000-cycle heartbeat도 지원한다.
