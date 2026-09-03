@@ -1,3 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Environment Setup
+# ---------------------------------------------------------------------------
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+prj_root="$(cd -- "${script_dir}/../.." && pwd)"
+
+# 사용자 설정: ELF 파일 경로
+BINARY="${BINARY:-/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf}"
+
+export CORE_ROOT="${prj_root}"
+export RTL_DIR="${CORE_ROOT}/rtl"
+export TB_DIR="${CORE_ROOT}/tb"
+export XCELIUM_DIR="${CORE_ROOT}/sim/xcelium"
+
+# 라이브러리 빌드 경로 설정 (현재 프로젝트 내부로 변경)
+BUILD_DIR="${CORE_ROOT}/sim/xcelium/out"
+mkdir -p "${BUILD_DIR}"
+dpi_library="${BUILD_DIR}/libcore_htif_dpi.so"
+
+TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
+CXX_BIN="${CXX:-g++}"
+VERILOG_SUB="${VERILOG_SUB:-verilog_sub}"
+
+# DPI Library 빌드 (현재 프로젝트 내 소스 사용)
+printf 'Building DPI library: %s\n' "${dpi_library}"
+"${CXX_BIN}" -std=c++17 -O2 -fPIC -shared \
+  "${TB_DIR}/e2e/dpi/elf_loader.cpp" -o "${dpi_library}"
+
+#- Build (Compile/Elaborate)
+printf 'Step 1: Compiling RTL...\n'
+"${VERILOG_SUB}" -Is -compile isrun.scr -CONFIG="CY_LATEST"
+
+#- Simulate
+printf 'Step 2: Running Simulation with ELF: %s\n' "${BINARY}"
+"${VERILOG_SUB}" -Is -short issim.scr -CONFIG="CY_LATEST" -BINARY="${BINARY}" -SV_LIB="${dpi_library}"
+
+
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
 이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
