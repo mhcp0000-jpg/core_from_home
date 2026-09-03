@@ -36,9 +36,8 @@ VERILOG_SUB=my_verilog_sub BINARY=/server/project/test/program.elf \
 `-sv_lib`, `+elf=`를 전달한다. 회사 wrapper가 별도의 sub-command 또는 옵션 순서를
 요구하면 `run_verilog_sub.sh` 맨 아래의 실행부 한 곳만 맞추면 된다.
 
-실행 스크립트의 `+define+SYNTHESIS`는 시뮬레이터별 SVA 처리 차이를 피하기
-위해 `ifndef SYNTHESIS` 구간의 assertion만 제외한다. 합성 RTL 데이터 경로와
-DPI/AXI/HTIF 동작은 동일하다.
+기본 실행은 `SYNTHESIS`를 define하지 않아 RTL assertion을 활성화한다.
+합성 전용 flow에서만 해당 define을 추가한다.
 
 ## 파일 구조
 
@@ -64,7 +63,6 @@ $TB_DIR/e2e/dpi/rv_host_dpi.sv
 ```bash
 source sim/xcelium/setup_env.sh
 verilog_sub -64bit -sv \
-  +define+SYNTHESIS \
   -f "$XCELIUM_DIR/rtl.f" \
   -f "$XCELIUM_DIR/htif_tb.f" \
   -top rv_soc_htif_dpi_tb \

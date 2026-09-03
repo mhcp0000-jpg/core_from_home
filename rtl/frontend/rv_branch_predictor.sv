@@ -486,9 +486,14 @@ module rv_branch_predictor #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    assert (!(prediction_taken_o[0] && prediction_fire_i[1]));
-    assert (speculative_ras_count_q <= RAS_DEPTH);
-    assert (committed_ras_count_q <= RAS_DEPTH);
+    // Four-state simulators evaluate immediate assertions once at time zero,
+    // before the reset edge has initialized the speculative/committed state.
+    // Only check architectural invariants after reset is known deasserted.
+    if (rst_ni === 1'b1) begin
+      assert (!(prediction_taken_o[0] && prediction_fire_i[1]));
+      assert (speculative_ras_count_q <= RAS_DEPTH);
+      assert (committed_ras_count_q <= RAS_DEPTH);
+    end
   end
 `endif
 

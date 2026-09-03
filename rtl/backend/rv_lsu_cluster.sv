@@ -714,22 +714,24 @@ module rv_lsu_cluster #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    for (int unsigned lane = 0; lane < 2; lane++) begin
-      if (dmem_req_valid_o[lane] && dmem_req_write_o[lane])
-        assert (dmem_req_committed_o[lane]);
-      if (flush_valid_i)
-        assert (!(dmem_req_valid_o[lane] && !dmem_req_write_o[lane]));
-      assert (!(load_forward_valid[lane] && load_memory_read[lane]));
-      if (agu_update_valid[lane] && agu_update_is_store[lane] &&
-          agu_update_address_valid[lane] &&
-          !agu_update_store_data_valid[lane])
-        assert (!completion_valid_o[lane]);
-      if (completion_valid_o[lane] && agu_update_is_store[lane])
-        assert (agu_update_store_data_valid[lane]);
+    if (rst_ni === 1'b1) begin
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (dmem_req_valid_o[lane] && dmem_req_write_o[lane])
+          assert (dmem_req_committed_o[lane]);
+        if (flush_valid_i)
+          assert (!(dmem_req_valid_o[lane] && !dmem_req_write_o[lane]));
+        assert (!(load_forward_valid[lane] && load_memory_read[lane]));
+        if (agu_update_valid[lane] && agu_update_is_store[lane] &&
+            agu_update_address_valid[lane] &&
+            !agu_update_store_data_valid[lane])
+          assert (!completion_valid_o[lane]);
+        if (completion_valid_o[lane] && agu_update_is_store[lane])
+          assert (agu_update_store_data_valid[lane]);
+      end
+      if (memory_idle_o)
+        assert (store_buffer_empty_o && !load_outstanding &&
+                !direct_pending_q && !direct_failed_q);
     end
-    if (memory_idle_o)
-      assert (store_buffer_empty_o && !load_outstanding &&
-              !direct_pending_q && !direct_failed_q);
   end
 `endif
 

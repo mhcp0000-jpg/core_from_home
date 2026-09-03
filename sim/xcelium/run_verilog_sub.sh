@@ -42,7 +42,7 @@ dpi_library="${BUILD_DIR}/libcore_htif_dpi.so"
 # $readmemh relative path has an unambiguous base directory.
 cd "${CORE_ROOT}"
 exec "${VERILOG_SUB}" \
-  -64bit -sv -timescale 1ns/1ps +define+SYNTHESIS \
+  -64bit -sv -timescale 1ns/1ps \
   -f "${XCELIUM_DIR}/rtl.f" \
   -f "${XCELIUM_DIR}/htif_tb.f" \
   -top rv_soc_htif_dpi_tb \

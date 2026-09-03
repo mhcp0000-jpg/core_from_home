@@ -79,6 +79,11 @@ module rv_frontend #(
   logic response_is_current;
   logic response_fire;
   logic request_fire;
+  logic request_candidate_valid;
+  logic request_hold_q;
+  logic [PADDR_WIDTH-1:0] request_hold_addr_q;
+  logic [3:0] request_hold_id_q;
+  logic [3:0] request_hold_epoch_q;
   logic response_releases_slot;
   logic request_slot_available;
   logic memory_fill_valid;
@@ -124,15 +129,25 @@ module rv_frontend #(
                                        !redirect_valid_i;
   // A redirect target may issue on the redirect cycle when the old request
   // slot is free.  A target-buffer hit supplies the block locally instead.
-  assign imem_req_valid_o = request_slot_available &&
-                            (!fault_stop_q || frontend_redirect_valid) &&
-                            (queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES)) &&
-                            (!frontend_redirect_valid ||
-                             !redirect_uses_target_buffer);
-  assign imem_req_addr_o = frontend_redirect_valid ? redirect_block_addr :
-                                                     next_request_addr_q;
-  assign imem_req_id_o = next_id_q;
-  assign imem_req_epoch_o = frontend_redirect_valid ? epoch_q + 1'b1 : epoch_q;
+  assign request_candidate_valid = request_slot_available &&
+                                   (!fault_stop_q || frontend_redirect_valid) &&
+                                   (queue_byte_count <=
+                                    (QUEUE_BYTES-FETCH_BYTES)) &&
+                                   (!frontend_redirect_valid ||
+                                    !redirect_uses_target_buffer);
+  // Once a request is visible, local ready/valid follows the same rule as AXI:
+  // valid and its payload remain stable until accepted.  A redirect is the
+  // only cancellation boundary and immediately replaces an old held request.
+  assign imem_req_valid_o = (request_hold_q && !frontend_redirect_valid) ||
+                            request_candidate_valid;
+  assign imem_req_addr_o = (request_hold_q && !frontend_redirect_valid) ?
+    request_hold_addr_q :
+    (frontend_redirect_valid ? redirect_block_addr : next_request_addr_q);
+  assign imem_req_id_o = (request_hold_q && !frontend_redirect_valid) ?
+    request_hold_id_q : next_id_q;
+  assign imem_req_epoch_o = (request_hold_q && !frontend_redirect_valid) ?
+    request_hold_epoch_q :
+    (frontend_redirect_valid ? epoch_q + 1'b1 : epoch_q);
   assign request_fire = imem_req_valid_o && imem_req_ready_i;
 
   assign memory_fill_valid = imem_rsp_valid_i && response_is_current &&
@@ -269,7 +284,20 @@ module rv_frontend #(
       outstanding_epoch_q <= '0;
       outstanding_addr_q <= '0;
       fault_stop_q <= 1'b0;
+      request_hold_q <= 1'b0;
+      request_hold_addr_q <= '0;
+      request_hold_id_q <= '0;
+      request_hold_epoch_q <= '0;
     end else begin
+      if (imem_req_valid_o && !imem_req_ready_i) begin
+        request_hold_q <= 1'b1;
+        request_hold_addr_q <= imem_req_addr_o;
+        request_hold_id_q <= imem_req_id_o;
+        request_hold_epoch_q <= imem_req_epoch_o;
+      end else begin
+        request_hold_q <= 1'b0;
+      end
+
       if (request_fire) begin
         outstanding_q <= 1'b1;
         outstanding_id_q <= imem_req_id_o;
@@ -303,7 +331,13 @@ module rv_frontend #(
       imem_req_valid_o && !imem_req_ready_i |=> imem_req_valid_o &&
       $stable({imem_req_addr_o, imem_req_id_o, imem_req_epoch_o});
   endproperty
-  assert property (p_request_stable_when_stalled);
+  assert property (p_request_stable_when_stalled)
+    else $error("IF request changed while stalled: valid=%b ready=%b addr=%h prev_addr=%h id=%h prev_id=%h epoch=%h prev_epoch=%h qbytes=%0d outstanding=%b rsp_fire=%b",
+                imem_req_valid_o, imem_req_ready_i, imem_req_addr_o,
+                $past(imem_req_addr_o), imem_req_id_o,
+                $past(imem_req_id_o), imem_req_epoch_o,
+                $past(imem_req_epoch_o), queue_byte_count, outstanding_q,
+                response_fire);
 
   property p_response_id_matches_outstanding;
     @(posedge clk_i) disable iff (!rst_ni)

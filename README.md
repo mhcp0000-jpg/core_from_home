@@ -17,8 +17,13 @@ chmod +x sim/xcelium/*.sh
 ./sim/xcelium/run_verilog_sub.sh
 ```
 
-스크립트는 시뮬레이터별 SVA 차이를 피하기 위해 `SYNTHESIS` define으로
-assertion 구간만 제외하며, 실제 RTL 데이터 경로는 변경하지 않습니다.
+기본 Xcelium 실행은 `SYNTHESIS`를 define하지 않으며 RTL assertion을 계속
+활성화한 상태로 동작합니다.
+
+모든 합성 control/pipeline flip-flop은 synchronous active-low `rst_ni`로
+초기화되며 reset 동안 core I/D request는 차단됩니다. ITIM/DTIM과 Boot ROM의
+data array는 SRAM/ROM 추론을 위해 reset-clear하지 않으므로 ELF loader가 사용할
+영역을 적재한 뒤 core를 시작해야 합니다.
 
 스크립트는 DPI shared library를 만들고 `verilog_sub`에 RTL/TB filelist, top,
 `+elf=`를 전달합니다. 런타임 Host 계약은 DTIM의 64-bit

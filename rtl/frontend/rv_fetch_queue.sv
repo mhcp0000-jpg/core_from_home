@@ -220,13 +220,15 @@ module rv_fetch_queue #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    assert (!out_valid_o[1] || out_valid_o[0]);
-    assert (count_q <= QUEUE_BYTES);
-    if (redirect_valid_i && fill_valid_i) begin
-      assert (fill_ready_o);
-      assert ((redirect_paddr >= fill_addr_i) &&
-              (redirect_paddr <
-               (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES))));
+    if (rst_ni === 1'b1) begin
+      assert (!out_valid_o[1] || out_valid_o[0]);
+      assert (count_q <= QUEUE_BYTES);
+      if (redirect_valid_i && fill_valid_i) begin
+        assert (fill_ready_o);
+        assert ((redirect_paddr >= fill_addr_i) &&
+                (redirect_paddr <
+                 (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES))));
+      end
     end
   end
 `endif

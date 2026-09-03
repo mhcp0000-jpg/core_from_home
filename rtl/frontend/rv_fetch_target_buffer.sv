@@ -35,7 +35,13 @@ module rv_fetch_target_buffer #(
   assign lookup_data_o = data_q[lookup_index];
 
   always_ff @(posedge clk_i) begin
-    if (!rst_ni || invalidate_i) begin
+    if (!rst_ni) begin
+      valid_q <= '0;
+      for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
+        tag_q[entry] <= '0;
+        data_q[entry] <= '0;
+      end
+    end else if (invalidate_i) begin
       valid_q <= '0;
     end else if (fill_valid_i) begin
       valid_q[fill_index] <= 1'b1;

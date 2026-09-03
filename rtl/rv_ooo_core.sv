@@ -116,6 +116,37 @@ module rv_ooo_core #(
   logic                          ifu_pmp_fault_pending_q;
   logic [3:0]                    ifu_pmp_fault_id_q, ifu_pmp_fault_epoch_q;
 
+  // The backend may choose a different LSU source while a downstream port is
+  // backpressured (for example, when a committed store gains priority over a
+  // load).  One fall-through entry per physical LSU port decouples that
+  // arbitration from the external ready/valid contract.  Acceptance into this
+  // buffer is also the LSQ's issue point, so a later flush can retain a killed
+  // outstanding load until its response is drained without reusing its ID.
+  logic [1:0]                    backend_dmem_req_valid;
+  logic [1:0]                    backend_dmem_req_ready;
+  logic [1:0][5:0]               backend_dmem_req_id;
+  logic [1:0]                    backend_dmem_req_write;
+  logic [1:0][PADDR_WIDTH-1:0]   backend_dmem_req_addr;
+  logic [1:0][2:0]               backend_dmem_req_size;
+  logic [1:0][MEM_DATA_WIDTH-1:0] backend_dmem_req_wdata;
+  logic [1:0][MEM_DATA_WIDTH/8-1:0] backend_dmem_req_wstrb;
+  logic [1:0][1:0]               backend_dmem_req_priv;
+  logic [1:0][ROB_SEQ_WIDTH-1:0] backend_dmem_req_rob_seq;
+  logic [1:0]                    backend_dmem_req_committed;
+  logic [1:0]                    backend_dmem_req_device;
+
+  logic [1:0]                    dmem_hold_valid_q;
+  logic [1:0][5:0]               dmem_hold_id_q;
+  logic [1:0]                    dmem_hold_write_q;
+  logic [1:0][PADDR_WIDTH-1:0]   dmem_hold_addr_q;
+  logic [1:0][2:0]               dmem_hold_size_q;
+  logic [1:0][MEM_DATA_WIDTH-1:0] dmem_hold_wdata_q;
+  logic [1:0][MEM_DATA_WIDTH/8-1:0] dmem_hold_wstrb_q;
+  logic [1:0][1:0]               dmem_hold_priv_q;
+  logic [1:0][ROB_SEQ_WIDTH-1:0] dmem_hold_rob_seq_q;
+  logic [1:0]                    dmem_hold_committed_q;
+  logic [1:0]                    dmem_hold_device_q;
+
   initial begin : p_parameter_checks
     if (!is_supported_xlen(XLEN))
       $fatal(1, "XLEN must be 32 or 64");
@@ -201,12 +232,13 @@ module rv_ooo_core #(
   // A denied fetch is completed locally as an instruction access fault. The
   // frontend still observes its original ID/epoch and therefore applies the
   // same stale-response rules as a memory response after a redirect.
-  assign imem_req_valid_o = fe_imem_req_valid && ifu_pmp_allow;
+  assign imem_req_valid_o = rst_ni && fe_imem_req_valid && ifu_pmp_allow;
   assign imem_req_addr_o = fe_imem_req_addr;
   assign imem_req_id_o = fe_imem_req_id;
   assign imem_req_epoch_o = fe_imem_req_epoch;
-  assign fe_imem_req_ready = ifu_pmp_allow ? imem_req_ready_i :
-                             !ifu_pmp_fault_pending_q;
+  assign fe_imem_req_ready = rst_ni &&
+                             (ifu_pmp_allow ? imem_req_ready_i :
+                              !ifu_pmp_fault_pending_q);
   assign fe_imem_rsp_valid = ifu_pmp_fault_pending_q ? 1'b1 : imem_rsp_valid_i;
   assign fe_imem_rsp_id = ifu_pmp_fault_pending_q ?
                           ifu_pmp_fault_id_q : imem_rsp_id_i;
@@ -229,6 +261,76 @@ module rv_ooo_core #(
       end
       if (ifu_pmp_fault_pending_q && fe_imem_rsp_ready)
         ifu_pmp_fault_pending_q <= 1'b0;
+    end
+  end
+
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      backend_dmem_req_ready[lane] = rst_ni &&
+        (!dmem_hold_valid_q[lane] || dmem_req_ready_i[lane]);
+
+      dmem_req_valid_o[lane] = rst_ni &&
+        (dmem_hold_valid_q[lane] || backend_dmem_req_valid[lane]);
+      dmem_req_id_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_id_q[lane] : backend_dmem_req_id[lane];
+      dmem_req_write_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_write_q[lane] : backend_dmem_req_write[lane];
+      dmem_req_addr_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_addr_q[lane] : backend_dmem_req_addr[lane];
+      dmem_req_size_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_size_q[lane] : backend_dmem_req_size[lane];
+      dmem_req_wdata_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_wdata_q[lane] : backend_dmem_req_wdata[lane];
+      dmem_req_wstrb_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_wstrb_q[lane] : backend_dmem_req_wstrb[lane];
+      dmem_req_priv_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_priv_q[lane] : backend_dmem_req_priv[lane];
+      dmem_req_rob_seq_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_rob_seq_q[lane] : backend_dmem_req_rob_seq[lane];
+      dmem_req_committed_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_committed_q[lane] : backend_dmem_req_committed[lane];
+      dmem_req_device_o[lane] = dmem_hold_valid_q[lane] ?
+        dmem_hold_device_q[lane] : backend_dmem_req_device[lane];
+    end
+  end
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      dmem_hold_valid_q <= '0;
+      dmem_hold_id_q <= '0;
+      dmem_hold_write_q <= '0;
+      dmem_hold_addr_q <= '0;
+      dmem_hold_size_q <= '0;
+      dmem_hold_wdata_q <= '0;
+      dmem_hold_wstrb_q <= '0;
+      dmem_hold_priv_q <= '0;
+      dmem_hold_rob_seq_q <= '0;
+      dmem_hold_committed_q <= '0;
+      dmem_hold_device_q <= '0;
+    end else begin
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (backend_dmem_req_ready[lane]) begin
+          // With an empty entry and ready downstream, the fall-through request
+          // is consumed directly.  If an old held request is consumed, capture
+          // a simultaneously accepted replacement for the following cycle.
+          dmem_hold_valid_q[lane] <= backend_dmem_req_valid[lane] &&
+            (dmem_hold_valid_q[lane] || !dmem_req_ready_i[lane]);
+          if (backend_dmem_req_valid[lane] &&
+              (dmem_hold_valid_q[lane] || !dmem_req_ready_i[lane])) begin
+            dmem_hold_id_q[lane] <= backend_dmem_req_id[lane];
+            dmem_hold_write_q[lane] <= backend_dmem_req_write[lane];
+            dmem_hold_addr_q[lane] <= backend_dmem_req_addr[lane];
+            dmem_hold_size_q[lane] <= backend_dmem_req_size[lane];
+            dmem_hold_wdata_q[lane] <= backend_dmem_req_wdata[lane];
+            dmem_hold_wstrb_q[lane] <= backend_dmem_req_wstrb[lane];
+            dmem_hold_priv_q[lane] <= backend_dmem_req_priv[lane];
+            dmem_hold_rob_seq_q[lane] <= backend_dmem_req_rob_seq[lane];
+            dmem_hold_committed_q[lane] <=
+              backend_dmem_req_committed[lane];
+            dmem_hold_device_q[lane] <= backend_dmem_req_device[lane];
+          end
+        end
+      end
     end
   end
 
@@ -268,18 +370,18 @@ module rv_ooo_core #(
     .fetch_fault_i       (fe_fetch_fault),
     .redirect_valid_o    (redirect_valid),
     .redirect_pc_o       (redirect_pc),
-    .dmem_req_valid_o,
-    .dmem_req_ready_i,
-    .dmem_req_id_o,
-    .dmem_req_write_o,
-    .dmem_req_addr_o,
-    .dmem_req_size_o,
-    .dmem_req_wdata_o,
-    .dmem_req_wstrb_o,
-    .dmem_req_priv_o,
-    .dmem_req_rob_seq_o,
-    .dmem_req_committed_o,
-    .dmem_req_device_o,
+    .dmem_req_valid_o     (backend_dmem_req_valid),
+    .dmem_req_ready_i     (backend_dmem_req_ready),
+    .dmem_req_id_o        (backend_dmem_req_id),
+    .dmem_req_write_o     (backend_dmem_req_write),
+    .dmem_req_addr_o      (backend_dmem_req_addr),
+    .dmem_req_size_o      (backend_dmem_req_size),
+    .dmem_req_wdata_o     (backend_dmem_req_wdata),
+    .dmem_req_wstrb_o     (backend_dmem_req_wstrb),
+    .dmem_req_priv_o      (backend_dmem_req_priv),
+    .dmem_req_rob_seq_o   (backend_dmem_req_rob_seq),
+    .dmem_req_committed_o (backend_dmem_req_committed),
+    .dmem_req_device_o    (backend_dmem_req_device),
     .dmem_rsp_valid_i,
     .dmem_rsp_ready_o,
     .dmem_rsp_id_i,

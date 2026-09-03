@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Integration baseline v1.14.0 (server HTIF/DPI 실행 경로 추가) |
+| 상태 | Integration baseline v1.14.1 (reset/ready-valid hardening) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -94,6 +94,24 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 - PLIC memory-mapped register는 32-bit naturally aligned access를 기준으로 한다.
 - initial CLINT는 single-hart MSWI와 MTIMER register behavior를 구현한다.
 - AXI4 narrow transfer와 INCR burst를 지원하고 exclusive/locked/WRAP burst는 초기 범위 밖이다.
+
+### 2.1 Clock/reset 및 초기화 정책
+
+모든 합성 순차논리는 `posedge clk_i`에서 동작하는 synchronous active-low
+`rst_ni`를 사용한다. control, valid, owner, pointer, counter, pipeline payload,
+ROB/RAT/IQ/LSQ/CSR/predictor state를 포함한 모든 flip-flop은 reset branch에서
+명시적인 값을 받는다. reset이 0이거나 아직 해제되지 않은 동안 core의
+I-memory/D-memory request valid는 0이며 외부 architectural side effect를 만들지
+않는다. testbench는 clock edge를 최소 2회 포함하도록 reset을 assert한 뒤 clock
+edge에 맞추어 deassert해야 한다.
+
+예외는 flip-flop이 아닌 memory macro 내용이다. `rv_sram_1r1w.mem`은 ITIM/DTIM
+SRAM/BRAM 추론을 보존하기 위해 reset으로 clear하지 않고 read-valid와 read-data
+출력 register만 reset한다. Boot ROM array도 reset 대상이 아니라 elaboration의
+`$readmemh` image가 초기값이다. 따라서 reset 직후 읽지 않은 TIM 영역의 값은
+architecturally unspecified이며, DPI ELF loader 또는 software가 사용 영역을 먼저
+초기화해야 한다. predictor의 target-buffer/tag/data처럼 실제 flop array로 합성되는
+작은 상태는 memory-macro 예외에 포함하지 않고 모두 0으로 reset한다.
 
 ## 3. 전체 구조와 주소 지도
 
@@ -1429,11 +1447,21 @@ top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral i
 | Group | 핵심 signal | 계약 |
 |---|---|---|
 | IFU | `imem_req_{valid,ready,addr,id,epoch}`, `imem_rsp_{valid,ready,id,epoch,data,resp}` | 16-byte aligned block, 현재 1 outstanding, redirect epoch 반환 |
-| Dual LSU | `dmem_req_*[1:0]`, `dmem_rsp_*[1:0]` | 두 64-bit local request/response lane, 8-bit ROB sequence |
+| Dual LSU | `dmem_req_*[1:0]`, `dmem_rsp_*[1:0]` | 두 64-bit local request/response lane, 8-bit ROB sequence, lane별 1-entry fall-through request buffer |
 | Interrupt/debug | `irq_software/timer/external`, `debug_halt_req` | commit boundary에서 precise accept |
 | Retire trace | lane별 valid/PC/instruction/rd/write-data/trap | commit한 instruction만 valid |
 
 `rv_frontend`는 backend redirect, predictor resolve/commit update, 2-wide raw/length/prediction fetch output과 IFU block memory port를 갖는다. predicted-taken lane 이후 lane을 억제하고 target block으로 내부 epoch redirect하며 stale response를 버린다. `rv_backend` 안의 decoder가 C instruction을 canonical 32-bit instruction으로 확장한다. `rv_backend`는 2-wide fetch bundle, dual LSU port, interrupt/debug/`mtime_i`, retire trace, privilege/PMP state와 predictor resolve/commit update를 갖는다. integer/branch/M/F/dual-LSU, CSR/privilege/trap/WFI/FENCE 및 IFU/LSU PMP 데이터 경로가 연결된 구조 완성 후보이며, controller를 별도 module로 분리하는 것은 PPA/refactor 단계이지 ISA 기능 미구현을 뜻하지 않는다.
+
+IFU와 각 LSU request는 `valid && !ready`인 동안 valid와 전체 payload를 그대로
+유지한다. IFU는 redirect만 명시적인 cancellation/replacement boundary로 인정한다.
+dual LSU는 core shell의 lane별 1-entry fall-through buffer가 backend arbitration과
+D-Fabric backpressure를 분리한다. 빈 buffer는 zero-cycle bypass하고 stall 시에만
+요청을 저장하므로 정상 ready 경로에는 latency가 추가되지 않는다. backend/LSQ는
+buffer가 요청을 받은 순간 issue로 기록한다. 따라서 그 뒤 branch flush가 발생해도
+accepted load의 LQ entry가 tombstone으로 남아 response ID 재사용을 막는다. 이미
+외부에 보인 committed store/load request는 priority 변화만으로 철회하거나 payload를
+바꿀 수 없다.
 
 `rv_lsq_order_check`는 load 한 건에 대해 다음 입력을 검사한다.
 
@@ -2360,3 +2388,4 @@ orphan speculative response 생성을 방지한다.
 | v1.13.0 | issue wait와 ROB-head instruction class profiler를 추가해 load-dependent latency를 주병목으로 확정. D-Fabric이 old response handshake와 next request accept를 같은 cycle에 수행하되 old ID/data와 single-outstanding를 보존하도록 변경하고 directed assertion/test를 추가. CSR interrupt priority와 독립 trap-controller 회귀 및 backend/trap assertions로 exception-over-interrupt, ROB-empty interrupt 경계, pending interrupt의 dispatch quiesce, precise mepc/cause/tval, WFI serialization을 고정. CoreMark CRC/576,450 instret를 보존하면서 483,143→464,335 cycle, D-memory wait 60,828→12,173, IPC 1.193125→1.241453를 달성하고 성능 변경을 동결 |
 | v1.13.1 | Xcelium-safe package/interface/RTL compile order를 core/SoC file list로 추가하고, 49개 합성 RTL·memory-map config·BootROM image·상대경로 `verilog_sub.f`·Linux xrun wrapper·SHA-256 manifest를 하나의 self-contained 전달 폴더로 만드는 `export_verilog_sub.py`를 추가. 서버 TB/DPI/tohost protocol은 export에서 제외해 기존 회사 검증환경이 소유하도록 분리 |
 | v1.14.0 | DTIM 내부 64-bit `TOHOST=0x8002_0000`, `FROMHOST=0x8002_0008`을 package/top/map-check/configurator에 추가. Host AXI polling 기반 HTIF DPI가 raw PASS/FAIL, direct string, console packet, proxy write/exit와 RV32 two-store settling을 처리하고, server Boot ROM이 ELF entry로 jump하도록 구성. `$RTL_DIR/$TB_DIR` filelist, source 환경, `BINARY=` 단일 설정 `run_verilog_sub.sh`, portable Xcelium bundle 및 HTIF smoke ELF/결과 log를 추가. Verilator E2E와 기존 custom HostIF ELF 회귀는 통과했으며 실제 회사 `verilog_sub` invocation은 서버 확인 필요 |
+| v1.14.1 | 모든 합성 `always_ff`의 synchronous active-low reset을 전수 점검하고 target-buffer payload flop을 명시적으로 초기화. TIM/Boot ROM data array만 memory-macro 추론 예외로 정의. reset 중 I/D request를 차단하고, IFU stall hold 및 dual-LSU lane별 fall-through request buffer로 ready/valid payload 안정성을 보장. Xcelium 4-state time-zero immediate assertion은 reset이 알려진 뒤에만 검사하며 verification runner에서 `SYNTHESIS` define을 제거. assertion-enabled HTIF direct/proxy/exit E2E 통과 |

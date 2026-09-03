@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import re
 import sys
 
 from pyslang import DiagnosticEngine
@@ -98,10 +99,40 @@ SOURCES = (
 )
 
 
+def check_sequential_reset_contract() -> list[str]:
+    """Require every synthesized always_ff block to start with rst_ni logic.
+
+    This structural guard prevents new state blocks from silently bypassing the
+    project-wide synchronous active-low reset policy.  Payload completeness is
+    still reviewed at RTL level because whole-array and loop assignments cannot
+    be inferred reliably with a text-only check.
+    """
+    failures: list[str] = []
+    block_pattern = re.compile(r"(?m)^\s*always_ff\s*@\s*\([^\n]+\)\s*begin")
+    reset_pattern = re.compile(r"\bif\s*\([^)]*(?:!\s*rst_ni|rst_ni\s*===\s*1'b0)")
+    for path in sorted((ROOT / "rtl").rglob("*.sv")):
+        text = path.read_text(encoding="utf-8")
+        for match in block_pattern.finditer(text):
+            first_statements = text[match.end() : match.end() + 240]
+            if not reset_pattern.search(first_statements):
+                line = text.count("\n", 0, match.start()) + 1
+                failures.append(f"{path.relative_to(ROOT)}:{line}")
+    return failures
+
+
 def main() -> int:
     # pyslang on Windows can fail to open an absolute path containing non-ANSI
     # characters. Enter the project root and use ASCII-only relative paths.
     os.chdir(ROOT)
+    reset_failures = check_sequential_reset_contract()
+    if reset_failures:
+        print(
+            "RTL reset policy failed; always_ff without an initial rst_ni branch:\n  "
+            + "\n  ".join(reset_failures),
+            file=sys.stderr,
+        )
+        return 1
+
     compilation = Compilation()
     for source in SOURCES:
         compilation.addSyntaxTree(SyntaxTree.fromFile(str(source)))

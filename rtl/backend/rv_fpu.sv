@@ -826,9 +826,11 @@ module rv_fpu #(
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (result_valid_o && !result_exception_valid_o)
-      assert (result_destination_class_o != REG_NONE ||
-              !result_destination_valid_o);
+    if (rst_ni === 1'b1) begin
+      if (result_valid_o && !result_exception_valid_o)
+        assert (result_destination_class_o != REG_NONE ||
+                !result_destination_valid_o);
+    end
   end
 `endif
 
