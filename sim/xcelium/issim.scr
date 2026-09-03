@@ -1,0 +1,83 @@
+#!/bin/csh -f
+
+# Simulation job submitted by verilog_sub.
+# The DPI library is built by run_verilog_sub.sh; no external .so is assumed.
+
+set script_dir = `dirname "$0"`
+set script_dir = `cd "$script_dir" && pwd`
+
+if ($?CORE_ROOT) then
+  set core_root = "$CORE_ROOT"
+else
+  set core_root = `cd "$script_dir/../.." && pwd`
+endif
+
+setenv CORE_ROOT "$core_root"
+setenv RTL_DIR "${CORE_ROOT}/rtl"
+setenv TB_DIR "${CORE_ROOT}/tb"
+setenv XCELIUM_DIR "${CORE_ROOT}/sim/xcelium"
+
+if ($?HTIF_BUILD_DIR) then
+  set build_dir = "$HTIF_BUILD_DIR"
+else
+  set build_dir = "${XCELIUM_DIR}/out"
+endif
+if ($?XCELIUM_SNAPSHOT) then
+  set snapshot = "$XCELIUM_SNAPSHOT"
+else
+  set snapshot = "rv_soc_htif_dpi_tb_snapshot"
+endif
+
+set binary = ""
+set sv_lib = "${build_dir}/libcore_htif_dpi.so"
+set timeout_cycles = "2000000"
+
+foreach arg ($argv)
+  if ("$arg" =~ "-BINARY=*") then
+    set binary = `echo "$arg" | sed 's/-BINARY=//'`
+  else if ("$arg" =~ "-SV_LIB=*") then
+    set sv_lib = `echo "$arg" | sed 's/-SV_LIB=//'`
+  else if ("$arg" =~ "-TIMEOUT_CYCLES=*") then
+    set timeout_cycles = `echo "$arg" | sed 's/-TIMEOUT_CYCLES=//'`
+  endif
+end
+
+if ("$binary" == "" || ! -f "$binary") then
+  echo "ERROR: ELF file was not found: $binary"
+  echo "Pass -BINARY=/absolute/path/program.elf to verilog_sub."
+  exit 2
+endif
+if (! -f "$sv_lib") then
+  echo "ERROR: DPI shared library was not found: $sv_lib"
+  echo "Run run_verilog_sub.sh so the repository DPI library is built first."
+  exit 2
+endif
+
+if ($?XCELIUM_ENV_CSH) then
+  set xcelium_env_csh = "$XCELIUM_ENV_CSH"
+else
+  set xcelium_env_csh = "/user/vtsw/Cadence/XCELIUM/23.09-s009/gcc93_env64.csh"
+endif
+if (-f "$xcelium_env_csh") then
+  source "$xcelium_env_csh"
+else
+  which xrun >& /dev/null
+  if ($status != 0) then
+    echo "ERROR: Xcelium environment file and xrun were not found."
+    echo "Set XCELIUM_ENV_CSH to the server's gcc*_env64.csh file."
+    exit 2
+  endif
+endif
+
+mkdir -p "$build_dir"
+cd "$CORE_ROOT"
+exec xrun \
+  -64bit \
+  -licqueue \
+  -R \
+  -snapshot "$snapshot" \
+  -xmlibdirname "${build_dir}/xcelium.d" \
+  -sv_lib "$sv_lib" \
+  -log "${build_dir}/simulation.log" \
+  +elf="$binary" \
+  +timeout_cycles="$timeout_cycles"

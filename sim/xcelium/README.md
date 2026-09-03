@@ -1,43 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ---------------------------------------------------------------------------
-# Environment Setup
-# ---------------------------------------------------------------------------
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-prj_root="$(cd -- "${script_dir}/../.." && pwd)"
-
-# 사용자 설정: ELF 파일 경로
-BINARY="${BINARY:-/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf}"
-
-export CORE_ROOT="${prj_root}"
-export RTL_DIR="${CORE_ROOT}/rtl"
-export TB_DIR="${CORE_ROOT}/tb"
-export XCELIUM_DIR="${CORE_ROOT}/sim/xcelium"
-
-# 라이브러리 빌드 경로 설정 (현재 프로젝트 내부로 변경)
-BUILD_DIR="${CORE_ROOT}/sim/xcelium/out"
-mkdir -p "${BUILD_DIR}"
-dpi_library="${BUILD_DIR}/libcore_htif_dpi.so"
-
-TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
-CXX_BIN="${CXX:-g++}"
-VERILOG_SUB="${VERILOG_SUB:-verilog_sub}"
-
-# DPI Library 빌드 (현재 프로젝트 내 소스 사용)
-printf 'Building DPI library: %s\n' "${dpi_library}"
-"${CXX_BIN}" -std=c++17 -O2 -fPIC -shared \
-  "${TB_DIR}/e2e/dpi/elf_loader.cpp" -o "${dpi_library}"
-
-#- Build (Compile/Elaborate)
-printf 'Step 1: Compiling RTL...\n'
-"${VERILOG_SUB}" -Is -compile isrun.scr -CONFIG="CY_LATEST"
-
-#- Simulate
-printf 'Step 2: Running Simulation with ELF: %s\n' "${BINARY}"
-"${VERILOG_SUB}" -Is -short issim.scr -CONFIG="CY_LATEST" -BINARY="${BINARY}" -SV_LIB="${dpi_library}"
-
-
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
 이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
@@ -72,12 +32,26 @@ VERILOG_SUB=my_verilog_sub BINARY=/server/project/test/program.elf \
   ./sim/xcelium/run_verilog_sub.sh
 ```
 
-`verilog_sub`가 일반 `xrun` 옵션을 그대로 받는 wrapper라는 전제로 `-f`, `-top`,
-`-sv_lib`, `+elf=`를 전달한다. 회사 wrapper가 별도의 sub-command 또는 옵션 순서를
-요구하면 `run_verilog_sub.sh` 맨 아래의 실행부 한 곳만 맞추면 된다.
+회사 서버의 실제 호출 방식에 맞춰 compile/elaborate와 simulation을 두 job으로
+제출한다.
 
-기본 실행은 `SYNTHESIS`를 define하지 않아 RTL assertion을 활성화한다.
-합성 전용 flow에서만 해당 define을 추가한다.
+```text
+verilog_sub -Is -compile isrun.scr -RTL_ASSERTIONS=0
+verilog_sub -Is -short   issim.scr -BINARY=... -SV_LIB=... -TIMEOUT_CYCLES=...
+```
+
+`run_verilog_sub.sh`가 저장소의 `tb/e2e/dpi/elf_loader.cpp`로 DPI shared library를
+먼저 생성한다. 그 다음 `isrun.scr`가 source list를 사용해 Xcelium snapshot을 만들고,
+`issim.scr`가 같은 snapshot에 생성된 DPI library와 ELF plusarg를 연결해 실행한다.
+외부 프로젝트의 기존 `.so` 파일은 필요하지 않다.
+
+서버 기본 compile은 `-define SYNTHESIS`를 사용한다. 기능 RTL과 reset은 그대로이고
+simulation-only assertion만 제외된다. assertion까지 검사할 때는 다음처럼 실행한다.
+
+```bash
+RTL_ASSERTIONS=1 BINARY=/server/path/program.elf \
+  ./sim/xcelium/run_verilog_sub.sh
+```
 
 ## 파일 구조
 
@@ -87,7 +61,9 @@ sim/xcelium/
   setup_env.csh         csh/tcsh 서버용 setenv 환경 파일
   rtl.f                 합성 RTL compile-order filelist
   htif_tb.f             DPI Host와 server test top filelist
-  run_verilog_sub.sh    BINARY 한 줄로 실행하는 주 script
+  run_verilog_sub.sh    DPI build 및 compile/sim job 제출
+  isrun.scr             compile/elaborate queue에서 실행되는 Xcelium script
+  issim.scr             short queue에서 실행되는 simulation script
   build_htif_smoke.sh   제공된 최소 HTIF ELF 생성
 ```
 
@@ -98,16 +74,23 @@ $RTL_DIR/backend/rv_int_alu.sv
 $TB_DIR/e2e/dpi/rv_host_dpi.sv
 ```
 
-직접 command를 구성할 때는 먼저 환경 파일을 source한다.
+직접 job을 제출할 때는 먼저 환경 파일을 source한다.
 
 ```bash
 source sim/xcelium/setup_env.sh
-verilog_sub -64bit -sv \
-  -f "$XCELIUM_DIR/rtl.f" \
-  -f "$XCELIUM_DIR/htif_tb.f" \
-  -top rv_soc_htif_dpi_tb \
-  -sv_lib /path/to/libcore_htif_dpi.so \
-  +elf=/server/project/test/program.elf
+verilog_sub -Is -compile "$XCELIUM_DIR/isrun.scr" -RTL_ASSERTIONS=0
+verilog_sub -Is -short "$XCELIUM_DIR/issim.scr" \
+  -BINARY=/server/project/test/program.elf \
+  -SV_LIB="$CORE_ROOT/sim/xcelium/out/libcore_htif_dpi.so" \
+  -TIMEOUT_CYCLES=2000000
+```
+
+`CONFIG`/`CY_LATEST`는 기존 환경의 제출 설정일 뿐 현재 RTL 및 Xcelium 실행에는
+필요하지 않아 제거했다. 서버의 Xcelium 설치 위치가 다를 때만 환경 파일을 지정한다.
+
+```bash
+XCELIUM_ENV_CSH=/path/to/XCELIUM/gcc_env64.csh \
+  BINARY=/server/project/test/program.elf ./sim/xcelium/run_verilog_sub.sh
 ```
 
 csh/tcsh 환경에서는 repository root에서 다음을 사용한다.
@@ -191,4 +174,4 @@ HTIF TEST PASS
 
 `sources_core.f`, `sources_soc.f`, `run_xcelium.sh`는 이전 직접-xrun/export 흐름을
 깨지 않기 위해 유지한다. 신규 서버 검증은 `setup_env.sh`, `rtl.f`, `htif_tb.f`,
-`run_verilog_sub.sh` 네 파일을 기준으로 한다.
+`run_verilog_sub.sh`, `isrun.scr`, `issim.scr`를 기준으로 한다.

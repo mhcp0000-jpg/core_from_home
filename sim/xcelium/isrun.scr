@@ -1,0 +1,76 @@
+#!/bin/csh -f
+
+# Compile/elaborate job submitted by verilog_sub.
+# CONFIG/CY_LATEST was copied from another environment and is not required.
+
+set script_dir = `dirname "$0"`
+set script_dir = `cd "$script_dir" && pwd`
+
+if ($?CORE_ROOT) then
+  set core_root = "$CORE_ROOT"
+else
+  set core_root = `cd "$script_dir/../.." && pwd`
+endif
+
+setenv CORE_ROOT "$core_root"
+setenv RTL_DIR "${CORE_ROOT}/rtl"
+setenv TB_DIR "${CORE_ROOT}/tb"
+setenv XCELIUM_DIR "${CORE_ROOT}/sim/xcelium"
+
+if ($?HTIF_BUILD_DIR) then
+  set build_dir = "$HTIF_BUILD_DIR"
+else
+  set build_dir = "${XCELIUM_DIR}/out"
+endif
+if ($?XCELIUM_SNAPSHOT) then
+  set snapshot = "$XCELIUM_SNAPSHOT"
+else
+  set snapshot = "rv_soc_htif_dpi_tb_snapshot"
+endif
+
+set rtl_assertions = "0"
+foreach arg ($argv)
+  if ("$arg" =~ "-RTL_ASSERTIONS=*") then
+    set rtl_assertions = `echo "$arg" | sed 's/-RTL_ASSERTIONS=//'`
+  endif
+end
+
+# Override this variable if the server installs a different Xcelium release.
+if ($?XCELIUM_ENV_CSH) then
+  set xcelium_env_csh = "$XCELIUM_ENV_CSH"
+else
+  set xcelium_env_csh = "/user/vtsw/Cadence/XCELIUM/23.09-s009/gcc93_env64.csh"
+endif
+if (-f "$xcelium_env_csh") then
+  source "$xcelium_env_csh"
+else
+  which xrun >& /dev/null
+  if ($status != 0) then
+    echo "ERROR: Xcelium environment file and xrun were not found."
+    echo "Set XCELIUM_ENV_CSH to the server's gcc*_env64.csh file."
+    exit 2
+  endif
+endif
+
+mkdir -p "$build_dir"
+set define_opts = ()
+if ("$rtl_assertions" != "1") then
+  set define_opts = (-define SYNTHESIS)
+endif
+
+cd "$CORE_ROOT"
+exec xrun \
+  -clean \
+  -64bit \
+  -licqueue \
+  -sv \
+  -access +rwc \
+  +xmtimescale+1ns/1ps \
+  $define_opts \
+  -f "${XCELIUM_DIR}/rtl.f" \
+  -f "${XCELIUM_DIR}/htif_tb.f" \
+  -top rv_soc_htif_dpi_tb \
+  -elaborate \
+  -snapshot "$snapshot" \
+  -xmlibdirname "${build_dir}/xcelium.d" \
+  -log "${build_dir}/compile.log"

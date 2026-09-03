@@ -12,9 +12,12 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/setup_env.sh"
 
 VERILOG_SUB="${VERILOG_SUB:-verilog_sub}"
-BUILD_DIR="${HTIF_BUILD_DIR:-${CORE_ROOT}/out/xcelium_htif}"
+BUILD_DIR="${HTIF_BUILD_DIR:-${CORE_ROOT}/sim/xcelium/out}"
 TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
+RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
 CXX_BIN="${CXX:-g++}"
+COMPILE_SCRIPT="${COMPILE_SCRIPT:-${XCELIUM_DIR}/isrun.scr}"
+SIM_SCRIPT="${SIM_SCRIPT:-${XCELIUM_DIR}/issim.scr}"
 
 if [[ "${BINARY}" == "/ABSOLUTE/PATH/TO/YOUR_PROGRAM.elf" ]]; then
   printf 'run_verilog_sub.sh의 BINARY= 줄에 ELF 절대경로를 입력하세요.\n' >&2
@@ -32,24 +35,32 @@ if ! command -v "${CXX_BIN}" >/dev/null 2>&1; then
   printf 'DPI library 빌드용 C++ compiler를 찾을 수 없습니다: %s\n' "${CXX_BIN}" >&2
   exit 2
 fi
+if [[ ! -f "${COMPILE_SCRIPT}" ]]; then
+  printf 'compile script를 찾을 수 없습니다: %s\n' "${COMPILE_SCRIPT}" >&2
+  exit 2
+fi
+if [[ ! -f "${SIM_SCRIPT}" ]]; then
+  printf 'simulation script를 찾을 수 없습니다: %s\n' "${SIM_SCRIPT}" >&2
+  exit 2
+fi
 
 mkdir -p "${BUILD_DIR}"
 dpi_library="${BUILD_DIR}/libcore_htif_dpi.so"
+printf 'Building DPI library: %s\n' "${dpi_library}"
 "${CXX_BIN}" -std=c++17 -O2 -fPIC -shared \
   "${TB_DIR}/e2e/dpi/elf_loader.cpp" -o "${dpi_library}"
 
-# File-list paths use RTL_DIR/TB_DIR. Run from CORE_ROOT as well so the BootROM
-# $readmemh relative path has an unambiguous base directory.
+# The company wrapper schedules these scripts on the compile and short queues.
+# Absolute script paths and exported project paths make the jobs independent of
+# the directory from which this runner was launched.
 cd "${CORE_ROOT}"
-exec "${VERILOG_SUB}" \
-  -64bit -sv -timescale 1ns/1ps \
-  -f "${XCELIUM_DIR}/rtl.f" \
-  -f "${XCELIUM_DIR}/htif_tb.f" \
-  -top rv_soc_htif_dpi_tb \
-  -sv_lib "${dpi_library}" \
-  -access +rwc \
-  -xmlibdirname "${BUILD_DIR}/xcelium.d" \
-  -l "${BUILD_DIR}/verilog_sub.log" \
-  "+elf=${BINARY}" \
-  "+timeout_cycles=${TIMEOUT_CYCLES}" \
+printf 'Step 1: Compiling/elaborating RTL...\n'
+"${VERILOG_SUB}" -Is -compile "${COMPILE_SCRIPT}" \
+  -RTL_ASSERTIONS="${RTL_ASSERTIONS}"
+
+printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
+"${VERILOG_SUB}" -Is -short "${SIM_SCRIPT}" \
+  -BINARY="${BINARY}" \
+  -SV_LIB="${dpi_library}" \
+  -TIMEOUT_CYCLES="${TIMEOUT_CYCLES}" \
   "$@"
