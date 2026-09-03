@@ -107,6 +107,8 @@ simulation이 시작되면 다음 단계가 순서대로 출력된다.
 [BOOTROM] loading hex file: ...
 [BOOTROM] hex loaded: word[0]=... word[1]=...
 [TB] rv_soc_htif_dpi_tb started ...
+[COMMIT] trace file opened: .../commit_trace.csv
+[COMMIT] live logger enabled: every retired instruction
 [TB] reset deasserted
 [HOST-DPI] SoC ready; waiting for Boot ROM WFI retire
 [TB] Boot ROM WFI retired ...
@@ -123,6 +125,16 @@ simulation이 시작되면 다음 단계가 순서대로 출력된다.
 ELF segment 전송은 16 KiB마다 진행률을 출력한다. 장시간 변화가 없을 때는 기본
 100,000 cycle마다 heartbeat가 현재 `soc_ready`, `boot_wait`, ELF load 상태와 최근
 commit trace PC를 출력한다. 간격은 plusarg로 바꿀 수 있고 `0`이면 끈다.
+
+모든 retire 명령은 제한 없이 Xcelium 콘솔/`simulation.log`에 `[COMMIT]` 형식으로
+출력되고, 동시에 `sim/xcelium/out/commit_trace.csv`에 저장된다. CSV는 order, cycle,
+lane, PC, instruction, integer/FP destination과 write data, trap/cause/tval을 포함한다.
+코어가 retire를 멈추더라도 주기적으로 file buffer를 flush하므로 실행 중인 서버에서
+다음처럼 마지막 명령을 확인할 수 있다.
+
+```bash
+tail -n 40 sim/xcelium/out/commit_trace.csv
+```
 
 ```bash
 TIMEOUT_CYCLES=5000000 HEARTBEAT_CYCLES=20000 \

@@ -32,6 +32,7 @@ set binary = ""
 set sv_lib = "${build_dir}/libcore_htif_dpi.so"
 set timeout_cycles = "2000000"
 set heartbeat_cycles = "100000"
+set trace_file = "${build_dir}/commit_trace.csv"
 
 foreach arg ($argv)
   if ("$arg" =~ "-BINARY=*") then
@@ -42,6 +43,8 @@ foreach arg ($argv)
     set timeout_cycles = `echo "$arg" | sed 's/-TIMEOUT_CYCLES=//'`
   else if ("$arg" =~ "-HEARTBEAT_CYCLES=*") then
     set heartbeat_cycles = `echo "$arg" | sed 's/-HEARTBEAT_CYCLES=//'`
+  else if ("$arg" =~ "-TRACE_FILE=*") then
+    set trace_file = `echo "$arg" | sed 's/-TRACE_FILE=//'`
   endif
 end
 
@@ -84,4 +87,5 @@ exec xrun \
   -log "${build_dir}/simulation.log" \
   +elf="$binary" \
   +timeout_cycles="$timeout_cycles" \
-  +heartbeat_cycles="$heartbeat_cycles"
+  +heartbeat_cycles="$heartbeat_cycles" \
+  +trace_file="$trace_file"

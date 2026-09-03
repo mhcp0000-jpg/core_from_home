@@ -29,6 +29,12 @@ module rv_soc_htif_dpi_tb;
   logic [1:0] trace_trap;
   logic [1:0][5:0] trace_cause;
   logic [1:0][31:0] trace_tval;
+  logic commit_last_valid;
+  logic [63:0] commit_retire_order;
+  logic [63:0] commit_cycle;
+  logic [63:0] commit_idle_cycles;
+  logic [31:0] commit_last_pc;
+  logic [31:0] commit_last_instr;
   integer timeout_cycles;
 
   rv_axi4_if #(
@@ -68,6 +74,27 @@ module rv_soc_htif_dpi_tb;
     .trace_trap_o         (trace_trap),
     .trace_cause_o        (trace_cause),
     .trace_tval_o         (trace_tval)
+  );
+
+  rv_commit_trace_logger #(.XLEN(32)) u_trace_logger (
+    .clk_i                 (clk),
+    .rst_ni                (rst_n),
+    .trace_valid_i         (trace_valid),
+    .trace_pc_i            (trace_pc),
+    .trace_instr_i         (trace_instr),
+    .trace_rd_i            (trace_rd),
+    .trace_rd_write_i      (trace_rd_write),
+    .trace_rd_fp_i         (trace_rd_fp),
+    .trace_rd_wdata_i      (trace_rd_wdata),
+    .trace_trap_i          (trace_trap),
+    .trace_cause_i         (trace_cause),
+    .trace_tval_i          (trace_tval),
+    .last_commit_valid_o   (commit_last_valid),
+    .retire_order_o        (commit_retire_order),
+    .cycle_o               (commit_cycle),
+    .cycles_since_commit_o (commit_idle_cycles),
+    .last_commit_pc_o      (commit_last_pc),
+    .last_commit_instr_o   (commit_last_instr)
   );
 
   rv_host_dpi #(
@@ -145,8 +172,10 @@ module rv_soc_htif_dpi_tb;
     rst_n = 1'b1;
     $display("[TB][%0t] reset deasserted", $time);
     repeat (timeout_cycles) @(posedge clk);
-    $display("[TB][%0t] timeout state: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b",
-             $time, soc_ready, boot_wait, load_done, load_failed);
+    $display("[TB][%0t] timeout state: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b commits=%0d last_valid=%b last_pc=%08h last_instr=%08h idle_cycles=%0d",
+             $time, soc_ready, boot_wait, load_done, load_failed,
+             commit_retire_order, commit_last_valid, commit_last_pc,
+             commit_last_instr, commit_idle_cycles);
     $fatal(1, "HTIF DPI simulation timeout");
   end
 
@@ -158,9 +187,10 @@ module rv_soc_htif_dpi_tb;
     if (heartbeat_cycles > 0) begin
       forever begin
         repeat (heartbeat_cycles) @(posedge clk);
-        $display("[TB][%0t] heartbeat: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b trace_valid=%b trace_pc=%08h/%08h",
+        $display("[TB][%0t] heartbeat: soc_ready=%b boot_wait=%b load_done=%b load_failed=%b commits=%0d commit_cycle=%0d last_valid=%b last_pc=%08h last_instr=%08h idle_cycles=%0d",
                  $time, soc_ready, boot_wait, load_done, load_failed,
-                 trace_valid, trace_pc[0], trace_pc[1]);
+                 commit_retire_order, commit_cycle, commit_last_valid,
+                 commit_last_pc, commit_last_instr, commit_idle_cycles);
       end
     end
   end
