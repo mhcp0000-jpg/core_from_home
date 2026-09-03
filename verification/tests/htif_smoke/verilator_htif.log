@@ -1,0 +1,7 @@
+80020000 D tohost
+80020008 D fromhost
+80020010 d syscall_block
+HTIF direct-string print PASS
+HTIF proxy write syscall PASS
+[host-finish code=0]
+HTIF TEST PASS

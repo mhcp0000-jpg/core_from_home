@@ -11,5 +11,6 @@
 - `config/soc_memory_map.h`, `config/soc_memory_map.inc`
 - parameterized BootROM WFI image
 - DPI Host 기본 ELF, artifact 경로와 Windows/Linux 실행 wrapper
+- DTIM 내부 64-bit `TOHOST_ADDR`/`FROMHOST_ADDR` HTIF mailbox
 
 `soc_project.example.json`을 복사해 비대화형 생성 입력으로 사용할 수 있습니다.

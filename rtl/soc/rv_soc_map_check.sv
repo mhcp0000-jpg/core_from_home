@@ -11,6 +11,8 @@ module rv_soc_map_check #(
   parameter int unsigned ITIM_SIZE_KB      = rv_soc_pkg::ITIM_SIZE_KB,
   parameter logic [31:0] DTIM_BASE_ADDR    = rv_soc_pkg::DTIM_BASE_ADDR,
   parameter int unsigned DTIM_SIZE_KB      = rv_soc_pkg::DTIM_SIZE_KB,
+  parameter logic [31:0] TOHOST_ADDR       = rv_soc_pkg::TOHOST_ADDR,
+  parameter logic [31:0] FROMHOST_ADDR     = rv_soc_pkg::FROMHOST_ADDR,
   parameter logic [31:0] BOOT_MTVEC_ADDR   = rv_soc_pkg::BOOT_MTVEC_ADDR
 );
 
@@ -48,6 +50,14 @@ module rv_soc_map_check #(
     if (!addr_in_region(BOOT_MTVEC_ADDR, ITIM_BASE_ADDR, ITIM_BYTES) ||
         (BOOT_MTVEC_ADDR[1:0] != 0))
       $fatal(1, "BOOT_MTVEC_ADDR must be aligned and inside ITIM");
+
+    if (!addr_in_region(TOHOST_ADDR, DTIM_BASE_ADDR, DTIM_BYTES) ||
+        !addr_in_region(TOHOST_ADDR + 32'd7, DTIM_BASE_ADDR, DTIM_BYTES) ||
+        !addr_in_region(FROMHOST_ADDR, DTIM_BASE_ADDR, DTIM_BYTES) ||
+        !addr_in_region(FROMHOST_ADDR + 32'd7, DTIM_BASE_ADDR, DTIM_BYTES) ||
+        (TOHOST_ADDR[2:0] != 0) || (FROMHOST_ADDR[2:0] != 0) ||
+        (TOHOST_ADDR == FROMHOST_ADDR))
+      $fatal(1, "TOHOST/FROMHOST must be distinct aligned 64-bit words in DTIM");
 
     if (CLINT_BYTES <= CLINT_MTIME_HI_OFF)
       $fatal(1, "CLINT region is too small for the timer registers");

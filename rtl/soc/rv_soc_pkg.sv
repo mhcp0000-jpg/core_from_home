@@ -26,6 +26,12 @@ package rv_soc_pkg;
   parameter logic [SOC_ADDR_WIDTH-1:0] DTIM_BASE_ADDR    = 32'h8002_0000;
   parameter int unsigned               DTIM_SIZE_KB      = 128;
 
+  // Server HTIF mailboxes live inside DTIM; they are not separate MMIO slaves.
+  // Keep these independently parameterized so a company test environment can
+  // retain its existing linker/DPI contract without moving the TIM regions.
+  parameter logic [SOC_ADDR_WIDTH-1:0] TOHOST_ADDR       = 32'h8002_0000;
+  parameter logic [SOC_ADDR_WIDTH-1:0] FROMHOST_ADDR     = 32'h8002_0008;
+
   parameter logic [SOC_ADDR_WIDTH-1:0] BOOT_MTVEC_ADDR   = ITIM_BASE_ADDR;
   parameter int unsigned               BOOT_VECTOR_BYTES = 256;
   parameter int unsigned               PLIC_NUM_SOURCES  = 32;

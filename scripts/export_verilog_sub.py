@@ -1,4 +1,4 @@
-"""Create a self-contained RTL bundle for a Linux Cadence Xcelium flow."""
+"""Create a self-contained RTL/HTIF bundle for a Linux Xcelium server."""
 
 from __future__ import annotations
 
@@ -23,6 +23,19 @@ SUPPORT_FILES = (
     "config/soc_memory_map.inc",
     "config/soc_project.env",
     "tb/fixtures/bootrom/bootrom_wait.hex",
+    "tb/fixtures/bootrom/bootrom_host_jump.hex",
+    "tb/e2e/dpi/rv_host_dpi.sv",
+    "tb/e2e/dpi/rv_soc_htif_dpi_tb.sv",
+    "tb/e2e/dpi/elf_loader.cpp",
+    "sw/tests/htif_smoke/htif_smoke.S",
+    "sw/tests/htif_smoke/rv32_htif.ld",
+    "sim/xcelium/setup_env.sh",
+    "sim/xcelium/setup_env.csh",
+    "sim/xcelium/rtl.f",
+    "sim/xcelium/htif_tb.f",
+    "sim/xcelium/run_verilog_sub.sh",
+    "sim/xcelium/build_htif_smoke.sh",
+    "sim/xcelium/README.md",
 )
 
 
@@ -93,8 +106,8 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "out" / "verilog_sub",
-        help="bundle output directory (default: out/verilog_sub)",
+        default=ROOT / "out" / "xcelium_bundle",
+        help="bundle output directory (default: out/xcelium_bundle)",
     )
     parser.add_argument(
         "--force",
@@ -151,6 +164,13 @@ def main() -> int:
         | stat.S_IXOTH
     )
     shutil.copy2(ROOT / "sim" / "xcelium" / "README.md", output / "README.md")
+    for relative in (
+        "sim/xcelium/setup_env.sh",
+        "sim/xcelium/run_verilog_sub.sh",
+        "sim/xcelium/build_htif_smoke.sh",
+    ):
+        script = output / relative
+        script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     tracked_files = sorted(
         path for path in output.rglob("*") if path.is_file() and path.name != "manifest.json"
@@ -159,7 +179,7 @@ def main() -> int:
         (ROOT / "config" / "soc_project.json").read_text(encoding="utf-8")
     )
     manifest = {
-        "format": "rv-ooo-xcelium-verilog-sub-v1",
+        "format": "rv-ooo-xcelium-htif-bundle-v2",
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "git_revision": git_revision(),
         "rtl_top": "rv_soc_top",
@@ -176,10 +196,11 @@ def main() -> int:
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
 
-    print(f"Xcelium verilog_sub bundle: {output}")
+    print(f"Xcelium HTIF bundle       : {output}")
     print(f"RTL sources               : {len(soc_sources)}")
     print(f"Entry file list           : {output / 'verilog_sub.f'}")
     print(f"Linux runner              : {output / 'scripts' / 'run_xcelium.sh'}")
+    print(f"Server runner             : {output / 'sim/xcelium/run_verilog_sub.sh'}")
     return 0
 
 

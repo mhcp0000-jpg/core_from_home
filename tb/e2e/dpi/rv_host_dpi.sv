@@ -14,7 +14,13 @@ module rv_host_dpi #(
   parameter logic [ADDR_WIDTH-1:0] HOSTIF_BASE_ADDR = 'h1000_0000,
   parameter logic [ADDR_WIDTH-1:0] CLINT_MSIP_OFFSET = 'h0,
   parameter logic [ADDR_WIDTH-1:0] HOSTIF_BOOT_ENTRY_OFFSET = 'h0,
-  parameter logic [ADDR_WIDTH-1:0] HOSTIF_BOOT_FLAGS_OFFSET = 'h4
+  parameter logic [ADDR_WIDTH-1:0] HOSTIF_BOOT_FLAGS_OFFSET = 'h4,
+  parameter bit HTIF_ENABLE = 1'b0,
+  parameter logic [ADDR_WIDTH-1:0] TOHOST_ADDR = 'h8002_0000,
+  parameter logic [ADDR_WIDTH-1:0] FROMHOST_ADDR = 'h8002_0008,
+  parameter int unsigned HTIF_POLL_CYCLES = 32,
+  parameter int unsigned HTIF_SETTLE_CYCLES = 8,
+  parameter int unsigned HTIF_MAX_PRINT_BYTES = 1_048_576
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
@@ -26,7 +32,9 @@ module rv_host_dpi #(
   input  logic [1:0]                   host_event_kind_i,
   input  logic [31:0]                  host_event_data_i,
   output logic                         load_done_o,
-  output logic                         load_failed_o
+  output logic                         load_failed_o,
+  output logic                         htif_exit_valid_o,
+  output logic [31:0]                  htif_exit_code_o
 );
 
   localparam int unsigned DATA_BYTES = DATA_WIDTH/8;
@@ -124,6 +132,225 @@ module rv_host_dpi #(
     axi_write_burst(address, 1, 3'd2);
   endtask
 
+  task automatic write_register64(
+    input logic [ADDR_WIDTH-1:0] address,
+    input logic [63:0] value
+  );
+    burst_data[0] = DATA_WIDTH'(value);
+    burst_strobe[0] = '1;
+    axi_write_burst(address, 1, 3'd3);
+  endtask
+
+  task automatic axi_read64(
+    input  logic [ADDR_WIDTH-1:0] address,
+    output logic [63:0] value
+  );
+    logic address_done;
+    value = '0;
+    host_axi_m.ar_id = next_id_q;
+    host_axi_m.ar_addr = address;
+    host_axi_m.ar_len = 0;
+    host_axi_m.ar_size = 3'd3;
+    host_axi_m.ar_burst = 2'b01;
+    host_axi_m.ar_prot = 3'b001;
+    host_axi_m.ar_cache = 4'b0011;
+    host_axi_m.ar_qos = '0;
+    host_axi_m.ar_valid = 1'b1;
+    address_done = 1'b0;
+    while (!address_done) begin
+      @(posedge clk_i);
+      if (host_axi_m.ar_valid && host_axi_m.ar_ready)
+        address_done = 1'b1;
+      @(negedge clk_i);
+      if (address_done) host_axi_m.ar_valid = 1'b0;
+    end
+    while (!host_axi_m.r_valid) @(posedge clk_i);
+    if ((host_axi_m.r_id != next_id_q) ||
+        (host_axi_m.r_resp != 2'b00) || !host_axi_m.r_last) begin
+      load_failed_o = 1'b1;
+      $error("Host AXI HTIF read failed addr=%h id=%h resp=%h last=%b",
+             address, host_axi_m.r_id, host_axi_m.r_resp,
+             host_axi_m.r_last);
+    end else begin
+      value = host_axi_m.r_data[63:0];
+    end
+    @(negedge clk_i);
+    next_id_q = next_id_q + 1'b1;
+  endtask
+
+  task automatic htif_print_memory(
+    input logic [ADDR_WIDTH-1:0] address,
+    input longint unsigned requested_bytes,
+    input logic stop_at_nul,
+    output longint unsigned printed_bytes
+  );
+    logic [63:0] beat;
+    logic [ADDR_WIDTH-1:0] beat_address;
+    int unsigned first_lane;
+    logic done;
+    printed_bytes = 0;
+    done = 1'b0;
+    while (!done && (printed_bytes < requested_bytes) &&
+           (printed_bytes < HTIF_MAX_PRINT_BYTES)) begin
+      beat_address = (address + ADDR_WIDTH'(printed_bytes)) &
+                     ~ADDR_WIDTH'(DATA_BYTES-1);
+      first_lane = (address + ADDR_WIDTH'(printed_bytes)) & (DATA_BYTES-1);
+      axi_read64(beat_address, beat);
+      if (load_failed_o) begin
+        done = 1'b1;
+      end else begin
+        for (int unsigned lane = first_lane;
+             lane < DATA_BYTES && !done &&
+             printed_bytes < requested_bytes &&
+             printed_bytes < HTIF_MAX_PRINT_BYTES; lane++) begin
+          if (stop_at_nul && (beat[lane*8 +: 8] == 8'h00)) begin
+            done = 1'b1;
+          end else begin
+            host_event(2, int'(beat[lane*8 +: 8]));
+            printed_bytes++;
+          end
+        end
+      end
+    end
+  endtask
+
+  task automatic htif_read_memory64(
+    input  logic [ADDR_WIDTH-1:0] address,
+    output logic [63:0] value
+  );
+    logic [ADDR_WIDTH-1:0] aligned_address;
+    logic [63:0] low_beat;
+    logic [63:0] high_beat;
+    int unsigned byte_offset;
+    aligned_address = address & ~ADDR_WIDTH'(DATA_BYTES-1);
+    byte_offset = address & (DATA_BYTES-1);
+    axi_read64(aligned_address, low_beat);
+    if ((byte_offset == 0) || load_failed_o) begin
+      value = low_beat;
+    end else begin
+      axi_read64(aligned_address + ADDR_WIDTH'(DATA_BYTES), high_beat);
+      value = (low_beat >> (byte_offset*8)) |
+              (high_beat << ((DATA_BYTES-byte_offset)*8));
+    end
+  endtask
+
+  task automatic htif_write_response(input logic [63:0] response);
+    logic [63:0] current_fromhost;
+    current_fromhost = '1;
+    while ((current_fromhost != 0) && !load_failed_o) begin
+      axi_read64(FROMHOST_ADDR, current_fromhost);
+      if (current_fromhost != 0)
+        repeat (HTIF_POLL_CYCLES) @(posedge clk_i);
+    end
+    if (!load_failed_o)
+      write_register64(FROMHOST_ADDR, response);
+  endtask
+
+  task automatic htif_finish(input logic [31:0] code);
+    htif_exit_code_o = code;
+    htif_exit_valid_o = 1'b1;
+    host_finish(int'(code));
+  endtask
+
+  task automatic htif_proxy_syscall(
+    input logic [ADDR_WIDTH-1:0] request_address
+  );
+    logic [63:0] syscall_number;
+    logic [63:0] arg0;
+    logic [63:0] arg1;
+    logic [63:0] arg2;
+    longint unsigned printed_bytes;
+    htif_read_memory64(request_address + ADDR_WIDTH'(0), syscall_number);
+    if (load_failed_o) begin
+      htif_finish(32'hffff_fffe);
+    end else begin
+      case (syscall_number)
+        64: begin // Linux/RISC-V write(fd, buffer, length)
+          htif_read_memory64(request_address + ADDR_WIDTH'(8), arg0);
+          htif_read_memory64(request_address + ADDR_WIDTH'(16), arg1);
+          htif_read_memory64(request_address + ADDR_WIDTH'(24), arg2);
+          if ((arg0 == 1) || (arg0 == 2)) begin
+            htif_print_memory(ADDR_WIDTH'(arg1), arg2, 1'b0, printed_bytes);
+            write_register64(request_address, 64'(printed_bytes));
+          end else begin
+            write_register64(request_address, 64'hffff_ffff_ffff_ffff);
+          end
+          htif_write_response(64'd1);
+        end
+        93, 94: begin // exit / exit_group
+          htif_read_memory64(request_address + ADDR_WIDTH'(8), arg0);
+          write_register64(request_address, 64'd0);
+          htif_finish(arg0[31:0]);
+        end
+        default: begin
+          // A small bare-metal environment often places a NUL-terminated
+          // string address directly in TOHOST instead of a syscall block.
+          htif_print_memory(request_address, HTIF_MAX_PRINT_BYTES,
+                            1'b1, printed_bytes);
+          htif_write_response(64'd1);
+        end
+      endcase
+    end
+  endtask
+
+  task automatic htif_handle_request(input logic [63:0] request);
+    logic [7:0] device;
+    logic [7:0] command;
+    logic [47:0] payload;
+    device = request[63:56];
+    command = request[55:48];
+    payload = request[47:0];
+
+    // The producer owns TOHOST until the host consumes it. Clear it before
+    // publishing FROMHOST so the next request cannot be mistaken for this one.
+    write_register64(TOHOST_ADDR, 64'd0);
+    if (load_failed_o) begin
+      htif_finish(32'hffff_fffe);
+    end else if ((device == 0) && (command == 0) && (request == 64'd1)) begin
+      htif_finish(32'd0);
+    end else if ((device == 0) && (command == 0) && request[0] &&
+                 !address_in_region(ADDR_WIDTH'(payload), 1,
+                                    ITIM_BASE_ADDR, ITIM_SIZE_BYTES) &&
+                 !address_in_region(ADDR_WIDTH'(payload), 1,
+                                    DTIM_BASE_ADDR, DTIM_SIZE_BYTES)) begin
+      // riscv-tests convention: 1=PASS, odd values encode a non-zero failure.
+      htif_finish(request[32:1]);
+    end else if ((device == 1) && (command == 1)) begin
+      // Standard HTIF console putchar packet.
+      host_event(2, int'(payload[7:0]));
+      htif_write_response({device, command, 47'd0, 1'b1});
+    end else if ((device == 0) && (command == 0)) begin
+      // Proxy syscall packet. On RV32 the low 32 bits are the request address.
+      htif_proxy_syscall(ADDR_WIDTH'(payload));
+    end else begin
+      $display("Unsupported HTIF request device=%0d command=%0d payload=%h",
+               device, command, payload);
+      htif_finish(32'hffff_fffd);
+    end
+  endtask
+
+  task automatic htif_server_loop;
+    logic [63:0] request;
+    logic [63:0] stable_request;
+    forever begin
+      repeat (HTIF_POLL_CYCLES) @(posedge clk_i);
+      axi_read64(TOHOST_ADDR, request);
+      if (load_failed_o)
+        htif_finish(32'hffff_fffe);
+      else if (request != 0) begin
+        // RV32 can publish a 64-bit HTIF word with two stores. Re-read after a
+        // short settling interval so a low-word-first console packet is not
+        // misread as an odd riscv-tests completion code.
+        repeat (HTIF_SETTLE_CYCLES) @(posedge clk_i);
+        axi_read64(TOHOST_ADDR, stable_request);
+        if ((stable_request == request) && (stable_request != 0))
+          htif_handle_request(stable_request);
+      end
+      if (htif_exit_valid_o)
+        return;
+    end
+  endtask
+
   task automatic load_segment(input int segment_index);
     longint unsigned segment_address, file_size, memory_size;
     longint unsigned first_beat, final_address, current_beat;
@@ -209,6 +436,8 @@ module rv_host_dpi #(
     host_axi_m.r_ready = 1'b1;
     load_done_o = 1'b0;
     load_failed_o = 1'b0;
+    htif_exit_valid_o = 1'b0;
+    htif_exit_code_o = '0;
     next_id_q = '0;
 
     wait (rst_ni && soc_ready_i && boot_wait_i);
@@ -240,6 +469,8 @@ module rv_host_dpi #(
       // both HostIF mailbox writes have completed before the core wakes.
       write_register32(CLINT_BASE_ADDR + CLINT_MSIP_OFFSET, 32'h1);
       load_done_o = !load_failed_o;
+      if (HTIF_ENABLE && !load_failed_o)
+        htif_server_loop();
     end
   end
 
@@ -247,5 +478,15 @@ module rv_host_dpi #(
     if ((DATA_WIDTH < 32) || ((DATA_WIDTH % 8) != 0) ||
         ((DATA_BYTES & (DATA_BYTES-1)) != 0))
       $fatal(1, "Host AXI data width must be a power-of-two number of bytes");
+    if (HTIF_ENABLE && (DATA_WIDTH != 64))
+      $fatal(1, "HTIF DPI mode currently requires a 64-bit Host AXI data bus");
+    if (HTIF_ENABLE &&
+        (!address_in_region(TOHOST_ADDR, 8, DTIM_BASE_ADDR, DTIM_SIZE_BYTES) ||
+         !address_in_region(FROMHOST_ADDR, 8, DTIM_BASE_ADDR, DTIM_SIZE_BYTES)))
+      $fatal(1, "TOHOST/FROMHOST must be aligned 64-bit words inside DTIM");
+    if (HTIF_ENABLE && ((TOHOST_ADDR[2:0] != 0) ||
+                        (FROMHOST_ADDR[2:0] != 0) ||
+                        (TOHOST_ADDR == FROMHOST_ADDR)))
+      $fatal(1, "TOHOST/FROMHOST must be distinct and 8-byte aligned");
   end
 endmodule

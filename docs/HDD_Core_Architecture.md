@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Integration baseline v1.13.1 (Xcelium verilog_sub export 추가) |
+| 상태 | Integration baseline v1.14.0 (server HTIF/DPI 실행 경로 추가) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -31,7 +31,7 @@
 | Initial memory | ITIM/DTIM 각 128 KiB, 2-bank × 64-bit, bank별 1R1W |
 | SoC fabric | D local fabric 3 initiators, I local fabric, AXI4 main crossbar |
 | Interrupt | CLINT-compatible MSIP/MTIMER, PLIC 32 sources/1 M context |
-| Boot/test | Boot ROM WFI → DPI ELF PT_LOAD/Host AXI → HostIF → CLINT MSIP → ITIM vector |
+| Boot/test | Boot ROM WFI → DPI ELF PT_LOAD/Host AXI → CLINT MSIP → ELF entry, DTIM HTIF |
 | RV64 확장 | `XLEN`, W-op decode, 64-bit LSU/CSR, Sv39 hook 분리 |
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
@@ -231,6 +231,11 @@ flowchart TB
 
 `mtvec`의 boot 값과 ITIM base는 모두 `0x8000_0000`이다. CLINT base는 요청에 따라 일반적인 `0x0200_0000`이 아니라 `0x0020_0000`을 사용한다. 주소는 `rv_soc_pkg` 한 곳에서만 정의하며 RTL에 literal을 반복하지 않는다.
 
+서버 HTIF 모드에서는 DTIM의 첫 두 64-bit word를 mailbox로 예약한다.
+`TOHOST_ADDR=0x8002_0000`, `FROMHOST_ADDR=0x8002_0008`이며 별도 address-decode
+slave가 아니다. 따라서 ELF linker script는 일반 `.data/.bss`를 `0x8002_0010`
+이후에 배치하거나 명시적인 `.htif` section으로 첫 16 bytes를 소유해야 한다.
+
 ### 3.4 Address parameterization
 
 모든 region은 `rtl/soc/rv_soc_pkg.sv`에 `*_BASE_ADDR`와 `*_SIZE_KB`로 정의한다. byte 수와 exclusive end address는 package가 파생한다.
@@ -240,6 +245,8 @@ parameter logic [31:0] ITIM_BASE_ADDR   = 32'h8000_0000;
 parameter int unsigned ITIM_SIZE_KB     = 128;
 parameter logic [31:0] DTIM_BASE_ADDR   = 32'h8002_0000;
 parameter int unsigned DTIM_SIZE_KB     = 128;
+parameter logic [31:0] TOHOST_ADDR      = 32'h8002_0000;
+parameter logic [31:0] FROMHOST_ADDR    = 32'h8002_0008;
 parameter logic [31:0] HOSTIF_BASE_ADDR = 32'h1000_0000;
 parameter int unsigned HOSTIF_SIZE_KB   = 4;
 ```
@@ -258,6 +265,7 @@ parameter int unsigned HOSTIF_SIZE_KB   = 4;
 - 모든 region pair가 overlap하지 않는지
 - TIM size가 16-byte block과 2-bank interleave 조건을 만족하는지
 - `BOOT_MTVEC_ADDR`가 ITIM range 안이고 4-byte aligned인지
+- TOHOST/FROMHOST가 서로 다른 8-byte aligned word이고 DTIM 안에 있는지
 - 32-bit address에서 `base + size`가 overflow하지 않는지
 
 SystemVerilog testbench는 package/top parameter 값을 DPI-C `host_config()` 인자로 넘긴다. ELF의 실제 적재 주소는 `PT_LOAD.p_paddr`, 없으면 `p_vaddr`가 결정하므로 software linker map도 RTL map과 같아야 한다. 기본 저장소의 directed fixture에는 기본 주소 literal이 일부 남아 있지만, 아래 프로젝트 생성기는 새 복사본의 C linker script, C/assembly MMIO 주소와 commit-filter ITIM base를 같은 설정으로 다시 쓴다.
@@ -296,36 +304,37 @@ cd ../company_rv_core
 ./scripts/run_configured_elf.sh /path/to/program.elf
 ```
 
-### 3.6 Xcelium `verilog_sub` 전달 계약
+### 3.6 Xcelium `verilog_sub` 실행 계약
 
-회사 Linux 서버의 기존 Xcelium testbench/DPI/Host protocol을 그대로 사용하기 위해
-RTL 전달물은 server TB와 분리한다. `sim/xcelium/sources_core.f`는 독립 core,
-`sources_soc.f`는 complete SoC의 compile order를 정의한다. 두 list는 package를 먼저,
-interface를 다음, leaf RTL과 core, `rv_soc_top`을 마지막에 둔다.
+`verilog_sub`는 전달 폴더 이름이 아니라 회사 Linux 서버에서 Xcelium을 실행하는
+wrapper command로 정의한다. 신규 기준 entry는 `sim/xcelium/run_verilog_sub.sh`다.
+사용자는 script 상단 `BINARY=`에 RISC-V ELF 절대경로 하나만 지정한다. script는
+`elf_loader.cpp`를 PIC shared library로 빌드한 뒤 `verilog_sub`에 다음 항목을 넘긴다.
 
-`scripts/export_verilog_sub.py`는 Python 표준 라이브러리만 사용하며 지정한 새 폴더에
-49개 합성 RTL, memory-map config, 기본 BootROM image, core/SoC file list와 Linux
-`xrun` wrapper를 복사한다. root의 `verilog_sub.f`는 export root 기준 상대경로만
-포함하므로 원본 checkout 절대경로나 Windows 사용자 이름을 보존하지 않는다.
-`manifest.json`은 Git revision, top 이름, memory map과 모든 전달 파일의 SHA-256을
-기록한다. 기존 non-empty output은 `--force`를 명시하지 않으면 덮어쓰지 않는다.
+- `sim/xcelium/rtl.f`: 합성 RTL compile order
+- `sim/xcelium/htif_tb.f`: DPI Host와 `rv_soc_htif_dpi_tb`
+- `-top rv_soc_htif_dpi_tb`
+- `-sv_lib <libcore_htif_dpi.so>`
+- `+elf=<BINARY>`와 timeout plusarg
+
+`setup_env.sh`는 자신의 실제 위치에서 `CORE_ROOT`, `RTL_DIR`, `TB_DIR`,
+`XCELIUM_DIR` 절대경로를 계산한다. 두 `.f` 파일은 `$RTL_DIR/backend/...`와
+`$TB_DIR/e2e/...` 형식만 사용하므로 checkout 위치나 사용자 이름에 의존하지 않는다.
 
 ```bash
-python3 scripts/export_verilog_sub.py --output out/verilog_sub
-/absolute/verilog_sub/scripts/run_xcelium.sh compile
-/absolute/verilog_sub/scripts/run_xcelium.sh run server_tb_top tb/filelist.f
+vi sim/xcelium/run_verilog_sub.sh   # BINARY=/server/path/program.elf
+chmod +x sim/xcelium/*.sh
+./sim/xcelium/run_verilog_sub.sh
 ```
 
-wrapper는 호출한 server working directory를 유지하고 bundle RTL만 absolute path로
-확장하므로 기존 server TB file list 내부의 relative path를 깨지 않는다. 서버 flow가
-자체 `xrun` command를 관리하면 bundle root에서
-`-sv -f verilog_sub.f`만 기존 TB file list보다 앞에 추가한다. repository의
-Verilator DPI, current HostIF packet parser와 local testbench는 export하지 않는다.
-따라서 server `tohost/fromhost`, ELF loader와 PASS/FAIL protocol은 서버 환경이 계속
-소유한다. 단, server TB가 기대하는 DUT top port와 현재 `rv_soc_top` port가 다르면
-별도 wrapper는 서버 계약을 확인한 뒤 추가해야 한다. Xcelium executable이 없는
-개발 PC에서는 source 집합 일치, 상대경로 존재, export tree의 SystemVerilog parse로
-검증하고 실제 `xrun` compile/elaboration은 서버 gate로 남긴다.
+server wrapper가 xrun-compatible option을 그대로 받는 것을 기본 계약으로 한다.
+wrapper가 별도 sub-command를 요구하면 runner 마지막의 단일 `exec verilog_sub ...`
+부분만 회사 형식에 맞춘다. 과거 `sources_core.f`, `sources_soc.f`,
+`run_xcelium.sh`는 기존 직접-xrun flow 호환을 위해 유지하지만 신규 경로의 기준은
+`setup_env.sh`, `rtl.f`, `htif_tb.f`, `run_verilog_sub.sh` 네 파일이다. 개발 PC에는
+Xcelium이 없으므로 actual Cadence invocation은 server gate이며, 동일한 TB/DPI의
+ELF load, direct-string print, proxy write syscall, TOHOST=1 종료는 Verilator E2E로
+기능 검증한다.
 
 ## 4. 기준 파라미터
 
@@ -1131,6 +1140,31 @@ CPU→Host 통신을 위해 Host가 master 역할만 가져서는 부족하므�
 
 Host는 CLINT `msip`도 반드시 AXI write로 발생시킨다. testbench가 interrupt wire를 직접 force하는 방식은 boot protocol 검증 경로로 사용하지 않는다. PLIC source injection은 별도 DPI input vector로 제공할 수 있지만 claim/complete는 항상 AXI register path를 따른다.
 
+#### 15.9.1 서버 DTIM HTIF 호환 모드
+
+서버 ELF 호환 모드는 위의 합성 가능한 HostIF register block을 삭제하거나 주소를
+겹치게 변경하지 않는다. 대신 `rv_host_dpi`가 Main Xbar의 기존 Host AXI master로
+DTIM 안의 64-bit `TOHOST_ADDR`와 `FROMHOST_ADDR`를 읽고 쓴다. 기본 주소는 각각
+`0x8002_0000`, `0x8002_0008`이다. 즉 두 mailbox는 DTIM storage이며 별도 slave가
+아니다.
+
+Host state machine은 다음 순서를 지킨다.
+
+1. ELF `PT_LOAD`와 BSS zero-fill의 모든 AXI response를 완료한다.
+2. HostIF의 boot-entry/flag를 기록하고 CLINT MSIP로 Boot ROM을 깨운다.
+3. configurable interval마다 TOHOST 64-bit word를 Host AXI로 읽는다.
+4. RV32의 두 번짜리 32-bit store publication을 고려해 settling interval 뒤 동일값을
+   다시 읽고 값이 안정됐을 때만 consume한다.
+5. TOHOST를 0으로 clear한 후 request를 수행한다.
+6. 응답이 필요하면 기존 FROMHOST가 0이 될 때까지 기다린 후 response를 쓴다.
+
+지원 protocol은 `TOHOST=1` PASS, raw odd FAIL code, raw even string pointer,
+HTIF console device/command `1/1`, proxy syscall `write=64`, `exit=93`,
+`exit_group=94`다. string과 syscall argument memory도 hierarchical deposit이 아니라
+Host AXI read/write를 사용하므로 Xbar, I/D inbound bridge와 TIM arbitration을 함께
+검증한다. polling traffic은 benchmark cycle 측정에 포함될 수 있으므로 서버 HTIF
+mode의 cycle 수와 기존 event-sideband CoreMark 수치를 직접 비교하지 않는다.
+
 ### 15.10 Boot ROM과 ELF boot sequence
 
 reset vector는 Boot ROM의 `0x0000_1000`이다. Boot ROM은 stack 없이 다음을 수행한다.
@@ -1164,6 +1198,14 @@ sequenceDiagram
 ```
 
 ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampoline을 포함하는 것이다. 기본 linker layout은 vector 영역 `0x8000_0000..0x8000_00FF`, program text entry `0x8000_0100` 이후를 권장한다. vector는 `mcause=MSIP`를 확인하고 CLINT msip를 clear한 뒤 HostIF `BOOT_ENTRY`로 jump한다. ELF가 이 contract를 따르지 않으면 Host loader가 임의로 vector를 덮어쓰지 않고 오류를 보고한다.
+
+일반 directed 환경의 `bootrom_wait.hex`는 위 ITIM trap-vector contract를 유지한다.
+서버 HTIF top은 별도 `bootrom_host_jump.hex`를 선택한다. 이 ROM은 mtvec를 ROM 내부
+wake handler로 두고 WFI한 뒤 MSIP가 오면 CLINT.msip를 clear하고 HostIF
+`BOOT_ENTRY`를 읽어 곧바로 ELF `e_entry`로 jump한다. 따라서 서버 ELF가
+`0x8000_0000`에 software-interrupt trampoline을 포함하지 않아도 되며, 실행 파일
+경로와 ELF header만으로 entry가 결정된다. 이는 testbench boot adapter이고 합성
+SoC의 기본 firmware contract를 바꾸지 않는다.
 
 ### 15.11 합성 top과 testbench 경계
 
@@ -1224,7 +1266,7 @@ ITIM image contract는 `0x8000_0000`에 M-mode software interrupt vector/trampol
 | `rv_store_buffer` | Implemented standalone | core clock/reset | PADDR/data/entry/ROB sequence 폭 |
 | `rv_lsq`, `rv_lsu_cluster` | Implemented and backend-integrated | core clock/reset | LQ/SQ/PADDR/data/tag/ROB sequence 폭 |
 | `rv_fpu` | Implemented candidate: unified RV32F elastic execution baseline, verification pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
-| `rv_host_dpi`, `elf_loader.cpp` | Testbench implementation candidate, verification pending | testbench clock/reset + Host AXI | 전 memory-map runtime 값, ELF path |
+| `rv_host_dpi`, `elf_loader.cpp` | Implemented; custom HostIF + server HTIF modes E2E verified | testbench clock/reset + Host AXI | 전 memory-map, ELF path, TOHOST/FROMHOST |
 | `rv_writeback_arbiter`, `rv_branch_recovery`, `rv_exec_result_buffer` | Implemented and backend-integrated | core clock/reset 또는 조합 | Section 15.28~15.33 참조 |
 | `rv_csr_file` | Implemented and backend-integrated | core clock/reset | Section 15.34 참조 |
 | `rv_pmp` | Implemented and IFU/dual-LSU integrated | 조합 | PADDR/PMP entries/check ports, Section 15.34 참조 |
@@ -1806,9 +1848,9 @@ baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝
 
 ### 15.36 DPI ELF loader와 Host AXI BFM exact boundary
 
-`rv_host_dpi`는 합성 대상이 아니며 `clk_i/rst_ni`, `rv_axi4_if.master host_axi_m`, SoC의 `soc_ready_i`, Boot ROM WFI 관찰 `boot_wait_i`, HostIF event valid/ready/kind/data를 연결한다. XLEN, AXI data/ID width, BOOTROM/ITIM/DTIM/CLINT/PLIC/HOSTIF base와 size bytes 및 register offset은 module parameter이고 startup의 `host_config()`로 C++에 전달한다.
+`rv_host_dpi`는 합성 대상이 아니며 `clk_i/rst_ni`, `rv_axi4_if.master host_axi_m`, SoC의 `soc_ready_i`, Boot ROM WFI 관찰 `boot_wait_i`, HostIF event valid/ready/kind/data를 연결한다. XLEN, AXI data/ID width, BOOTROM/ITIM/DTIM/CLINT/PLIC/HOSTIF base와 size bytes 및 register offset은 module parameter이고 startup의 `host_config()`로 C++에 전달한다. `HTIF_ENABLE`, `TOHOST_ADDR`, `FROMHOST_ADDR`, polling/settling/maximum-print-byte도 parameter다. HTIF 종료는 `htif_exit_valid_o/htif_exit_code_o`로 test top에 전달한다.
 
-DPI-C 함수 계약은 `host_open_elf(path)`, `host_elf_entry()`, `host_segment_count()`, segment별 `paddr/filesz/memsz/byte()` getter, `host_poll_rx()`, `host_event(kind,data)`, `host_finish(code)`다. C++ parser는 ELF32/ELF64 little-endian, `EM_RISCV`, PT_LOAD bounds와 `filesz<=memsz`를 검사한다. SV BFM은 최대 16-beat AXI INCR burst, unaligned head/tail byte strobe와 `memsz-filesz` zero-fill을 구현한다. segment 전체가 parameterized ITIM 또는 DTIM window 안에 있어야 하며 모든 B response가 OKAY인 뒤 HostIF boot entry/flags, 마지막으로 `CLINT_BASE+MSIP_OFF=1`을 기록한다. DPI가 TIM hierarchy나 interrupt wire를 직접 수정하는 것은 금지한다. `rv_soc_dpi_tb`와 `scripts/run_soc_elf_test.ps1`가 이 경계를 실행한다.
+DPI-C 함수 계약은 `host_open_elf(path)`, `host_elf_entry()`, `host_segment_count()`, segment별 `paddr/filesz/memsz/byte()` getter, `host_poll_rx()`, `host_event(kind,data)`, `host_finish(code)`다. C++ parser는 ELF32/ELF64 little-endian, `EM_RISCV`, PT_LOAD bounds와 `filesz<=memsz`를 검사한다. SV BFM은 최대 16-beat AXI INCR burst, unaligned head/tail byte strobe와 `memsz-filesz` zero-fill을 구현한다. segment 전체가 parameterized ITIM 또는 DTIM window 안에 있어야 하며 모든 B response가 OKAY인 뒤 HostIF boot entry/flags, 마지막으로 `CLINT_BASE+MSIP_OFF=1`을 기록한다. DPI가 TIM hierarchy나 interrupt wire를 직접 수정하는 것은 금지한다. `rv_soc_dpi_tb`는 기존 custom HostIF 회귀, `rv_soc_htif_dpi_tb`는 server mailbox 회귀를 실행한다. 후자는 Host AXI read/write task로 string/syscall memory와 TOHOST/FROMHOST를 접근하며 제공된 `htif_smoke.elf`로 두 print 방식과 PASS 종료를 확인한다.
 
 ### 15.37 Backend integration과 top-level ownership
 
@@ -1942,7 +1984,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 
 ### 18.5 실행 결과와 commit 비교 계약
 
-| Gate | 실행 산출물 | 2026-09-02 결과 |
+| Gate | 실행 산출물 | 2026-09-03 결과 |
 |---|---|---|
 | parse/elaboration | `python scripts/check_rtl.py` | RV32/RV64/PADDR34/relocated SoC 및 TB elaboration PASS |
 | unit | `scripts/run_unit_tests.ps1` | rename/PRF/execute/decode/divider/FPU/fetch/LSU/SB/LSQ/WB/recovery/result buffer/CSR/PMP/trap controller 17종 PASS |
@@ -2317,3 +2359,4 @@ orphan speculative response 생성을 방지한다.
 | v1.12.2 | predictor branch subtype/direction/target profiler를 추가하고 backend resolve metadata가 compressed canonical instruction과 `INST_LEN_16`을 섞던 계약 오류를 수정. execution은 canonical instruction, predictor query/resolve/commit은 raw encoding을 사용하도록 분리하고 C.BNEZ 학습 단위 회귀를 추가. CoreMark CRC/576,450 instret를 보존하면서 533,820→483,143 cycle, mispredict 33,832→7,477, IPC 1.079858→1.193125를 달성. ROB 48/checkpoint 8을 유지하고 4-wide migration 경계를 문서화 |
 | v1.13.0 | issue wait와 ROB-head instruction class profiler를 추가해 load-dependent latency를 주병목으로 확정. D-Fabric이 old response handshake와 next request accept를 같은 cycle에 수행하되 old ID/data와 single-outstanding를 보존하도록 변경하고 directed assertion/test를 추가. CSR interrupt priority와 독립 trap-controller 회귀 및 backend/trap assertions로 exception-over-interrupt, ROB-empty interrupt 경계, pending interrupt의 dispatch quiesce, precise mepc/cause/tval, WFI serialization을 고정. CoreMark CRC/576,450 instret를 보존하면서 483,143→464,335 cycle, D-memory wait 60,828→12,173, IPC 1.193125→1.241453를 달성하고 성능 변경을 동결 |
 | v1.13.1 | Xcelium-safe package/interface/RTL compile order를 core/SoC file list로 추가하고, 49개 합성 RTL·memory-map config·BootROM image·상대경로 `verilog_sub.f`·Linux xrun wrapper·SHA-256 manifest를 하나의 self-contained 전달 폴더로 만드는 `export_verilog_sub.py`를 추가. 서버 TB/DPI/tohost protocol은 export에서 제외해 기존 회사 검증환경이 소유하도록 분리 |
+| v1.14.0 | DTIM 내부 64-bit `TOHOST=0x8002_0000`, `FROMHOST=0x8002_0008`을 package/top/map-check/configurator에 추가. Host AXI polling 기반 HTIF DPI가 raw PASS/FAIL, direct string, console packet, proxy write/exit와 RV32 two-store settling을 처리하고, server Boot ROM이 ELF entry로 jump하도록 구성. `$RTL_DIR/$TB_DIR` filelist, source 환경, `BINARY=` 단일 설정 `run_verilog_sub.sh`, portable Xcelium bundle 및 HTIF smoke ELF/결과 log를 추가. Verilator E2E와 기존 custom HostIF ELF 회귀는 통과했으며 실제 회사 `verilog_sub` invocation은 서버 확인 필요 |

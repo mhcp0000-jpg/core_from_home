@@ -13,6 +13,8 @@
     "bootrom_image": "auto"
   },
   "host": {
+    "tohost_addr": "0x80020000",
+    "fromhost_addr": "0x80020008",
     "default_elf": "",
     "payload_dir": "host/payload",
     "artifact_root": "out/dpi_elf",

@@ -2,6 +2,8 @@ module rv_soc_dpi_tb;
   import rv_soc_pkg::*;
 
   logic clk, rst_n, soc_ready, boot_wait, load_done, load_failed;
+  logic htif_exit_valid_unused;
+  logic [31:0] htif_exit_code_unused;
   logic [PLIC_NUM_SOURCES-1:1] external_irq;
   logic [31:0] host_boot_entry, host_boot_flags;
   logic host_event_valid, host_event_ready;
@@ -67,7 +69,9 @@ module rv_soc_dpi_tb;
     .host_event_valid_i(host_event_valid),
     .host_event_ready_o(host_event_ready),
     .host_event_kind_i(host_event_kind), .host_event_data_i(host_event_data),
-    .load_done_o(load_done), .load_failed_o(load_failed)
+    .load_done_o(load_done), .load_failed_o(load_failed),
+    .htif_exit_valid_o(htif_exit_valid_unused),
+    .htif_exit_code_o(htif_exit_code_unused)
   );
 
   assign perf_start = host_event_valid && host_event_ready &&

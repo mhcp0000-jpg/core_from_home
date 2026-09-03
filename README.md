@@ -5,12 +5,36 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
 
 초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark IPC 1.2 목표 달성, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현하며 store 주소는 데이터 operand보다 먼저 SQ에 확정할 수 있습니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff하며 target-buffer hit는 redirect edge에 fetch queue를 바로 채웁니다. predictor resolve에는 compressed branch의 canonical expansion이 아니라 raw 16-bit encoding을 보존해 C.Bxx/C.J/C.JR/C.JALR 학습과 history/RAS recovery를 유지합니다. D-Fabric도 이전 response를 소비하는 cycle에 다음 request를 받아 synchronous TIM의 불필요한 turnaround bubble을 제거하며, outstanding 깊이는 1로 유지합니다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했습니다. 직전 v1.12.2 대비 cycle은 3.89% 감소하고 IPC는 4.05% 증가했습니다. parse/elaboration, unit 17종, block 12종, backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했지만, C/CSR/FENCE의 모든 조합과 random long-run, Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
+## Linux 서버에서 ELF 바로 실행
+
+Xcelium을 `verilog_sub` 명령으로 제출하는 서버에서는 아래 파일의 `BINARY=` 한 줄만
+실제 ELF 절대경로로 변경한 뒤 실행합니다. 입력은 raw `.bin`이 아니라 program
+header가 포함된 RISC-V ELF여야 합니다.
+
+```bash
+vi sim/xcelium/run_verilog_sub.sh   # BINARY=/server/path/program.elf
+chmod +x sim/xcelium/*.sh
+./sim/xcelium/run_verilog_sub.sh
+```
+
+스크립트는 시뮬레이터별 SVA 차이를 피하기 위해 `SYNTHESIS` define으로
+assertion 구간만 제외하며, 실제 RTL 데이터 경로는 변경하지 않습니다.
+
+스크립트는 DPI shared library를 만들고 `verilog_sub`에 RTL/TB filelist, top,
+`+elf=`를 전달합니다. 런타임 Host 계약은 DTIM의 64-bit
+`TOHOST=0x8002_0000`, `FROMHOST=0x8002_0008`입니다. `TOHOST=1`은 PASS/종료,
+odd completion은 FAIL, 문자열 주소는 NUL-terminated 출력, HTIF console packet과
+proxy `write/exit` syscall도 처리합니다. ELF의 `PT_LOAD`는 Host AXI를 통해
+ITIM/DTIM에 적재되고 Boot ROM이 ELF entry로 jump합니다. 자세한 파일 구성과
+회사 wrapper 옵션 조정은 [Xcelium/HTIF 실행 가이드](sim/xcelium/README.md)를 봅니다.
+
 ## 문서
 
 - [통합 Hardware Design Description](docs/HDD_Core_Architecture.md) — core/SoC/interface/memory map/boot/검증/구현 계획의 단일 기준 문서
   - [전체 SoC architecture](docs/HDD_Core_Architecture.md#31-전체-soc-architecture) · [구조도 크게 보기](docs/diagrams/soc-architecture.svg)
   - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture) · [구조도 크게 보기](docs/diagrams/core-microarchitecture.svg)
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
+- [HTIF DPI smoke 결과](verification/tests/htif_smoke/RESULTS.md) — direct string, proxy write, FROMHOST 응답과 TOHOST=1 종료
 - [CoreMark short RTL benchmark](sw/benchmarks/coremark/README.md) — 공식 upstream pin, TIM port, 실행법과 점수 해석
 - [CoreMark 2-iteration 결과](verification/benchmarks/coremark/RESULTS.md) — CRC, cycle/IPC, 발견한 LSU recovery 결함과 수정 결과
 - [Xcelium verilog_sub export](sim/xcelium/README.md) — 회사 Linux 서버용 self-contained RTL/file list 생성과 기존 TB 연결법
@@ -32,6 +56,7 @@ sw/
   benchmarks/coremark/            CoreMark RV32 TIM port, startup, linker
   tests/
     rv32_c_loop/                 C source, startup ASM, linker script 한 세트
+    htif_smoke/                  TOHOST/FROMHOST print/exit 최소 ASM ELF
 
 tb/
   unit/
@@ -48,7 +73,7 @@ tb/
 
 scripts/                         build_/run_/verify_ 접두사 기반 실행 도구
 
-sim/xcelium/                     Xcelium compile-order file list와 Linux wrapper
+sim/xcelium/                     source 환경, 변수형 filelist, verilog_sub/HTIF runner
 
 config/                          주소 맵 JSON, C/ASM 상수, Host 실행 기본값
 
@@ -56,6 +81,7 @@ verification/
   benchmarks/coremark/            CoreMark 결과, log, disassembly, ELF metadata
   tests/
     rv32_c_loop/                 결과 설명, commit CSV, disassembly, ELF metadata
+    htif_smoke/                  server HTIF E2E 결과와 log
 ```
 
 파일 배치 원칙은 `rtl=합성 대상`, `tb=검증 하드웨어/host`, `sw=core에서 실행할 프로그램`, `verification=보존할 결과`, `scripts=재현 명령`이다. 단위 testbench는 대상 RTL 영역과 동일한 `frontend/backend/soc` 이름을 사용하고, 여러 영역을 연결하는 testbench만 `integration` 또는 `e2e`에 둔다.
@@ -78,24 +104,23 @@ F 확장은 Zicsr에 의존하므로 실제 ISA 문자열은 `RV32IMFC_Zicsr_Zif
 SoC 합성 최상위는 `rtl/soc/rv_soc_top.sv`, 독립 core 최상위는 `rtl/rv_ooo_core.sv`, 공통 제어 타입은 `rtl/rv_ooo_pkg.sv`입니다.
 기본 설정은 RV32이며 `XLEN=64` 구성 검증을 항상 병행합니다.
 
-회사 Xcelium 서버에 RTL을 `verilog_sub` 묶음으로 전달하려면 다음을 실행합니다.
-생성물의 모든 RTL 경로는 bundle root 기준 상대경로이며 서버의 기존 TB/DPI file
-list는 수정하거나 복제하지 않습니다.
+회사 Xcelium 서버용 self-contained 복사본이 필요하면 다음을 실행합니다.
 
 ```powershell
-python scripts/export_verilog_sub.py --output out/verilog_sub
+python scripts/export_verilog_sub.py --output out/xcelium_bundle
 ```
 
 Linux 서버에서는 다음처럼 기존 검증환경을 뒤에 연결합니다.
 
 ```bash
-# 기존 server verification root에서 실행
-/path/to/verilog_sub/scripts/run_xcelium.sh run server_tb_top tb/filelist.f
+# checkout 또는 bundle root에서 실행
+./sim/xcelium/run_verilog_sub.sh
 ```
 
 SoC 주소와 용량은 `rtl/soc/rv_soc_pkg.sv`가 단일 기준입니다. Boot ROM,
 CLINT, PLIC, HostIF, ITIM, DTIM의 `*_BASE_ADDR`와 `*_SIZE_KB`, HostIF/interrupt
-controller register offset을 이 package에서 변경할 수 있습니다. `rv_soc_top`도
+controller register offset, DTIM `TOHOST_ADDR`/`FROMHOST_ADDR`를 이 package에서
+변경할 수 있습니다. `rv_soc_top`도
 같은 값을 parameter로 노출하므로 특정 test instance만 별도 주소맵으로 구성할
 수 있으며, `rv_soc_map_check`가 정렬·영역 중첩·주소 overflow를 elaboration에서
 검사합니다.

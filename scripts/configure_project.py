@@ -40,6 +40,8 @@ DEFAULTS: dict[str, Any] = {
         "bootrom_image": "auto",
     },
     "host": {
+        "tohost_addr": "0x80020000",
+        "fromhost_addr": "0x80020008",
         "default_elf": "",
         "payload_dir": "host/payload",
         "artifact_root": "out/dpi_elf",
@@ -115,6 +117,14 @@ def collect_interactive(config: dict[str, Any], source_root: Path) -> dict[str, 
         "BootROM HEX 파일('auto'면 mtvec에 맞춰 자동 생성)",
         str(config["boot"]["bootrom_image"]),
     )
+    config["host"]["tohost_addr"] = hex32(prompt_number(
+        "HTIF TOHOST 주소", parse_number(config["host"]["tohost_addr"]),
+        address=True,
+    ))
+    config["host"]["fromhost_addr"] = hex32(prompt_number(
+        "HTIF FROMHOST 주소", parse_number(config["host"]["fromhost_addr"]),
+        address=True,
+    ))
     config["host"]["payload_dir"] = prompt_text(
         "Host ELF를 복사할 새 프로젝트 내부 폴더",
         config["host"]["payload_dir"],
@@ -139,6 +149,12 @@ def normalize(config: dict[str, Any]) -> dict[str, Any]:
         entry["base"] = hex32(parse_number(entry["base"]))
         entry["size_kb"] = parse_number(entry["size_kb"])
     config["boot"]["mtvec"] = hex32(parse_number(config["boot"]["mtvec"]))
+    config["host"]["tohost_addr"] = hex32(
+        parse_number(config["host"]["tohost_addr"])
+    )
+    config["host"]["fromhost_addr"] = hex32(
+        parse_number(config["host"]["fromhost_addr"])
+    )
     config["host"]["timeout_cycles"] = parse_number(
         config["host"]["timeout_cycles"]
     )
@@ -185,6 +201,19 @@ def validate(config: dict[str, Any]) -> None:
         errors.append("PLIC 크기는 M/S context register를 포함하도록 최소 2053 KiB여야 합니다")
     if config["host"]["timeout_cycles"] <= 0:
         errors.append("host.timeout_cycles는 1 이상이어야 합니다")
+    dtim_start = parse_number(config["memory_map"]["dtim"]["base"])
+    dtim_end = dtim_start + parse_number(
+        config["memory_map"]["dtim"]["size_kb"]
+    ) * 1024
+    tohost = parse_number(config["host"]["tohost_addr"])
+    fromhost = parse_number(config["host"]["fromhost_addr"])
+    for name, address in (("tohost", tohost), ("fromhost", fromhost)):
+        if address & 0x7:
+            errors.append(f"host.{name}_addr는 8-byte 정렬이어야 합니다")
+        if not dtim_start <= address or address + 8 > dtim_end:
+            errors.append(f"host.{name}_addr의 64-bit word가 DTIM 밖에 있습니다")
+    if tohost == fromhost:
+        errors.append("host.tohost_addr와 host.fromhost_addr는 달라야 합니다")
     if errors:
         raise ValueError("설정 오류:\n  - " + "\n  - ".join(errors))
 
@@ -217,6 +246,15 @@ def update_soc_package(project_root: Path, config: dict[str, Any]) -> None:
         r"(parameter logic \[SOC_ADDR_WIDTH-1:0\]\s+BOOT_MTVEC_ADDR\s*=\s*)[^;]+;",
         rf"\g<1>{sv_hex32(parse_number(config['boot']['mtvec']))};",
     )
+    for config_name, symbol in (
+        ("tohost_addr", "TOHOST_ADDR"),
+        ("fromhost_addr", "FROMHOST_ADDR"),
+    ):
+        replace_exact(
+            package_path,
+            rf"(parameter logic \[SOC_ADDR_WIDTH-1:0\]\s+{symbol}\s*=\s*)32'h[0-9a-fA-F_]+;",
+            rf"\g<1>{sv_hex32(parse_number(config['host'][config_name]))};",
+        )
 
 
 def update_software_map(project_root: Path, config: dict[str, Any]) -> None:
@@ -286,6 +324,14 @@ def copy_runtime_assets(
         config["boot"]["bootrom_source"] = str(boot_source.resolve())
     config["boot"]["bootrom_image"] = "config/assets/bootrom.hex"
 
+    server_boot_dest = project_root / "config/assets/bootrom_host_jump.hex"
+    write_bootrom_host_jump_hex(
+        server_boot_dest,
+        parse_number(config["memory_map"]["bootrom"]["base"]),
+        parse_number(config["memory_map"]["clint"]["base"]),
+        parse_number(config["memory_map"]["hostif"]["base"]),
+    )
+
     for testbench in (
         "tb/e2e/dpi/rv_soc_dpi_tb.sv",
         "tb/integration/soc/rv_soc_top_tb.sv",
@@ -295,6 +341,11 @@ def copy_runtime_assets(
             r'(\.BOOTROM_INIT_FILE\s*\(")[^"]+("\))',
             r'\g<1>config/assets/bootrom.hex\g<2>',
         )
+    replace_exact(
+        project_root / "tb/e2e/dpi/rv_soc_htif_dpi_tb.sv",
+        r'(\.BOOTROM_INIT_FILE\s*\(")[^"]+("\))',
+        r'\g<1>config/assets/bootrom_host_jump.hex\g<2>',
+    )
     first_bootrom_beat = boot_dest.read_text(encoding="ascii").splitlines()[0].strip()
     if not re.fullmatch(r"[0-9a-fA-F]{16}", first_bootrom_beat):
         raise ValueError("BootROM HEX 첫 줄은 64-bit hexadecimal word여야 합니다")
@@ -364,6 +415,70 @@ def write_bootrom_wait_hex(path: Path, mtvec: int) -> None:
     write_text_lf(path, "\n".join(lines) + "\n", encoding="ascii")
 
 
+def write_bootrom_host_jump_hex(
+    path: Path, bootrom_base: int, clint_base: int, hostif_base: int
+) -> None:
+    """Generate WFI ROM that clears MSIP and jumps to HOSTIF.BOOT_ENTRY."""
+
+    def u_type(imm20: int, rd: int, opcode: int = 0x37) -> int:
+        return ((imm20 & 0xFFFFF) << 12) | ((rd & 0x1F) << 7) | opcode
+
+    def i_type(imm: int, rs1: int, funct3: int, rd: int, opcode: int) -> int:
+        return (
+            ((imm & 0xFFF) << 20)
+            | ((rs1 & 0x1F) << 15)
+            | ((funct3 & 7) << 12)
+            | ((rd & 0x1F) << 7)
+            | opcode
+        )
+
+    def s_type(imm: int, rs2: int, rs1: int, funct3: int = 2) -> int:
+        return (
+            (((imm >> 5) & 0x7F) << 25)
+            | ((rs2 & 0x1F) << 20)
+            | ((rs1 & 0x1F) << 15)
+            | ((funct3 & 7) << 12)
+            | ((imm & 0x1F) << 7)
+            | 0x23
+        )
+
+    def csr_type(csr: int, rs1: int, funct3: int, rd: int = 0) -> int:
+        return (
+            ((csr & 0xFFF) << 20)
+            | ((rs1 & 0x1F) << 15)
+            | ((funct3 & 7) << 12)
+            | ((rd & 0x1F) << 7)
+            | 0x73
+        )
+
+    def load_address(address: int, rd: int) -> list[int]:
+        upper = (address + 0x800) >> 12
+        lower = address - (upper << 12)
+        return [u_type(upper, rd), i_type(lower, rd, 0, rd, 0x13)]
+
+    handler = bootrom_base + 0x20
+    words = [
+        *load_address(handler, 5),
+        csr_type(0x305, 5, 1),       # csrw mtvec,t0
+        i_type(8, 0, 0, 5, 0x13),   # li t0,MIE.MSIE
+        csr_type(0x304, 5, 1),       # csrw mie,t0
+        csr_type(0x300, 5, 2),       # csrs mstatus,t0
+        0x10500073,                  # wfi
+        0xFFDFF06F,                  # j -4 (back to wfi)
+        *load_address(clint_base, 5),
+        s_type(0, 0, 5),             # sw zero,0(t0): clear msip
+        *load_address(hostif_base, 5),
+        i_type(4, 5, 2, 6, 0x03),   # lw t1,HOSTIF.BOOT_ENTRY(t0)
+        i_type(0, 6, 0, 0, 0x67),   # jr t1
+        0x0000006F,                  # defensive stop loop
+    ]
+    lines = [
+        f"{words[index + 1]:08x}{words[index]:08x}"
+        for index in range(0, len(words), 2)
+    ]
+    write_text_lf(path, "\n".join(lines) + "\n", encoding="ascii")
+
+
 def write_generated_files(project_root: Path, config: dict[str, Any]) -> None:
     config_dir = project_root / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -390,11 +505,18 @@ def write_generated_files(project_root: Path, config: dict[str, Any]) -> None:
             f".equ {symbol}_SIZE_KB, {size_kb}",
         ])
     header_lines.extend([
+        f"#define TOHOST_ADDR {config['host']['tohost_addr']}u",
+        f"#define FROMHOST_ADDR {config['host']['fromhost_addr']}u",
         f"#define BOOT_MTVEC_ADDR {config['boot']['mtvec']}u",
         "#endif",
         "",
     ])
-    asm_lines.extend([f".equ BOOT_MTVEC_ADDR, {config['boot']['mtvec']}", ""])
+    asm_lines.extend([
+        f".equ TOHOST_ADDR, {config['host']['tohost_addr']}",
+        f".equ FROMHOST_ADDR, {config['host']['fromhost_addr']}",
+        f".equ BOOT_MTVEC_ADDR, {config['boot']['mtvec']}",
+        "",
+    ])
     write_text_lf(config_dir / "soc_memory_map.h", "\n".join(header_lines))
     write_text_lf(config_dir / "soc_memory_map.inc", "\n".join(asm_lines))
 
@@ -406,6 +528,8 @@ def write_generated_files(project_root: Path, config: dict[str, Any]) -> None:
         f"SOC_DEFAULT_ELF={shell_quote(config['host']['default_elf'])}",
         f"SOC_ARTIFACT_ROOT={shell_quote(config['host']['artifact_root'])}",
         f"SOC_TIMEOUT_CYCLES={config['host']['timeout_cycles']}",
+        f"SOC_TOHOST_ADDR={shell_quote(config['host']['tohost_addr'])}",
+        f"SOC_FROMHOST_ADDR={shell_quote(config['host']['fromhost_addr'])}",
         "",
     ]
     write_text_lf(config_dir / "soc_project.env", "\n".join(env_lines))
@@ -419,6 +543,7 @@ Project: `{config['project_name']}`
 - C/assembly constants: `config/soc_memory_map.h`, `config/soc_memory_map.inc`
 - BootROM image used by DPI testbench: `{config['boot']['bootrom_image']}`
 - Default Host ELF: `{config['host']['default_elf'] or '(not set; pass an ELF path when running)'}`
+- HTIF mailboxes: TOHOST `{config['host']['tohost_addr']}`, FROMHOST `{config['host']['fromhost_addr']}`
 
 Windows:
 
@@ -475,6 +600,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--non-interactive", action="store_true", help="질문 없이 설정값 사용")
     parser.add_argument("--project-name")
     parser.add_argument("--default-elf", help="새 프로젝트에 복사할 기본 DPI ELF")
+    parser.add_argument("--tohost-addr", help="DTIM 내부 64-bit TOHOST 주소")
+    parser.add_argument("--fromhost-addr", help="DTIM 내부 64-bit FROMHOST 주소")
     parser.add_argument("--bootrom-image", help="새 프로젝트에 복사할 BootROM HEX")
     parser.add_argument("--boot-mtvec", help="Boot mtvec 주소(기본: ITIM base)")
     for region in REGIONS:
@@ -491,6 +618,10 @@ def main() -> int:
         config["project_name"] = args.project_name
     if args.default_elf is not None:
         config["host"]["default_elf"] = args.default_elf
+    if args.tohost_addr is not None:
+        config["host"]["tohost_addr"] = args.tohost_addr
+    if args.fromhost_addr is not None:
+        config["host"]["fromhost_addr"] = args.fromhost_addr
     if args.bootrom_image is not None:
         config["boot"]["bootrom_image"] = args.bootrom_image
     if args.boot_mtvec is not None:

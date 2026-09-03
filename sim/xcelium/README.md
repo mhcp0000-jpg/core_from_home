@@ -1,52 +1,156 @@
-# Xcelium / `verilog_sub` export
+# Xcelium `verilog_sub` + HTIF 실행 가이드
 
-`sources_core.f`와 `sources_soc.f`는 repository root에서 직접 사용하는 Cadence
-Xcelium용 compile-order file list다. package를 먼저, interface를 다음, core와 SoC
-top을 마지막에 배치한다.
+이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
+`verilog_sub`는 폴더 이름이 아니라 회사 서버의 Xcelium 제출 명령이다.
 
-회사 서버로 self-contained bundle을 전달할 때는 다음 명령을 사용한다.
+## 가장 간단한 실행
+
+`run_verilog_sub.sh` 상단의 다음 한 줄만 실제 RISC-V ELF 절대경로로 바꾼다.
 
 ```bash
-python3 scripts/export_verilog_sub.py --output out/verilog_sub
+BINARY="/server/project/test/program.elf"
 ```
 
-생성 디렉터리는 다음 파일을 포함한다.
+그 다음 repository root에서 실행한다.
+
+```bash
+chmod +x sim/xcelium/*.sh
+./sim/xcelium/run_verilog_sub.sh
+```
+
+파일을 수정하지 않고 한 번만 실행할 때는 환경변수도 사용할 수 있다.
+
+```bash
+BINARY=/server/project/test/program.elf ./sim/xcelium/run_verilog_sub.sh
+```
+
+기본 simulator command는 `verilog_sub`다. 서버에서 command 이름만 다르면 다음처럼
+덮어쓸 수 있다.
+
+```bash
+VERILOG_SUB=my_verilog_sub BINARY=/server/project/test/program.elf \
+  ./sim/xcelium/run_verilog_sub.sh
+```
+
+`verilog_sub`가 일반 `xrun` 옵션을 그대로 받는 wrapper라는 전제로 `-f`, `-top`,
+`-sv_lib`, `+elf=`를 전달한다. 회사 wrapper가 별도의 sub-command 또는 옵션 순서를
+요구하면 `run_verilog_sub.sh` 맨 아래의 실행부 한 곳만 맞추면 된다.
+
+실행 스크립트의 `+define+SYNTHESIS`는 시뮬레이터별 SVA 처리 차이를 피하기
+위해 `ifndef SYNTHESIS` 구간의 assertion만 제외한다. 합성 RTL 데이터 경로와
+DPI/AXI/HTIF 동작은 동일하다.
+
+## 파일 구조
 
 ```text
-verilog_sub/
-  rtl/                       copied synthesizable RTL
-  config/                    generated memory-map contract
-  tb/fixtures/bootrom/       default Boot ROM image
-  filelist/core_rtl.f        core-only relative file list
-  filelist/soc_rtl.f         full-SoC relative file list
-  verilog_sub.f              soc_rtl.f와 같은 root-level entry
-  scripts/run_xcelium.sh     compile/run wrapper
-  manifest.json              source revision, map, SHA-256
+sim/xcelium/
+  setup_env.sh          CORE_ROOT/RTL_DIR/TB_DIR/XCELIUM_DIR 설정
+  setup_env.csh         csh/tcsh 서버용 setenv 환경 파일
+  rtl.f                 합성 RTL compile-order filelist
+  htif_tb.f             DPI Host와 server test top filelist
+  run_verilog_sub.sh    BINARY 한 줄로 실행하는 주 script
+  build_htif_smoke.sh   제공된 최소 HTIF ELF 생성
 ```
 
-서버 testbench는 bundle에 복사하지 않는다. 서버 환경의 기존 TB file list를 그대로
-두고 다음처럼 core/SoC RTL 앞에 연결한다.
+`rtl.f`와 `htif_tb.f`는 checkout의 절대경로를 하드코딩하지 않고 다음 형식을 쓴다.
+
+```text
+$RTL_DIR/backend/rv_int_alu.sv
+$TB_DIR/e2e/dpi/rv_host_dpi.sv
+```
+
+직접 command를 구성할 때는 먼저 환경 파일을 source한다.
 
 ```bash
-/path/to/verilog_sub/scripts/run_xcelium.sh compile
-/path/to/verilog_sub/scripts/run_xcelium.sh run server_tb_top tb/filelist.f \
-  +elf=/absolute/test.elf
+source sim/xcelium/setup_env.sh
+verilog_sub -64bit -sv \
+  +define+SYNTHESIS \
+  -f "$XCELIUM_DIR/rtl.f" \
+  -f "$XCELIUM_DIR/htif_tb.f" \
+  -top rv_soc_htif_dpi_tb \
+  -sv_lib /path/to/libcore_htif_dpi.so \
+  +elf=/server/project/test/program.elf
 ```
 
-wrapper는 호출 당시 server working directory를 변경하지 않는다. 따라서 기존
-`tb/filelist.f` 내부의 상대경로 의미가 보존된다. `verilog_sub.f`의 RTL 항목만 bundle
-root 기준 절대경로로 확장해 `xrun`에 넘긴다.
+csh/tcsh 환경에서는 repository root에서 다음을 사용한다.
 
-서버 flow가 자체 `xrun` 명령을 소유하면 wrapper 없이 다음 항목만 추가한다.
+```csh
+source sim/xcelium/setup_env.csh
+```
+
+## DPI/HTIF 동작
+
+```text
+ELF → DPI-C parser → Host AXI → Main Xbar → ITIM/DTIM
+
+Core store → LSU/SQ commit → D-Fabric → DTIM.TOHOST
+                                          ↓ Host AXI polling
+                                      DPI print/exit
+                                          ↓
+Host response → Host AXI → Main Xbar → DTIM.FROMHOST
+```
+
+기본 mailbox는 다음 두 개의 64-bit word다.
+
+| 이름 | 주소 | 의미 |
+|---|---:|---|
+| TOHOST | `0x8002_0000` | target가 Host request 게시 |
+| FROMHOST | `0x8002_0008` | Host가 target response 게시 |
+
+지원하는 request는 다음과 같다.
+
+- raw `TOHOST=1`: PASS 및 simulation 종료
+- raw odd completion: `(value >> 1)`을 FAIL code로 종료
+- raw even address: 해당 주소의 NUL-terminated 문자열 출력
+- HTIF device 1, command 1: low byte console 출력
+- HTIF device 0, command 0: proxy syscall block의 `write(64)`, `exit(93)`,
+  `exit_group(94)` 처리
+
+RV32가 64-bit mailbox를 두 번의 store로 쓰는 경우를 위해 Host는 settling interval 후
+같은 값을 다시 읽은 뒤 request를 처리한다. 처리 순서는 TOHOST clear, 요청 수행,
+필요한 FROMHOST response 기록이다.
+
+## ELF 요구조건
+
+- ELF32 little-endian RISC-V
+- 모든 `PT_LOAD` segment가 ITIM 또는 DTIM 안에 위치
+- 일반 data가 mailbox 16 bytes를 덮지 않도록 linker script에서 예약
+- ELF entry는 ITIM 안에 위치
+
+가능하면 실행 전에 확인한다.
 
 ```bash
-xrun -64bit -sv -f /path/to/verilog_sub/verilog_sub.f \
-  -f /path/to/server/tb/filelist.f -top server_tb_top
+riscv-none-elf-readelf -h -l program.elf
+riscv-none-elf-nm -n program.elf | grep -E ' (tohost|fromhost)$'
 ```
 
-`verilog_sub.f`의 경로는 bundle root 기준이다. wrapper 없이 다른 directory에서
-직접 `-f`만 전달하면 RTL 상대경로가 틀어질 수 있으므로 bundle root에서 실행하거나
-server flow가 source path를 절대경로로 변환해야 한다. DPI, server Host monitor와
-server `tohost` protocol은 기존 검증
-환경이 소유한다. 현재 repository의 Verilator DPI testbench는 의도적으로 export하지
-않는다.
+심볼을 제공하는 ELF라면 주소가 각각 `80020000`, `80020008`이어야 한다. 주소를
+코드에 직접 사용한 ELF는 심볼이 없어도 실행할 수 있다.
+
+## 제공 smoke test
+
+RISC-V GNU toolchain이 PATH에 있다면 다음으로 작은 ELF를 만든다.
+
+```bash
+./sim/xcelium/build_htif_smoke.sh
+BINARY="$PWD/out/xcelium_htif/htif_smoke.elf" \
+  ./sim/xcelium/run_verilog_sub.sh
+```
+
+정상 출력은 다음과 같다.
+
+```text
+HTIF direct-string print PASS
+HTIF proxy write syscall PASS
+[host-finish code=0]
+HTIF TEST PASS
+```
+
+현재 개발 PC에는 Xcelium/verilog_sub가 없으므로 실제 Cadence command는 서버에서
+최종 확인해야 한다. 동일 RTL/TB/DPI는 Verilator E2E에서 위 출력과 PASS까지 검증했다.
+
+## 호환 파일
+
+`sources_core.f`, `sources_soc.f`, `run_xcelium.sh`는 이전 직접-xrun/export 흐름을
+깨지 않기 위해 유지한다. 신규 서버 검증은 `setup_env.sh`, `rtl.f`, `htif_tb.f`,
+`run_verilog_sub.sh` 네 파일을 기준으로 한다.

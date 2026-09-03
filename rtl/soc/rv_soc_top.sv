@@ -21,6 +21,8 @@ module rv_soc_top #(
   parameter int unsigned ITIM_SIZE_KB      = rv_soc_pkg::ITIM_SIZE_KB,
   parameter logic [31:0] DTIM_BASE_ADDR    = rv_soc_pkg::DTIM_BASE_ADDR,
   parameter int unsigned DTIM_SIZE_KB      = rv_soc_pkg::DTIM_SIZE_KB,
+  parameter logic [31:0] TOHOST_ADDR       = rv_soc_pkg::TOHOST_ADDR,
+  parameter logic [31:0] FROMHOST_ADDR     = rv_soc_pkg::FROMHOST_ADDR,
   parameter logic [31:0] BOOT_MTVEC_ADDR   = ITIM_BASE_ADDR,
   parameter int unsigned PLIC_NUM_SOURCES  = rv_soc_pkg::PLIC_NUM_SOURCES
 ) (
@@ -143,6 +145,8 @@ module rv_soc_top #(
     .ITIM_SIZE_KB      (ITIM_SIZE_KB),
     .DTIM_BASE_ADDR    (DTIM_BASE_ADDR),
     .DTIM_SIZE_KB      (DTIM_SIZE_KB),
+    .TOHOST_ADDR       (TOHOST_ADDR),
+    .FROMHOST_ADDR     (FROMHOST_ADDR),
     .BOOT_MTVEC_ADDR   (BOOT_MTVEC_ADDR)
   ) u_map_check ();
 
