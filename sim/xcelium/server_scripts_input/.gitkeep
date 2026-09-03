@@ -1,1 +1,105 @@
 
+#!/bin/csh
+set CONFIG = "CY_LATEST"
+set BINARY = ""
+set USER_ARGS = ""
+
+if ($#argv > 0) then
+    foreach arg ($argv)
+        if ("$arg" =~ "-CONFIG=*") then
+            set CONFIG = `echo $arg | sed 's/-CONFIG=//'`
+        else if ("$arg" =~ "-BINARY=*") then
+            set BINARY = `echo $arg | sed 's/-BINARY=//'`
+        else if ("$arg" =~ "-USER_ARGS=*") then
+            set USER_ARGS = `echo $arg | sed 's/-USER_ARGS=//'`
+        endif
+    end
+endif
+
+if ("$BINARY" == "") then
+    set BINARY = "/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf"
+endif
+
+set echo
+source /user/vtsw/Cadence/XCELIUM/23.09-s009/gcc93_env64.csh
+setenv CONFIG $CONFIG
+source source.csh
+
+setenv XRUNOPTS "-status -status3 -profile -rdprofile -disctran -disable_mux_pes -disable_vifc_frc_opt -disable_rtow_write -disable_wide_net_conditional_read -disable_abv_pw_opt -disable_ff_split -disable_single_pw -disable_vect_meminit_opt"
+
+if (! -d "$DUMP_DIR") then
+    mkdir -p $DUMP_DIR
+endif
+
+set filelist = ( \
+    -f ${XCELIUM_DIR}/rtl.f \
+    -f ${XCELIUM_DIR}/htif_tb.f \
+)
+
+(xrun \
+    +permissive -R \
+    +verbose \
+    -64bit \
+    -define SYNTHESIS \
+    -sv_lib /user/rocket/user/jeemin/project/TEST/DM_base/DUAL_OoO_Core/core_from_home/sim/xcelium/out/libcore_htif_dpi.so \
+    -log sim.log \
+    $filelist \
+    -top $TB \
+    +max-cycles=2000000 \
+    -seed random \
+    +elf=$BINARY \
+    > $DUMP_DIR/`basename $BINARY`.log ) >& $DUMP_DIR/`basename $BINARY`.out
+
+set BIN = `basename $BINARY`
+echo "Simulation Log: $DUMP_DIR/$BIN.log"
+echo "Simulation Out: $DUMP_DIR/$BIN.out"
+
+#!/bin/csh -f
+
+set CONFIG = "CY_LATEST"
+set USER_ARGS = ""
+
+# 환경 설정
+source /user/vtsw/Cadence/XCELIUM/23.09-s009/gcc93_env64.csh
+
+# 경로 설정 (DUAL_OoO_Core 구조에 맞게 수정)
+setenv CORE_ROOT /user/rocket/user/jeemin/project/TEST/DM_base/DUAL_OoO_Core/core_from_home
+setenv RTL_DIR ${CORE_ROOT}/rtl
+setenv TB_DIR ${CORE_ROOT}/tb
+setenv XCELIUM_DIR ${CORE_ROOT}/sim/xcelium
+setenv SIM_DIR ${CORE_ROOT}/sim
+setenv RUN_DIR ${CORE_ROOT}/sim/run
+
+setenv CONFIG $CONFIG
+setenv TB rv_soc_htif_dpi_tb
+
+# DPI Library 경로
+setenv DPI_LIB /user/rocket/user/jeemin/project/TEST/DM_base/scr/sim/run/xcelium_htif/libcore_htif_dpi.so
+
+set optlist = (\
+    -clean \
+    -64bit \
+    -licqueue \
+    -gateloopwarn \
+    -seed random \
+    -sv \
+    -access +rwc \
+    +xmtimescale+1ns/1ps \
+    -Wcxx,-O3 \
+    -Wcxx,-std=c++17 \
+    -Wld,-lriscv \
+    -enable_rpath \
+)
+
+set filelist = (\
+    -f ${XCELIUM_DIR}/rtl.f \
+    -f ${XCELIUM_DIR}/htif_tb.f \
+    -log compile.log \
+    -top $TB \
+    -ALLOWREDEFINITION \
+)
+
+xrun -elaborate $optlist $filelist
+
+여기에 필요없는 CYLATIST이런거 있는거같긴하네요 보니까 
+
