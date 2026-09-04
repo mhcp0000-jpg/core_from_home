@@ -58,7 +58,7 @@ function Pad-To([uint32]$address) {
 }
 
 Emit (U-Type 0x10000 8 0x37)             # HostIF base
-Emit (U-Type 0x00200 7 0x37)             # CLINT base
+Emit (U-Type 0x02000 7 0x37)             # CLINT base
 Emit (S-Type 0 0 7 2)                    # clear MSIP
 Emit 0x0000000f                           # fence: wait for clear visibility
 Emit (I-Type 31 0 0 9 0x13)              # PMP0 R/W/X NAPOT

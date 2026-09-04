@@ -2,7 +2,7 @@
   "project_name": "core_from_home",
   "memory_map": {
     "bootrom": { "base": "0x00001000", "size_kb": 4 },
-    "clint":   { "base": "0x00200000", "size_kb": 64 },
+    "clint":   { "base": "0x02000000", "size_kb": 64 },
     "plic":    { "base": "0x0c000000", "size_kb": 4096 },
     "hostif":  { "base": "0x10000000", "size_kb": 4 },
     "itim":    { "base": "0x80000000", "size_kb": 128 },

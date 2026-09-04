@@ -5,7 +5,7 @@
 _start:
   # The Boot ROM wakes this payload with CLINT MSIP asserted.  Clear it first
   # so the core does not immediately take the same machine interrupt again.
-  lui   t0, 0x00200
+  lui   t0, 0x02000
   sw    zero, 0(t0)
 
   # No CRT is linked.  The linker script supplies the top of the DTIM stack;

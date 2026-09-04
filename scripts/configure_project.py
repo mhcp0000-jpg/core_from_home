@@ -29,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "project_name": "my_rv_core",
     "memory_map": {
         "bootrom": {"base": "0x00001000", "size_kb": 4},
-        "clint": {"base": "0x00200000", "size_kb": 64},
+        "clint": {"base": "0x02000000", "size_kb": 64},
         "plic": {"base": "0x0c000000", "size_kb": 4096},
         "hostif": {"base": "0x10000000", "size_kb": 4},
         "itim": {"base": "0x80000000", "size_kb": 128},
@@ -277,25 +277,36 @@ def update_software_map(project_root: Path, config: dict[str, Any]) -> None:
         r"#define HOSTIF_BASE_ADDR 0x[0-9a-fA-F]+u",
         f"#define HOSTIF_BASE_ADDR {hex32(parse_number(mmap['hostif']['base']))}u",
     )
-    start = project_root / "sw/tests/rv32_c_loop/rv32_start.S"
-    start_text = start.read_text(encoding="utf-8")
-    start_text, clint_count = re.subn(
-        r"\s+(?:lui|li)\s+t0,\s*0x[0-9a-fA-F]+\s*\n\s+sw\s+zero,\s*0\(t0\)",
-        f"\n  li    t0, {hex32(parse_number(mmap['clint']['base']))}\n"
-        "  sw    zero, 0(t0)",
-        start_text,
-        count=1,
+    for start_name in (
+        "sw/tests/rv32_c_loop/rv32_start.S",
+        "sw/benchmarks/coremark/rv32_start.S",
+    ):
+        start = project_root / start_name
+        start_text = start.read_text(encoding="utf-8")
+        start_text, clint_count = re.subn(
+            r"\s+(?:lui|li)\s+t0,\s*0x[0-9a-fA-F]+\s*\n\s+sw\s+zero,\s*0\(t0\)",
+            f"\n  li    t0, {hex32(parse_number(mmap['clint']['base']))}\n"
+            "  sw    zero, 0(t0)",
+            start_text,
+            count=1,
+        )
+        start_text, host_count = re.subn(
+            r"\s+(?:lui|li)\s+t0,\s*0x[0-9a-fA-F]+\s*\n\s+sw\s+a0,\s*0x14\(t0\)",
+            f"\n  li    t0, {hex32(parse_number(mmap['hostif']['base']))}\n"
+            "  sw    a0, 0x14(t0)",
+            start_text,
+            count=1,
+        )
+        if clint_count != 1 or host_count != 1:
+            raise RuntimeError(f"{start_name} address replacement failed")
+        write_text_lf(start, start_text)
+
+    priv_smoke = project_root / "scripts/build_rv32_priv_smoke_elf.ps1"
+    replace_exact(
+        priv_smoke,
+        r"(Emit \(U-Type )0x[0-9a-fA-F]+( 7 0x37\)\s+# CLINT base)",
+        rf"\g<1>0x{parse_number(mmap['clint']['base']) >> 12:05x}\g<2>",
     )
-    start_text, host_count = re.subn(
-        r"\s+(?:lui|li)\s+t0,\s*0x[0-9a-fA-F]+\s*\n\s+sw\s+a0,\s*0x14\(t0\)",
-        f"\n  li    t0, {hex32(parse_number(mmap['hostif']['base']))}\n"
-        "  sw    a0, 0x14(t0)",
-        start_text,
-        count=1,
-    )
-    if clint_count != 1 or host_count != 1:
-        raise RuntimeError("rv32_start.S address replacement failed")
-    write_text_lf(start, start_text)
 
     run_c = project_root / "scripts/run_c_loop_test.ps1"
     replace_exact(

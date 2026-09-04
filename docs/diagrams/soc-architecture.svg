@@ -34,7 +34,7 @@
   <rect class="node dfab" x="1100" y="455" width="650" height="105"/>
   <text class="name" x="1425" y="488">u_dtim</text><text class="detail" x="1425" y="518">0x8002_0000 · 128 KiB · 2-bank 1R1W SRAM</text><text class="detail" x="1425" y="543">normal load/store local target</text>
   <rect class="node dfab" x="1100" y="585" width="650" height="105"/>
-  <text class="name" x="1425" y="618">u_clint</text><text class="detail" x="1425" y="648">0x0020_0000 · 64 KiB · MSIP/MTIP/MTIME</text><text class="detail" x="1425" y="673">device-ordered local target</text>
+  <text class="name" x="1425" y="618">u_clint</text><text class="detail" x="1425" y="648">0x0200_0000 · 64 KiB · MSIP/MTIP/MTIME</text><text class="detail" x="1425" y="673">device-ordered local target</text>
   <path class="wire wd" d="M405 535H520"/><path class="wire wd" d="M405 585H520"/>
   <text class="edge" x="463" y="518">LSU0</text><text class="edge" x="463" y="615">LSU1</text>
   <path class="wire wd" d="M950 540H1030V508H1100"/><path class="wire wd" d="M950 580H1030V638H1100"/>

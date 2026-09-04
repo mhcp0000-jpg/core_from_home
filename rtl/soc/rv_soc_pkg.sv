@@ -11,7 +11,7 @@ package rv_soc_pkg;
   parameter logic [SOC_ADDR_WIDTH-1:0] BOOTROM_BASE_ADDR = 32'h0000_1000;
   parameter int unsigned               BOOTROM_SIZE_KB   = 4;
 
-  parameter logic [SOC_ADDR_WIDTH-1:0] CLINT_BASE_ADDR   = 32'h0020_0000;
+  parameter logic [SOC_ADDR_WIDTH-1:0] CLINT_BASE_ADDR   = 32'h0200_0000;
   parameter int unsigned               CLINT_SIZE_KB     = 64;
 
   parameter logic [SOC_ADDR_WIDTH-1:0] PLIC_BASE_ADDR    = 32'h0c00_0000;

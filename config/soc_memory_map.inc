@@ -1,7 +1,7 @@
 /* Default map. Configured projects regenerate this file automatically. */
 .equ BOOTROM_BASE_ADDR, 0x00001000
 .equ BOOTROM_SIZE_KB, 4
-.equ CLINT_BASE_ADDR, 0x00200000
+.equ CLINT_BASE_ADDR, 0x02000000
 .equ CLINT_SIZE_KB, 64
 .equ PLIC_BASE_ADDR, 0x0c000000
 .equ PLIC_SIZE_KB, 4096

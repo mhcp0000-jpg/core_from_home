@@ -46,8 +46,10 @@ if ($LASTEXITCODE -ne 0) { throw "RV32 C compilation failed." }
 
 & $objdump -d -S $elfPath | Set-Content -LiteralPath $disassemblyPath
 if ($LASTEXITCODE -ne 0) { throw "objdump failed." }
-& $readelf -h -l $elfPath | Set-Content -LiteralPath $headersPath
+$readelfOutput = & $readelf -h -l $elfPath
 if ($LASTEXITCODE -ne 0) { throw "readelf failed." }
+$readelfOutput | ForEach-Object { $_.TrimEnd() } |
+  Set-Content -LiteralPath $headersPath
 & $nm -n $elfPath | Set-Content -LiteralPath $symbolsPath
 if ($LASTEXITCODE -ne 0) { throw "nm failed." }
 

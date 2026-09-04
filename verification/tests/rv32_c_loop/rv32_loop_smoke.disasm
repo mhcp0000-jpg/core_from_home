@@ -1,12 +1,12 @@
 
-C:\rv_build\c_loop_final\rv32_loop_smoke.elf:     file format elf32-littleriscv
+C:\rv_build\c_loop_clint020\rv32_loop_smoke.elf:     file format elf32-littleriscv
 
 
 Disassembly of section .text:
 
 80000000 <_start>:
-80000000:	002002b7          	lui	t0,0x200
-80000004:	0002a023          	sw	zero,0(t0) # 200000 <_start-0x7fe00000>
+80000000:	020002b7          	lui	t0,0x2000
+80000004:	0002a023          	sw	zero,0(t0) # 2000000 <_start-0x7e000000>
 80000008:	00040117          	auipc	sp,0x40
 8000000c:	fe810113          	addi	sp,sp,-24 # 8003fff0 <__stack_top>
 80000010:	2809                	.insn	2, 0x2809

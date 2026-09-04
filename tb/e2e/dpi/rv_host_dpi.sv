@@ -9,7 +9,7 @@ module rv_host_dpi #(
   parameter int unsigned ITIM_SIZE_BYTES = 128*1024,
   parameter logic [ADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,
   parameter int unsigned DTIM_SIZE_BYTES = 128*1024,
-  parameter logic [ADDR_WIDTH-1:0] CLINT_BASE_ADDR = 'h0020_0000,
+  parameter logic [ADDR_WIDTH-1:0] CLINT_BASE_ADDR = 'h0200_0000,
   parameter logic [ADDR_WIDTH-1:0] PLIC_BASE_ADDR = 'h0c00_0000,
   parameter logic [ADDR_WIDTH-1:0] HOSTIF_BASE_ADDR = 'h1000_0000,
   parameter logic [ADDR_WIDTH-1:0] CLINT_MSIP_OFFSET = 'h0,

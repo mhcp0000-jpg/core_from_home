@@ -120,10 +120,10 @@ Host event와 commit trace를 서로 다른 관점에서 검사한다.
 | Host exit | `0` | `0` | startup/HostIF 종료 protocol 정상 |
 | ITIM payload commit | 1개 이상 | `357` | C/ASM payload가 실제 retire됨 |
 | FP destination commit | 1개 이상 | `68` | FP 연산 결과가 architectural state에 반영됨 |
-| lane-1 commit | 1개 이상 | `121` | 2-wide retire 경로가 실제 사용됨 |
+| lane-1 commit | 1개 이상 | `125` | 2-wide retire 경로가 실제 사용됨 |
 | payload trap | `0` | `0` | C payload에서 예외가 발생하지 않음 |
 
-`357`은 C 본문만의 source statement 수가 아니라 `_start`, 첫 계산 loop, self-check loop, signature 저장과 반환까지 ITIM에서 commit된 동적 instruction 수다. lane-1 commit `121`은 121개 instruction이 같은 cycle의 lane 0 뒤에서 두 번째로 retire됐다는 뜻이다. 이것은 dual-issue 경로가 사용됐다는 증거지만 매 cycle IPC=2였다는 의미는 아니다.
+`357`은 C 본문만의 source statement 수가 아니라 `_start`, 첫 계산 loop, self-check loop, signature 저장과 반환까지 ITIM에서 commit된 동적 instruction 수다. lane-1 commit `125`는 125개 instruction이 같은 cycle의 lane 0 뒤에서 두 번째로 retire됐다는 뜻이다. 이것은 dual-issue 경로가 사용됐다는 증거지만 매 cycle IPC=2였다는 의미는 아니다.
 
 ## 7. commit CSV 읽는 방법
 

@@ -4,7 +4,7 @@
   .type _start, @function
 _start:
   /* Boot ROM enters the ITIM base through MSIP. */
-  lui   t0, 0x00200
+  lui   t0, 0x02000
   sw    zero, 0(t0)
   la    sp, __stack_top
   call  main

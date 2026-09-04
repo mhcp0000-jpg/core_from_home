@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Integration baseline v1.14.1 (reset/ready-valid hardening) |
+| 상태 | Integration baseline v1.14.2 (standard CLINT memory map) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -240,14 +240,14 @@ flowchart TB
 | 시작 주소 | 끝 주소 | 크기 | 대상 | 속성 |
 |---:|---:|---:|---|---|
 | `0x0000_1000` | `0x0000_1FFF` | 4 KiB | Boot ROM | RX, reset vector |
-| `0x0020_0000` | `0x0020_FFFF` | 64 KiB | CLINT-compatible | device, strongly ordered |
+| `0x0200_0000` | `0x0200_FFFF` | 64 KiB | CLINT-compatible | device, strongly ordered |
 | `0x0C00_0000` | `0x0C3F_FFFF` | 4 MiB | PLIC | device, 32-bit register access |
 | `0x1000_0000` | `0x1000_0FFF` | 4 KiB | HostIF | device, DPI mailbox/console |
 | `0x8000_0000` | `0x8001_FFFF` | 128 KiB | ITIM | RWX, 2-bank 1R1W |
 | `0x8002_0000` | `0x8003_FFFF` | 128 KiB | DTIM | RW, optional X by PMP policy |
 | 그 외 | - | - | Error slave | AXI `DECERR`, core access fault |
 
-`mtvec`의 boot 값과 ITIM base는 모두 `0x8000_0000`이다. CLINT base는 요청에 따라 일반적인 `0x0200_0000`이 아니라 `0x0020_0000`을 사용한다. 주소는 `rv_soc_pkg` 한 곳에서만 정의하며 RTL에 literal을 반복하지 않는다.
+`mtvec`의 boot 값과 ITIM base는 모두 `0x8000_0000`이다. CLINT는 표준적인 `0x0200_0000` base를 사용하므로 MSIP는 `0x0200_0000`, MTIMECMP low/high는 `0x0200_4000`/`0x0200_4004`, MTIME low/high는 `0x0200_BFF8`/`0x0200_BFFC`에 위치한다. 주소는 `rv_soc_pkg` 한 곳에서 정의하고 생성 스크립트가 SW·BootROM·검증 설정에 동일하게 반영한다.
 
 서버 HTIF 모드에서는 DTIM의 첫 두 64-bit word를 mailbox로 예약한다.
 `TOHOST_ADDR=0x8002_0000`, `FROMHOST_ADDR=0x8002_0008`이며 별도 address-decode
@@ -1102,7 +1102,7 @@ wrapper contract:
 
 ### 15.7 CLINT-compatible block
 
-base는 `0x0020_0000`, aperture는 64 KiB다.
+base는 `0x0200_0000`, aperture는 64 KiB다.
 
 | Offset | Register | 동작 |
 |---:|---|---|
@@ -2389,3 +2389,4 @@ orphan speculative response 생성을 방지한다.
 | v1.13.1 | Xcelium-safe package/interface/RTL compile order를 core/SoC file list로 추가하고, 49개 합성 RTL·memory-map config·BootROM image·상대경로 `verilog_sub.f`·Linux xrun wrapper·SHA-256 manifest를 하나의 self-contained 전달 폴더로 만드는 `export_verilog_sub.py`를 추가. 서버 TB/DPI/tohost protocol은 export에서 제외해 기존 회사 검증환경이 소유하도록 분리 |
 | v1.14.0 | DTIM 내부 64-bit `TOHOST=0x8002_0000`, `FROMHOST=0x8002_0008`을 package/top/map-check/configurator에 추가. Host AXI polling 기반 HTIF DPI가 raw PASS/FAIL, direct string, console packet, proxy write/exit와 RV32 two-store settling을 처리하고, server Boot ROM이 ELF entry로 jump하도록 구성. `$RTL_DIR/$TB_DIR` filelist, source 환경, `BINARY=` 단일 설정 `run_verilog_sub.sh`, portable Xcelium bundle 및 HTIF smoke ELF/결과 log를 추가. Verilator E2E와 기존 custom HostIF ELF 회귀는 통과했으며 실제 회사 `verilog_sub` invocation은 서버 확인 필요 |
 | v1.14.1 | 모든 합성 `always_ff`의 synchronous active-low reset을 전수 점검하고 target-buffer payload flop을 명시적으로 초기화. TIM/Boot ROM data array만 memory-macro 추론 예외로 정의. reset 중 I/D request를 차단하고, IFU stall hold 및 dual-LSU lane별 fall-through request buffer로 ready/valid payload 안정성을 보장. Xcelium 4-state time-zero immediate assertion은 reset이 알려진 뒤에만 검사하며 verification runner에서 `SYNTHESIS` define을 제거. assertion-enabled HTIF direct/proxy/exit E2E 통과 |
+| v1.14.2 | 기본 CLINT base를 `0x0020_0000`에서 표준 `0x0200_0000`으로 이동. MSIP=`0x0200_0000`, MTIMECMP=`0x0200_4000/4004`, MTIME=`0x0200_BFF8/BFFC` 계약을 RTL package, DPI, Boot ROM, C/CoreMark startup, privilege smoke, configurator, 그림과 검증 artifact에 일괄 반영. block 12종, SoC boot 및 GCC C/FP/LSU ELF 회귀 통과 |
