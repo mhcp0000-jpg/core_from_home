@@ -17,6 +17,19 @@ Observed symptom:
 - timeout 또는 Xcelium error 줄
 
 ---------------- RAW LOG START ----------------
+[COMMIT][389445000] order=129 cycle=38941 lane=0 pc=80000162 instr=005d2223 rd_we=0 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][389445000] order=130 cycle=38941 lane=1 pc=80000166 instr=0000af59 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][389455000] order=131 cycle=38942 lane=0 pc=800008fc instr=00000000 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=1 cause=1 tval=800008fc
+[COMMIT][389505000] order=132 cycle=38947 lane=0 pc=80000180 instr=00001bf1 rd_we=1 rd_fp=0 rd=23 wdata=80028ce0 trap=0 cause=0 tval=00000000
+[COMMIT][389515000] order=133 cycle=38948 lane=0 pc=80000182 instr=004ba023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][389515000] order=134 cycle=38948 lane=1 pc=80000186 instr=000b8233 rd_we=1 rd_fp=0 rd=4 wdata=80028ce0 trap=0 cause=0 tval=00000000
+
+
+800008fc <main>:
+800008fc:       80000b37                lui     s6,0x80000
+80000900:       fff00993                li      s3,-1
+80000904:       80000337                lui     t1,0x80000
+80000908:       4e01                    li      t3,0
 
 여기에 서버 출력 로그를 붙여 넣어 주세요.
 
