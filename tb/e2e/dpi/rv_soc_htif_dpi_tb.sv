@@ -97,6 +97,34 @@ module rv_soc_htif_dpi_tb;
     .last_commit_instr_o   (commit_last_instr)
   );
 
+  // Server-side fetch-fault discriminator.  A commit trace reports architectural
+  // cause=1 for both a PMP rejection and an instruction-fabric error; these
+  // messages identify which path created the fault before it reaches decode.
+  // Privilege encoding follows RISC-V: 0=U, 1=S, 3=M.
+  always_ff @(posedge clk) begin
+    if (rst_n) begin
+      if (u_dut.u_core.fe_imem_req_valid &&
+          u_dut.u_core.fe_imem_req_ready &&
+          !u_dut.u_core.ifu_pmp_allow) begin
+        $display("[IFETCH-FAULT][%0t] source=PMP block=%08h priv=%0d matched=%b pmpcfg=%h pmpaddr=%h id=%0d epoch=%0d",
+          $time, u_dut.u_core.fe_imem_req_addr,
+          u_dut.u_core.current_privilege,
+          u_dut.u_core.ifu_pmp_matched,
+          u_dut.u_core.pmpcfg, u_dut.u_core.pmpaddr,
+          u_dut.u_core.fe_imem_req_id,
+          u_dut.u_core.fe_imem_req_epoch);
+      end
+      if (u_dut.u_core.imem_rsp_valid_i &&
+          u_dut.u_core.imem_rsp_ready_o &&
+          (u_dut.u_core.imem_rsp_resp_i != 2'b00)) begin
+        $display("[IFETCH-FAULT][%0t] source=I_FABRIC resp=%b id=%0d epoch=%0d priv=%0d",
+          $time, u_dut.u_core.imem_rsp_resp_i,
+          u_dut.u_core.imem_rsp_id_i, u_dut.u_core.imem_rsp_epoch_i,
+          u_dut.u_core.current_privilege);
+      end
+    end
+  end
+
   rv_host_dpi #(
     .XLEN                       (32),
     .ADDR_WIDTH                 (SOC_ADDR_WIDTH),
