@@ -1,0 +1,16 @@
+PASS: main=800008fc, 256 arithmetic commits match reference, ELF traps=0, expected boot MSIP=1
+HTIF TEST PASS; host-finish code=0
+
+RTL baseline: 0a5c272, no functional RTL edits in this test.
+Simulator: Verilator 5.050, freshly built rv_soc_htif_dpi_tb, -DSYNTHESIS.
+Generator: upstream riscv-dv pygen/experimental, seed=7, RV32I arithmetic subset.
+Reference: scripts/dv_arithmetic_smoke.py evaluates each arithmetic instruction.
+
+Observed commit:
+order=16 cycle=1481 pc=80000166 instr=0000af59 trap=0
+order=17 cycle=1483 pc=800008fc instr=80000b37 rd=22 wdata=80000000 trap=0
+
+Scope: 256 arithmetic instructions matched, including destination and order.
+One expected boot software interrupt precedes ELF entry. No ELF exceptions.
+This is not a full riscv-dv SV/UVM or Spike differential regression.
+The server's original ELF was not available locally; its cause=1 is unresolved.

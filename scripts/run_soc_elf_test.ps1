@@ -6,6 +6,7 @@ param(
   [string]$BuildRoot = "C:\rv_build\soc_elf",
   [string]$TracePath = "",
   [string]$PerfPath = "",
+  [switch]$Htif,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -40,7 +41,8 @@ $sources = Get-Content -LiteralPath (Join-Path $repoRoot "rtl\filelist.f") |
 $sources += "tb/e2e/dpi/rv_host_dpi.sv"
 $sources += "tb/e2e/dpi/rv_commit_trace_logger.sv"
 $sources += "tb/e2e/dpi/rv_perf_profiler.sv"
-$sources += "tb/e2e/dpi/rv_soc_dpi_tb.sv"
+$topModule = if ($Htif) { "rv_soc_htif_dpi_tb" } else { "rv_soc_dpi_tb" }
+$sources += "tb/e2e/dpi/$topModule.sv"
 $sources += "tb/e2e/dpi/elf_loader.cpp"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 $stagedElf = Join-Path $BuildRoot "payload.elf"
@@ -59,7 +61,7 @@ try {
     $env:VERILATOR_ROOT = $VerilatorRoot
     & $verilator --cc --exe --timing --main -DSYNTHESIS -Wno-fatal `
       -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC `
-      --top-module rv_soc_dpi_tb --Mdir $BuildRoot @mappedSources
+      --top-module $topModule --Mdir $BuildRoot @mappedSources
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }
   } finally {
     $env:VERILATOR_ROOT = $oldVerilatorRoot
@@ -68,14 +70,14 @@ try {
   $oldPath = $env:PATH
   try {
     $env:PATH = (Join-Path $W64DevkitRoot "bin") + ";" + $oldPath
-    & $make -j $BuildJobs -C $BuildRoot -f Vrv_soc_dpi_tb.mk `
+    & $make -j $BuildJobs -C $BuildRoot -f "V$topModule.mk" `
       CXX=g++ CC=gcc LINK=g++
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC C++ build failed." }
   } finally {
     $env:PATH = $oldPath
   }
 
-  $simulation = Join-Path $BuildRoot "Vrv_soc_dpi_tb.exe"
+  $simulation = Join-Path $BuildRoot "V$topModule.exe"
   $simulationArgs = @("+elf=$stagedElf", "+timeout_cycles=$TimeoutCycles")
   if ($TracePath) {
     $resolvedTrace = [System.IO.Path]::GetFullPath($TracePath)
