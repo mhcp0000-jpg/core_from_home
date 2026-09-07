@@ -5,10 +5,10 @@
 
 ## 가장 간단한 실행
 
-`run_verilog_sub.sh` 상단의 다음 한 줄만 실제 RISC-V ELF 절대경로로 바꾼다.
+`run_verilog_sub.sh`는 다음 서버 ELF를 기본값으로 사용한다.
 
 ```bash
-BINARY="/server/project/test/program.elf"
+BINARY="/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf"
 ```
 
 그 다음 repository root에서 실행한다.

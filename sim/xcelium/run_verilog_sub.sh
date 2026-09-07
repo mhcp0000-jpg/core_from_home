@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# 사용자 설정: 아래 BINARY 한 줄에 실행할 RISC-V ELF 절대경로를 입력하세요.
-# 환경변수 BINARY로도 덮어쓸 수 있습니다.
+# 기본 ELF는 서버의 riscv-dv arithmetic test입니다.
+# 다른 ELF가 필요할 때만 환경변수 BINARY로 덮어씁니다.
 # ---------------------------------------------------------------------------
-BINARY="${BINARY:-/ABSOLUTE/PATH/TO/YOUR_PROGRAM.elf}"
+BINARY="${BINARY:-/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup_env.sh
@@ -21,10 +21,6 @@ CXX_BIN="${CXX:-g++}"
 COMPILE_SCRIPT="${COMPILE_SCRIPT:-${XCELIUM_DIR}/isrun.scr}"
 SIM_SCRIPT="${SIM_SCRIPT:-${XCELIUM_DIR}/issim.scr}"
 
-if [[ "${BINARY}" == "/ABSOLUTE/PATH/TO/YOUR_PROGRAM.elf" ]]; then
-  printf 'run_verilog_sub.sh의 BINARY= 줄에 ELF 절대경로를 입력하세요.\n' >&2
-  exit 2
-fi
 if [[ ! -f "${BINARY}" ]]; then
   printf 'ELF 파일을 찾을 수 없습니다: %s\n' "${BINARY}" >&2
   exit 2
