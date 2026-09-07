@@ -1,0 +1,23 @@
+Server Xcelium commit/trap log
+================================
+
+아래 항목을 아는 범위에서 채운 뒤, "RAW LOG START" 아래에 서버 로그를
+가공하지 말고 그대로 붙여 넣어 주세요. 기존 내용을 전부 덮어써도 됩니다.
+
+BINARY (ELF absolute path):
+Run command:
+Git commit used on server:
+Observed symptom:
+
+가능하면 다음 로그를 함께 포함해 주세요.
+- [HOST-DPI] opening ELF / segment / load complete
+- [BOOT] 또는 CLINT MSIP 관련 메시지
+- 문제가 생기기 전 최소 50개 이상의 [COMMIT] 줄
+- trap=1 줄과 그 이후 출력
+- timeout 또는 Xcelium error 줄
+
+---------------- RAW LOG START ----------------
+
+여기에 서버 출력 로그를 붙여 넣어 주세요.
+
+----------------- RAW LOG END -----------------
