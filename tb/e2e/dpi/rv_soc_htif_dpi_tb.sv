@@ -89,6 +89,11 @@ module rv_soc_htif_dpi_tb;
     .trace_trap_i          (trace_trap),
     .trace_cause_i         (trace_cause),
     .trace_tval_i          (trace_tval),
+    .csr_commit_valid_i    (u_dut.u_core.u_backend.csr_commit &&
+                            u_dut.u_core.u_backend.u_csr_file.csr_pending_q),
+    .csr_commit_write_i    (u_dut.u_core.u_backend.u_csr_file.csr_pending_write_q),
+    .csr_commit_addr_i     (u_dut.u_core.u_backend.u_csr_file.csr_pending_addr_q),
+    .csr_commit_wdata_i    (u_dut.u_core.u_backend.u_csr_file.csr_pending_wdata_q),
     .last_commit_valid_o   (commit_last_valid),
     .retire_order_o        (commit_retire_order),
     .cycle_o               (commit_cycle),

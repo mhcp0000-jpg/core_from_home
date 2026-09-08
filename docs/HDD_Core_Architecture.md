@@ -1873,6 +1873,19 @@ priority는 Section 16을 따른다. branch correct-predict는 checkpoint releas
 
 ### 15.34 CSR, PMP, trap/interrupt exact interface
 
+Commit 로그 확장(2026-09-08): `rv_commit_trace_logger`는 기존 목적지
+`rd_write/rd_fp/rd/wdata`와 별도로 `gpr_we`, `fpr_we`, `csr_valid`, `csr_we`,
+`csr_addr[11:0]`, `csr_wdata[XLEN-1:0]`를 콘솔/CSV에 기록한다. CSR은 lane 0
+commit만 허용하는 현재 backend 계약을 따른다. scalar 입력
+`csr_commit_valid_i`, `csr_commit_write_i`, `csr_commit_addr_i`,
+`csr_commit_wdata_i`는 DPI TB에서 backend의 `csr_commit && csr_pending_q`,
+pending write intent/address/RMW value에 연결한다. 이 TB 관측 연결은
+합성 core/SoC port 변경을 요구하지 않는다. `csr_we`는 commit write intent이고
+`csr_wdata`는 WARL/lock 적용 전 RMW 결과이므로 실제 저장값 readback과 구분한다.
+trace trap이면 CSR 필드를 억제하며, read-only CSR 접근은 valid=1/write=0,
+rd=x0인 CSRRW는 GPR write=0/CSR write=1로 표시한다. 전용 회귀는
+`verification/tests/csr_trace`에 기록한다.
+
 #### `rv_csr_file`
 
 parameter는 `XLEN`, `PADDR_WIDTH`, `HAS_SMODE=0`, `PMP_ENTRIES=8`, `RESET_MTVEC`, `HART_ID`다. CSR instruction은 serializing uop이며 ROB head이고 모든 older instruction이 완료된 때 `csr_valid_i/csr_ready_o`, `csr_execute_i`, `csr_addr_i[11:0]`, `csr_cmd_i`, `csr_operand_i[XLEN-1:0]`, `csr_rs1_is_zero_i`로 평가한다. 출력은 `csr_rdata_o`, `csr_illegal_o`, `csr_write_effect_o`다. 평가 때 주소/write intent/write data를 내부 pending transaction으로 고정하고, 같은 instruction의 `csr_commit_i`에서만 상태를 변경한다. 따라서 cycle/time counter가 evaluation과 retire 사이에 증가해도 CSR RMW 결과가 바뀌지 않는다. PMP address storage는 physical byte address의 `[PADDR_WIDTH-1:2]`를 보관하여 RV32/PADDR34도 지원한다.
@@ -2277,7 +2290,7 @@ recovery와 독립적으로 유지된다. late response를 generation/sequence�
 방식은 향후 decoupled fabric 확장 항목이지만, 초기 모델은 요청 자체를 차단해
 orphan speculative response 생성을 방지한다.
 
-`rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval`을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
+`rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata`를 추가한 18개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
 ## 19. Clock/reset/DFT 원칙
 

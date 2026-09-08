@@ -13,6 +13,12 @@ module rv_commit_trace_logger #(
   input logic [1:0]                   trace_trap_i,
   input logic [1:0][5:0]              trace_cause_i,
   input logic [1:0][XLEN-1:0]         trace_tval_i,
+  // CSR instructions retire only in lane 0. These inputs describe the saved
+  // evaluation transaction at its commit edge, never the current decode.
+  input logic                        csr_commit_valid_i,
+  input logic                        csr_commit_write_i,
+  input logic [11:0]                 csr_commit_addr_i,
+  input logic [XLEN-1:0]             csr_commit_wdata_i,
   output logic                        last_commit_valid_o,
   output logic [63:0]                 retire_order_o,
   output logic [63:0]                 cycle_o,
@@ -29,6 +35,20 @@ module rv_commit_trace_logger #(
   logic last_commit_valid_q;
   logic [XLEN-1:0] last_commit_pc_q;
   logic [31:0] last_commit_instr_q;
+  logic [1:0] csr_valid, csr_we;
+  logic [1:0][11:0] csr_addr;
+  logic [1:0][XLEN-1:0] csr_wdata;
+
+  always_comb begin
+    csr_valid = '0;
+    csr_we = '0;
+    csr_addr = '0;
+    csr_wdata = '0;
+    csr_valid[0] = trace_valid_i[0] && !trace_trap_i[0] && csr_commit_valid_i;
+    csr_we[0] = csr_valid[0] && csr_commit_write_i;
+    if (csr_valid[0]) csr_addr[0] = csr_commit_addr_i;
+    if (csr_we[0]) csr_wdata[0] = csr_commit_wdata_i;
+  end
 
   assign last_commit_valid_o = last_commit_valid_q;
   assign retire_order_o = retire_order_q;
@@ -44,7 +64,7 @@ module rv_commit_trace_logger #(
       if (trace_fd == 0)
         $fatal(1, "Unable to open commit trace file: %s", trace_path);
       $fdisplay(trace_fd,
-        "order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval");
+        "order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval,gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata");
       $fflush(trace_fd);
       $display("[COMMIT][%0t] trace file opened: %s", $time, trace_path);
     end
@@ -65,19 +85,25 @@ module rv_commit_trace_logger #(
         if (trace_valid_i[lane]) begin
           if (trace_fd != 0) begin
             $fdisplay(trace_fd,
-              "%0d,%0d,%0d,%x,%08x,%0d,%0d,%0d,%x,%0d,%0d,%x",
+              "%0d,%0d,%0d,%x,%08x,%0d,%0d,%0d,%x,%0d,%0d,%x,%0d,%0d,%0d,%0d,%03x,%x",
               retire_order_q + ((lane == 1) && trace_valid_i[0]), cycle_q, lane,
               trace_pc_i[lane], trace_instr_i[lane],
               trace_rd_write_i[lane], trace_rd_fp_i[lane], trace_rd_i[lane],
               trace_rd_wdata_i[lane], trace_trap_i[lane],
-              trace_cause_i[lane], trace_tval_i[lane]);
+              trace_cause_i[lane], trace_tval_i[lane],
+              trace_rd_write_i[lane] && !trace_rd_fp_i[lane],
+              trace_rd_write_i[lane] && trace_rd_fp_i[lane],
+              csr_valid[lane], csr_we[lane], csr_addr[lane], csr_wdata[lane]);
           end
-          $display("[COMMIT][%0t] order=%0d cycle=%0d lane=%0d pc=%08h instr=%08h rd_we=%b rd_fp=%b rd=%0d wdata=%08h trap=%b cause=%0d tval=%08h",
+          $display("[COMMIT][%0t] order=%0d cycle=%0d lane=%0d pc=%08h instr=%08h rd_we=%b rd_fp=%b rd=%0d wdata=%08h trap=%b cause=%0d tval=%08h gpr_we=%b fpr_we=%b csr_valid=%b csr_we=%b csr_addr=%03h csr_wdata=%08h",
             $time, retire_order_q + ((lane == 1) && trace_valid_i[0]),
             cycle_q, lane, trace_pc_i[lane], trace_instr_i[lane],
             trace_rd_write_i[lane], trace_rd_fp_i[lane], trace_rd_i[lane],
             trace_rd_wdata_i[lane], trace_trap_i[lane],
-            trace_cause_i[lane], trace_tval_i[lane]);
+            trace_cause_i[lane], trace_tval_i[lane],
+            trace_rd_write_i[lane] && !trace_rd_fp_i[lane],
+            trace_rd_write_i[lane] && trace_rd_fp_i[lane],
+            csr_valid[lane], csr_we[lane], csr_addr[lane], csr_wdata[lane]);
         end
       end
       if (|trace_valid_i) begin

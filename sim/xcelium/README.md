@@ -1,5 +1,24 @@
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
+## Commit 로그의 GPR/CSR 구분
+
+기존 `rd_we/rd_fp/rd/wdata`는 목적지 integer/FP register write를 뜻한다.
+추가된 `gpr_we`와 `fpr_we`로 두 register file을 구분한다.
+CSR 명령은 같은 commit 줄에 `csr_valid/ csr_we/ csr_addr/ csr_wdata`가 추가된다.
+`csr_valid=1`은 정상 retire된 CSR 명령, `csr_we=1`은 그 명령의 CSR write
+intent가 commit된 것을 뜻한다. `csr_wdata`는 CSRRS/CSRRC의 set/clear까지
+반영한 write 요청 값이며, WARL 변환/locked PMP write 무시 이후 실제 저장값을
+보장하는 readback은 아니다. 실제 값은 후속 CSRR의 GPR `wdata`로 확인한다.
+
+- CSRRW: `wdata`는 rd로 반환된 이전 CSR 값, `csr_wdata`는 새 write 요청 값.
+- `rd=x0` CSRRW: `gpr_we=0`, `csr_we=1`로 CSR write만 표시한다.
+- CSRRS/CSRRC의 rs1=x0 또는 immediate=0: CSR read만 하므로 `csr_we=0`.
+- illegal CSR trap이나 squash된 명령에는 CSR write commit을 표시하지 않는다.
+
+값은 ROB commit edge의 CSR pending transaction에서 직접 샘플링한다.
+현재 CSR 명령은 lane 0에서만 commit하며 lane 1의 CSR 필드는 0이다.
+CSV는 기존 12개 열 뒤에 6개 열을 추가했으므로 기존 열 이름은 유지된다.
+
 이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
 `verilog_sub`는 폴더 이름이 아니라 회사 서버의 Xcelium 제출 명령이다.
 

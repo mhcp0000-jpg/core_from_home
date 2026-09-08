@@ -1,0 +1,15 @@
+80000000 T _start
+80000014 t check_rw
+80000018 t check_rs
+8000001c t check_rc
+80000020 t check_rwi
+80000024 t check_rsi
+80000028 t check_rci
+8000002c t check_read
+80000030 t check_nord
+80000034 t check_readi
+80000038 t check_illegal
+80000040 t handler
+80020000 D tohost
+80020008 D fromhost
+8003fff0 D __stack_top

@@ -50,7 +50,12 @@ module rv_soc_dpi_tb;
     .trace_rd_i(trace_rd), .trace_rd_write_i(trace_rd_write),
     .trace_rd_fp_i(trace_rd_fp), .trace_rd_wdata_i(trace_rd_wdata),
     .trace_trap_i(trace_trap), .trace_cause_i(trace_cause),
-    .trace_tval_i(trace_tval)
+    .trace_tval_i(trace_tval),
+    .csr_commit_valid_i(u_dut.u_core.u_backend.csr_commit &&
+                        u_dut.u_core.u_backend.u_csr_file.csr_pending_q),
+    .csr_commit_write_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_write_q),
+    .csr_commit_addr_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_addr_q),
+    .csr_commit_wdata_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_wdata_q)
   );
 
   rv_host_dpi #(
