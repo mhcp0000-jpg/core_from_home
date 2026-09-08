@@ -903,6 +903,27 @@ U-mode를 의미 있게 사용하기 위해 8-entry PMP를 구현한다. OFF/TOR
 - production firmware는 ITIM RX, DTIM RW, device RW처럼 region을 재구성한다.
 - PMP fault는 instruction/load/store access fault로 ROB에 기록하고 precise trap 처리한다.
 
+2026-09-08 보호 설정 갱신 보완: 실제 write intent가 있는 `pmpcfg*`/`pmpaddr*`
+CSR가 ROB lane 0에서 commit되면 다음 cycle에 architectural redirect로 CSR 다음
+PC를 refetch한다. CSR write 자체는 취소하지 않으며 younger uop, fetch queue,
+target buffer를 폐기하고 epoch를 갱신한다. CSRRS/CSRRC 및 immediate형의
+rs1/zimm=0은 read-only이므로 이 redirect를 요청하지 않는다. CSRRW[I]는
+rs1/zimm=0이어도 write이다. locked entry 때문에 쓰기가 무시되는 경우에도
+보수적으로 refetch한다. 해당 commit과 refetch 사이 dispatch는 기존
+`system_redirect_pending_q`로 차단된다. 별도 software FENCE.I 없이 새 PMP 권한이
+다음 실행에 적용되어야 한다. 검증 근거는 `verification/tests/pmp_refetch`이다.
+`rv_trap_controller.retire_is_pmp_write_i`는 backend가 retiring instruction의
+CSR 주소와 write intent에서 생성하는 1-bit 입력이다. `retire_fire_i[0]`와
+동시에 참이면 다음 cycle에 `redirect_pending_o=1`,
+`architectural_redirect_pc_o=$past(retire_next_pc_i[0])`가 되어야 한다.
+
+미해결 경계 항목: 현재 IFU의 16-byte block 단위 PMP 검사는 TOR 상한이
+`0x800008fc`일 때 `0x800008f0` block을 부분 겹침으로 거부하여 M-mode의
+main 첫 명령까지 instruction access fault 처리한다. 이것은 위 refetch 보완과
+별개의 instruction-granularity 처리 결함이며 아직 수정/검증 완료가 아니다.
+향후 byte/halfword fault metadata, compressed 및 block 경계를 넘는 instruction
+판정과 target-buffer hit의 protection metadata를 함께 정의해야 한다.
+
 ### 13.3 trap과 interrupt
 
 trap entry는 ROB commit 경계에서 다음 순서로 architectural state를 갱신한다.

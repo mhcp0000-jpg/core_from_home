@@ -1,0 +1,102 @@
+[BOOTROM][0] loading hex file: tb/fixtures/bootrom/bootrom_host_jump.hex
+[BOOTROM][0] hex loaded: word[0]=02028293000012b7 word[1]=0080029330529073 depth=512
+[COMMIT][0] trace file opened: verification/tests/pmp_refetch/cold.csv
+[COMMIT][0] live logger enabled: every retired instruction
+[TB][0] rv_soc_htif_dpi_tb started; timeout=5000 cycles
+[HOST-DPI][0] initialized; waiting for reset release
+[TB][30] reset deasserted
+[HOST-DPI][30] reset released; waiting for SoC ready
+[HOST-DPI][30] SoC ready; waiting for Boot ROM WFI retire
+[COMMIT][125] order=0 cycle=9 lane=0 pc=00001000 instr=000012b7 rd_we=1 rd_fp=0 rd=5 wdata=00001000 trap=0 cause=0 tval=00000000
+[COMMIT][135] order=1 cycle=10 lane=0 pc=00001004 instr=02028293 rd_we=1 rd_fp=0 rd=5 wdata=00001020 trap=0 cause=0 tval=00000000
+[COMMIT][155] order=2 cycle=12 lane=0 pc=00001008 instr=30529073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][185] order=3 cycle=15 lane=0 pc=0000100c instr=00800293 rd_we=1 rd_fp=0 rd=5 wdata=00000008 trap=0 cause=0 tval=00000000
+[COMMIT][205] order=4 cycle=17 lane=0 pc=00001010 instr=30429073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][225] order=5 cycle=19 lane=0 pc=00001014 instr=3002a073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[TB][255] Boot ROM WFI retired: lane=0 pc=0x00001018
+[COMMIT][255] order=6 cycle=22 lane=0 pc=00001018 instr=10500073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[HOST-DPI][255] Boot ROM WFI observed; starting ELF load
+[HOST-DPI][255] opening ELF: verification/tests/pmp_refetch/cold.elf
+[HOST-DPI][255] ELF parsed: entry=0x80000000 segments=2
+[HOST-DPI][255] segment[0] start paddr=0x80000000 filesz=2056 memsz=2056
+[HOST-DPI][8310] segment[0] load progress 2056/2056 bytes
+[HOST-DPI][8310] segment[0] complete
+[HOST-DPI][8310] segment[1] start paddr=0x80020000 filesz=16 memsz=16
+[HOST-DPI][8390] segment[1] load progress 16/16 bytes
+[HOST-DPI][8390] segment[1] complete
+[HOST-DPI][8390] all ELF segments loaded
+[HOST-DPI][8390] writing boot entry 0x80000000 to 0x10000004
+[HOST-DPI][8440] writing boot-ready flag to 0x10000008
+[TB][8465] boot mailbox ready: entry=0x80000000 flags=0x00000001
+[HOST-DPI][8490] asserting software interrupt: CLINT MSIP[0] @ 0x02000000
+[TB][8515] CLINT MSIP asserted; software interrupt is pending
+[COMMIT][8525] order=7 cycle=849 lane=0 pc=0000101c instr=00000000 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=1 cause=3 tval=00000000
+[HOST-DPI][8540] CLINT MSIP write acknowledged
+[HOST-DPI][8540] ELF load complete; core wake-up requested
+[HOST-DPI][8540] HTIF server polling TOHOST=0x80020000 FROMHOST=0x80020008
+[COMMIT][8625] order=8 cycle=859 lane=0 pc=00001020 instr=020002b7 rd_we=1 rd_fp=0 rd=5 wdata=02000000 trap=0 cause=0 tval=00000000
+[COMMIT][8635] order=9 cycle=860 lane=0 pc=00001024 instr=00028293 rd_we=1 rd_fp=0 rd=5 wdata=02000000 trap=0 cause=0 tval=00000000
+[TB][8645] CLINT MSIP cleared by Boot ROM handler
+[COMMIT][8655] order=10 cycle=862 lane=0 pc=00001028 instr=0002a023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8655] order=11 cycle=862 lane=1 pc=0000102c instr=100002b7 rd_we=1 rd_fp=0 rd=5 wdata=10000000 trap=0 cause=0 tval=00000000
+[COMMIT][8675] order=12 cycle=864 lane=0 pc=00001030 instr=00028293 rd_we=1 rd_fp=0 rd=5 wdata=10000000 trap=0 cause=0 tval=00000000
+[COMMIT][8755] order=13 cycle=872 lane=0 pc=00001034 instr=0042a303 rd_we=1 rd_fp=0 rd=6 wdata=80000000 trap=0 cause=0 tval=00000000
+[COMMIT][8755] order=14 cycle=872 lane=1 pc=00001038 instr=00030067 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8795] order=15 cycle=876 lane=0 pc=80000000 instr=00000297 rd_we=1 rd_fp=0 rd=5 wdata=80000000 trap=0 cause=0 tval=00000000
+[COMMIT][8805] order=16 cycle=877 lane=0 pc=80000004 instr=20028293 rd_we=1 rd_fp=0 rd=5 wdata=80000200 trap=0 cause=0 tval=00000000
+[COMMIT][8825] order=17 cycle=879 lane=0 pc=80000008 instr=30529073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8855] order=18 cycle=882 lane=0 pc=8000000c instr=00000413 rd_we=1 rd_fp=0 rd=8 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8865] order=19 cycle=883 lane=0 pc=80000010 instr=00000013 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8865] order=20 cycle=883 lane=1 pc=80000014 instr=200002b7 rd_we=1 rd_fp=0 rd=5 wdata=20000000 trap=0 cause=0 tval=00000000
+[COMMIT][8875] order=21 cycle=884 lane=0 pc=80000018 instr=20028293 rd_we=1 rd_fp=0 rd=5 wdata=20000200 trap=0 cause=0 tval=00000000
+[COMMIT][8895] order=22 cycle=886 lane=0 pc=8000001c instr=3b029073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][8965] order=23 cycle=893 lane=0 pc=80000020 instr=09000293 rd_we=1 rd_fp=0 rd=5 wdata=00000090 trap=0 cause=0 tval=00000000
+[COMMIT][8985] order=24 cycle=895 lane=0 pc=80000024 instr=3a029073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[IFETCH-FAULT][9025] source=PMP block=80000800 priv=3 matched=1 pmpcfg=0000000000000090 pmpaddr=000000000000000000000000000000000000000000000000000020000200 id=11 epoch=0
+[COMMIT][9055] order=25 cycle=902 lane=0 pc=80000028 instr=00000013 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9055] order=26 cycle=902 lane=1 pc=8000002c instr=7d4000ef rd_we=1 rd_fp=0 rd=1 wdata=80000030 trap=0 cause=0 tval=00000000
+[COMMIT][9065] order=27 cycle=903 lane=0 pc=80000800 instr=00000000 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=1 cause=1 tval=80000800
+[COMMIT][9105] order=28 cycle=907 lane=0 pc=80000200 instr=342024f3 rd_we=1 rd_fp=0 rd=9 wdata=00000001 trap=0 cause=0 tval=00000000
+[COMMIT][9125] order=29 cycle=909 lane=0 pc=80000204 instr=34302973 rd_we=1 rd_fp=0 rd=18 wdata=80000800 trap=0 cause=0 tval=00000000
+[COMMIT][9165] order=30 cycle=913 lane=0 pc=80000208 instr=800202b7 rd_we=1 rd_fp=0 rd=5 wdata=80020000 trap=0 cause=0 tval=00000000
+[COMMIT][9165] order=31 cycle=913 lane=1 pc=8000020c instr=00300313 rd_we=1 rd_fp=0 rd=6 wdata=00000003 trap=0 cause=0 tval=00000000
+[COMMIT][9175] order=32 cycle=914 lane=0 pc=80000210 instr=0062a023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9175] order=33 cycle=914 lane=1 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9185] order=34 cycle=915 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9195] order=35 cycle=916 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9205] order=36 cycle=917 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9215] order=37 cycle=918 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9225] order=38 cycle=919 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9235] order=39 cycle=920 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9245] order=40 cycle=921 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9255] order=41 cycle=922 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9265] order=42 cycle=923 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9275] order=43 cycle=924 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9285] order=44 cycle=925 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9295] order=45 cycle=926 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9305] order=46 cycle=927 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9315] order=47 cycle=928 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9325] order=48 cycle=929 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9335] order=49 cycle=930 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9345] order=50 cycle=931 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9355] order=51 cycle=932 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9365] order=52 cycle=933 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9375] order=53 cycle=934 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9385] order=54 cycle=935 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9395] order=55 cycle=936 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9405] order=56 cycle=937 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9415] order=57 cycle=938 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9425] order=58 cycle=939 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9435] order=59 cycle=940 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9445] order=60 cycle=941 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9455] order=61 cycle=942 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9465] order=62 cycle=943 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9475] order=63 cycle=944 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9485] order=64 cycle=945 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9495] order=65 cycle=946 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9505] order=66 cycle=947 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[COMMIT][9515] order=67 cycle=948 lane=0 pc=80000214 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
+[host-finish code=1]
+[9525] %Fatal: rv_soc_htif_dpi_tb.sv:183: Assertion failed in rv_soc_htif_dpi_tb: HTIF TEST FAIL code=1 (0x00000001)
+%Error: U:/tb/e2e/dpi\rv_soc_htif_dpi_tb.sv:183: Verilog $stop
+Aborting...

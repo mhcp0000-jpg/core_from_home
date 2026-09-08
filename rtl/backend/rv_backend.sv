@@ -978,6 +978,7 @@ module rv_backend #(
   logic head_is_ecall, head_is_mret, head_is_wfi, head_is_fence,
         head_is_fence_i, head_special_request;
   logic retire_is_csr, retire_is_mret, retire_is_wfi, retire_is_fence_i;
+  logic retire_is_pmp_write;
   csr_cmd_e head_csr_cmd;
   logic [XLEN-1:0] head_csr_operand, csr_rdata;
   logic csr_ready, csr_illegal, csr_write_effect, csr_execute, csr_commit;
@@ -1051,6 +1052,15 @@ module rv_backend #(
                        !csr_illegal;
   assign csr_commit = retire_fire[0] && retire_is_csr;
 
+  // A PMP write changes the authority under which prefetched bytes were read.
+  // Classify write intent from the retiring instruction (not a later decode).
+  // CSRRW[I] writes even for rs1/zimm=0; CSRRS/RC[I] with zero only reads.
+  assign retire_is_pmp_write = retire_is_csr &&
+    ((retire_instruction[0][31:20] >= 12'h3a0) &&
+     (retire_instruction[0][31:20] <= 12'h3bf)) &&
+    ((retire_instruction[0][13:12] == 2'b01) ||
+     (retire_instruction[0][19:15] != 5'b0));
+
   rv_csr_file #(
     .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(HAS_SMODE), .PMP_ENTRIES(8),
     .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
@@ -1109,6 +1119,7 @@ module rv_backend #(
     .retire_is_mret_i(retire_is_mret),
     .retire_is_wfi_i(retire_is_wfi),
     .retire_is_fence_i_i(retire_is_fence_i),
+    .retire_is_pmp_write_i(retire_is_pmp_write),
     .mret_pc_i(csr_mret_pc),
     .wfi_wake_i(csr_wfi_wake),
     .architectural_redirect_valid_o(architectural_redirect_valid),

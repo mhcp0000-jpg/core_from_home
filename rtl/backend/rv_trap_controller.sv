@@ -28,6 +28,7 @@ module rv_trap_controller #(
   input  logic                         retire_is_mret_i,
   input  logic                         retire_is_wfi_i,
   input  logic                         retire_is_fence_i_i,
+  input  logic                         retire_is_pmp_write_i,
   input  logic [XLEN-1:0]              mret_pc_i,
   input  logic                         wfi_wake_i,
 
@@ -89,7 +90,11 @@ module rv_trap_controller #(
         redirect_pending_q <= 1'b1;
         redirect_target_q  <= mret_pc_i;
       end else if (retire_fire_i[0] &&
-                   (retire_is_fence_i_i || retire_is_wfi_i)) begin
+                   (retire_is_fence_i_i || retire_is_wfi_i ||
+                    retire_is_pmp_write_i)) begin
+        // The CSR value changes on this edge. On the following cycle the
+        // architectural redirect flushes younger uops, queue/target-buffer
+        // bytes and the fetch epoch before execution can resume.
         redirect_pending_q <= 1'b1;
         redirect_target_q  <= retire_next_pc_i[0];
       end
@@ -111,6 +116,14 @@ module rv_trap_controller #(
   end
 
 `ifndef SYNTHESIS
+  property p_pmp_write_refetches_next_pc;
+    @(posedge clk_i) disable iff (!rst_ni)
+      retire_fire_i[0] && retire_is_pmp_write_i && !retire_is_mret_i |=>
+        redirect_pending_o && architectural_redirect_valid_o &&
+        (architectural_redirect_pc_o == $past(retire_next_pc_i[0]));
+  endproperty
+  assert property (p_pmp_write_refetches_next_pc);
+
   property p_interrupt_only_at_boundary;
     @(posedge clk_i) disable iff (!rst_ni)
       csr_trap_valid_o && csr_trap_is_interrupt_o |-> rob_empty_i;
