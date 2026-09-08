@@ -17,7 +17,10 @@ intent가 commit된 것을 뜻한다. `csr_wdata`는 CSRRS/CSRRC의 set/clear까
 
 값은 ROB commit edge의 CSR pending transaction에서 직접 샘플링한다.
 현재 CSR 명령은 lane 0에서만 commit하며 lane 1의 CSR 필드는 0이다.
-CSV는 기존 12개 열 뒤에 6개 열을 추가했으므로 기존 열 이름은 유지된다.
+로그 줄 맨 끝에는 `mnemonic=CSRRW`처럼 사람이 읽을 수 있는 명령어 이름이
+표시되며, CSV의 마지막 `mnemonic` 열에도 동일한 이름을 기록한다. 압축 명령은
+`C.ADDI`, `C.J` 형식으로 구분한다. CSV는 기존 12개 열 뒤에 GPR/CSR 6개 열과
+`mnemonic` 열을 추가했으므로 기존 열 이름은 유지된다.
 
 이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
 `verilog_sub`는 폴더 이름이 아니라 회사 서버의 Xcelium 제출 명령이다.

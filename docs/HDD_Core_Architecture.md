@@ -1882,6 +1882,9 @@ commit만 허용하는 현재 backend 계약을 따른다. scalar 입력
 pending write intent/address/RMW value에 연결한다. 이 TB 관측 연결은
 합성 core/SoC port 변경을 요구하지 않는다. `csr_we`는 commit write intent이고
 `csr_wdata`는 WARL/lock 적용 전 RMW 결과이므로 실제 저장값 readback과 구분한다.
+각 console record의 마지막과 CSV 마지막 열에는 raw instruction에서 해석한
+`mnemonic`을 기록한다. 32-bit RV32IMFC 및 현재 C expander의 압축 명령을
+구분하며, 이 문자열은 디버그 편의용이고 architectural 비교는 raw bits로 한다.
 trace trap이면 CSR 필드를 억제하며, read-only CSR 접근은 valid=1/write=0,
 rd=x0인 CSRRW는 GPR write=0/CSR write=1로 표시한다. 전용 회귀는
 `verification/tests/csr_trace`에 기록한다.
@@ -2290,7 +2293,7 @@ recovery와 독립적으로 유지된다. late response를 generation/sequence�
 방식은 향후 decoupled fabric 확장 항목이지만, 초기 모델은 요청 자체를 차단해
 orphan speculative response 생성을 방지한다.
 
-`rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata`를 추가한 18개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
+`rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,mnemonic`을 추가한 19개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. `mnemonic`은 사람이 마지막 실행 명령을 빠르게 찾기 위한 보조 정보이며 정답 비교는 `instruction` raw bits를 기준으로 한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
 ## 19. Clock/reset/DFT 원칙
 
