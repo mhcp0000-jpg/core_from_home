@@ -185,7 +185,8 @@ verilog_sub -Is -compile "$XCELIUM_DIR/isrun.scr" -RTL_ASSERTIONS=0
 verilog_sub -Is -short "$XCELIUM_DIR/issim.scr" \
   -BINARY=/server/project/test/program.elf \
   -SV_LIB="$CORE_ROOT/sim/xcelium/out/libcore_htif_dpi.so" \
-  -TIMEOUT_CYCLES=2000000
+  -TIMEOUT_CYCLES=2000000 \
+  -ELF_VERIFY=1
 ```
 
 `CONFIG`/`CY_LATEST`는 기존 환경의 제출 설정일 뿐 현재 RTL 및 Xcelium 실행에는
@@ -219,13 +220,27 @@ simulation이 시작되면 다음 단계가 순서대로 출력된다.
 [HOST-DPI] opening ELF: ...
 [HOST-DPI] ELF parsed: entry=... segments=...
 [HOST-DPI] segment[N] load progress ...
+[HOST-DPI] ELF AXI readback verification enabled
+[HOST-DPI] segment[N] readback progress ...
+[HOST-DPI] segment[N] readback PASS checked=... bytes
+[HOST-DPI] ELF AXI readback PASS total=... bytes
 [TB] boot mailbox ready ...
 [TB] CLINT MSIP asserted; software interrupt is pending
 [HOST-DPI] CLINT MSIP write acknowledged
 [TB] CLINT MSIP cleared by Boot ROM handler
 ```
 
-ELF segment 전송은 16 KiB마다 진행률을 출력한다. 장시간 변화가 없을 때는 기본
+ELF segment 전송과 readback은 각각 16 KiB마다 진행률을 출력한다. readback은
+Host AXI→Main Xbar→I/D local fabric→ITIM/DTIM의 실제 경로로 모든 최종 `PT_LOAD`
+바이트와 BSS zero-fill을 다시 읽어 source ELF와 비교한다. 겹치는 segment의 byte는
+마지막 PT_LOAD가 소유하는 것으로 계산한다. mismatch는 segment, 정확한 주소,
+expected/actual byte와 64-bit read beat를 출력하고 Boot entry/MSIP write 전에 중단한다.
+
+readback은 기본 ON이다. 큰 ELF에서는 적재 뒤 동일 크기의 read traffic이 추가되므로
+timeout을 여유 있게 설정한다. loader와 무관한 디버깅에서만
+`ELF_VERIFY=0`으로 끌 수 있다.
+
+장시간 변화가 없을 때는 기본
 100,000 cycle마다 heartbeat가 현재 `soc_ready`, `boot_wait`, ELF load 상태와 최근
 commit trace PC를 출력한다. 간격은 plusarg로 바꿀 수 있고 `0`이면 끈다.
 
@@ -240,13 +255,16 @@ tail -n 40 sim/xcelium/out/commit_trace.csv
 ```
 
 ```bash
-TIMEOUT_CYCLES=5000000 HEARTBEAT_CYCLES=20000 \
+TIMEOUT_CYCLES=5000000 HEARTBEAT_CYCLES=20000 ELF_VERIFY=1 \
   BINARY=/server/path/program.elf ./sim/xcelium/run_verilog_sub.sh
 ```
 
 첫 `[TB]` 로그도 없다면 RTL 실행 전인 elaboration/DPI loading 단계 문제이고,
 `SoC ready` 이후 멈추면 Boot ROM fetch/WFI 경로, segment 진행 중 멈추면 해당 Host AXI
-write의 ready/response 경로를 우선 확인한다.
+write의 ready/response 경로를 우선 확인한다. load는 PASS하지만 readback에서 멈추면
+Host AXI read response 경로를, readback mismatch가 뜨면 출력된 첫 주소의 ELF program
+header/file byte와 TIM 값을 우선 비교한다. readback까지 PASS했는데 fetch에서 같은
+주소가 `0`으로 보이면 ELF loader가 아니라 IFU PMP/fabric response 선택 경로를 조사한다.
 
 ## DPI/HTIF 동작
 

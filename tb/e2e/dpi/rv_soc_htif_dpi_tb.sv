@@ -4,6 +4,8 @@
 module rv_soc_htif_dpi_tb;
   import rv_soc_pkg::*;
 
+  localparam int unsigned IFU_PMP_PORTS = 8;
+
   logic clk;
   logic rst_n;
   logic soc_ready;
@@ -143,16 +145,17 @@ module rv_soc_htif_dpi_tb;
   // Privilege encoding follows RISC-V: 0=U, 1=S, 3=M.
   always_ff @(posedge clk) begin
     if (rst_n) begin
-      if (u_dut.u_core.fe_imem_req_valid &&
-          u_dut.u_core.fe_imem_req_ready &&
-          !u_dut.u_core.ifu_pmp_allow) begin
-        $display("[IFETCH-FAULT][%0t] source=PMP block=%08h priv=%0d matched=%b pmpcfg=%h pmpaddr=%h id=%0d epoch=%0d",
-          $time, u_dut.u_core.fe_imem_req_addr,
-          u_dut.u_core.current_privilege,
-          u_dut.u_core.ifu_pmp_matched,
-          u_dut.u_core.pmpcfg, u_dut.u_core.pmpaddr,
-          u_dut.u_core.fe_imem_req_id,
-          u_dut.u_core.fe_imem_req_epoch);
+      for (int unsigned parcel = 0; parcel < IFU_PMP_PORTS; parcel++) begin
+        if (u_dut.u_core.ifu_pmp_check_valid[parcel] &&
+            !u_dut.u_core.ifu_pmp_allow[parcel]) begin
+          $display("[IFETCH-FAULT][%0t] source=PMP parcel=%0d addr=%08h block=%08h priv=%0d matched=%b pmpcfg=%h pmpaddr=%h",
+            $time, parcel,
+            u_dut.u_core.ifu_pmp_check_address[parcel],
+            u_dut.u_core.u_frontend.queue_fill_addr,
+            u_dut.u_core.current_privilege,
+            u_dut.u_core.ifu_pmp_matched[parcel],
+            u_dut.u_core.pmpcfg, u_dut.u_core.pmpaddr);
+        end
       end
       if (u_dut.u_core.imem_rsp_valid_i &&
           u_dut.u_core.imem_rsp_ready_o &&

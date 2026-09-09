@@ -36,6 +36,10 @@ module rv_frontend #(
   output logic [PADDR_WIDTH-1:0]                imem_req_addr_o,
   output logic [3:0]                            imem_req_id_o,
   output logic [3:0]                            imem_req_epoch_o,
+  output logic [FETCH_BYTES/2-1:0]              pmp_check_valid_o,
+  output logic [FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]
+                                                  pmp_check_address_o,
+  input  logic [FETCH_BYTES/2-1:0]              pmp_check_allow_i,
   input  logic                                  imem_rsp_valid_i,
   output logic                                  imem_rsp_ready_o,
   input  logic [3:0]                            imem_rsp_id_i,
@@ -91,6 +95,8 @@ module rv_frontend #(
   logic target_buffer_lookup_hit;
   logic [FETCH_BYTES*8-1:0] target_buffer_lookup_data;
   logic redirect_uses_target_buffer;
+  logic [PADDR_WIDTH-1:0] queue_fill_addr;
+  logic queue_fault_visible;
   logic [1:0][XLEN-1:0] sequential_pc;
   logic [1:0] prediction_taken, prediction_fire;
   logic [1:0][XLEN-1:0] prediction_target;
@@ -130,7 +136,8 @@ module rv_frontend #(
   // A redirect target may issue on the redirect cycle when the old request
   // slot is free.  A target-buffer hit supplies the block locally instead.
   assign request_candidate_valid = request_slot_available &&
-                                   (!fault_stop_q || frontend_redirect_valid) &&
+                                   ((!fault_stop_q && !queue_fault_visible) ||
+                                    frontend_redirect_valid) &&
                                    (queue_byte_count <=
                                     (QUEUE_BYTES-FETCH_BYTES)) &&
                                    (!frontend_redirect_valid ||
@@ -156,6 +163,19 @@ module rv_frontend #(
   // rv_fetch_queue atomically discards the old path and installs this block,
   // avoiding a registered replay and its one-cycle empty bubble.
   assign queue_fill_valid = redirect_uses_target_buffer || memory_fill_valid;
+  assign queue_fill_addr = redirect_uses_target_buffer ? redirect_block_addr :
+                                                         outstanding_addr_q;
+  assign queue_fault_visible = (queue_valid[0] && queue_fault[0]) ||
+                               (queue_valid[1] && queue_fault[1]);
+  // FETCH_BYTES is a transport optimization, not an architectural PMP access.
+  // Check each 16-bit instruction parcel independently and attach the result
+  // to the fetched bytes.  The queue then combines one parcel for C and two
+  // parcels for a 32-bit instruction, including cross-block instructions.
+  for (genvar parcel = 0; parcel < FETCH_BYTES/2; parcel++) begin : g_pmp_parcel
+    assign pmp_check_valid_o[parcel] = queue_fill_valid;
+    assign pmp_check_address_o[parcel] = queue_fill_addr +
+      PADDR_WIDTH'(parcel*2);
+  end
   // A current response normally observes queue backpressure.  On any redirect
   // its old-path data does not use the queue, so it can be accepted (and may
   // still populate the target buffer) while the redirect target is installed.
@@ -250,8 +270,7 @@ module rv_frontend #(
     .rst_ni,
     .fill_valid_i      (queue_fill_valid),
     .fill_ready_o      (queue_fill_ready),
-    .fill_addr_i       (redirect_uses_target_buffer ? redirect_block_addr :
-                                                      outstanding_addr_q),
+    .fill_addr_i       (queue_fill_addr),
     .fill_id_i         (redirect_uses_target_buffer ? 4'h0 : imem_rsp_id_i),
     .fill_epoch_i      (redirect_uses_target_buffer ? epoch_q + 1'b1 :
                                                       imem_rsp_epoch_i),
@@ -259,6 +278,7 @@ module rv_frontend #(
                          target_buffer_lookup_data : imem_rsp_data_i),
     .fill_resp_i       (redirect_uses_target_buffer ? 2'b00 :
                                                       imem_rsp_resp_i),
+    .fill_pmp_allow_i  (pmp_check_allow_i),
     .redirect_valid_i     (frontend_redirect_valid),
     .redirect_pc_i        (frontend_redirect_pc),
     .new_epoch_i       (epoch_q + 1'b1),
@@ -314,6 +334,8 @@ module rv_frontend #(
         if (response_is_current && (imem_rsp_resp_i != 2'b00))
           fault_stop_q <= 1'b1;
       end
+      if (queue_fault_visible)
+        fault_stop_q <= 1'b1;
 
       if (frontend_redirect_valid) begin
         epoch_q <= epoch_q + 1'b1;

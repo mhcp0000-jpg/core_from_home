@@ -79,6 +79,8 @@ module rv_ooo_core #(
 
   import rv_ooo_pkg::*;
 
+  localparam int unsigned IFU_PMP_PORTS = FETCH_BYTES/2;
+
   logic [1:0]                    fe_valid;
   logic [1:0]                    fe_ready;
   logic [1:0][XLEN-1:0]          fe_pc;
@@ -110,11 +112,15 @@ module rv_ooo_core #(
   logic [3:0]                    fe_imem_rsp_id, fe_imem_rsp_epoch;
   logic [FETCH_BYTES*8-1:0]      fe_imem_rsp_data;
   logic [1:0]                    fe_imem_rsp_resp;
-  logic                          ifu_pmp_allow, ifu_pmp_matched;
-  logic [PADDR_WIDTH-1:0]        ifu_pmp_fault_address;
-  privilege_e [0:0]              ifu_pmp_privilege;
-  logic                          ifu_pmp_fault_pending_q;
-  logic [3:0]                    ifu_pmp_fault_id_q, ifu_pmp_fault_epoch_q;
+  logic [IFU_PMP_PORTS-1:0]      ifu_pmp_check_valid;
+  logic [IFU_PMP_PORTS-1:0][PADDR_WIDTH-1:0]
+                                  ifu_pmp_check_address;
+  logic [IFU_PMP_PORTS-1:0][2:0] ifu_pmp_check_size;
+  logic [IFU_PMP_PORTS-1:0][2:0] ifu_pmp_check_access;
+  logic [IFU_PMP_PORTS-1:0]      ifu_pmp_allow, ifu_pmp_matched;
+  logic [IFU_PMP_PORTS-1:0][PADDR_WIDTH-1:0]
+                                  ifu_pmp_fault_address;
+  privilege_e [IFU_PMP_PORTS-1:0] ifu_pmp_privilege;
 
   // The backend may choose a different LSU source while a downstream port is
   // backpressured (for example, when a committed store gains priority over a
@@ -210,6 +216,9 @@ module rv_ooo_core #(
     .imem_req_addr_o     (fe_imem_req_addr),
     .imem_req_id_o       (fe_imem_req_id),
     .imem_req_epoch_o    (fe_imem_req_epoch),
+    .pmp_check_valid_o   (ifu_pmp_check_valid),
+    .pmp_check_address_o (ifu_pmp_check_address),
+    .pmp_check_allow_i   (ifu_pmp_allow),
     .imem_rsp_valid_i    (fe_imem_rsp_valid),
     .imem_rsp_ready_o    (fe_imem_rsp_ready),
     .imem_rsp_id_i       (fe_imem_rsp_id),
@@ -218,51 +227,38 @@ module rv_ooo_core #(
     .imem_rsp_resp_i     (fe_imem_rsp_resp)
   );
 
-  assign ifu_pmp_privilege[0] = current_privilege;
+  for (genvar parcel = 0; parcel < IFU_PMP_PORTS; parcel++) begin : g_ifu_pmp
+    assign ifu_pmp_check_size[parcel] = 3'd1; // 2-byte parcel
+    assign ifu_pmp_check_access[parcel] = 3'b100;
+    assign ifu_pmp_privilege[parcel] = current_privilege;
+  end
   rv_pmp #(
-    .PADDR_WIDTH(PADDR_WIDTH), .PMP_ENTRIES(8), .CHECK_PORTS(1)
+    .PADDR_WIDTH(PADDR_WIDTH), .PMP_ENTRIES(8),
+    .CHECK_PORTS(IFU_PMP_PORTS)
   ) u_ifu_pmp (
     .pmpcfg_i(pmpcfg), .pmpaddr_i(pmpaddr),
-    .check_valid_i(fe_imem_req_valid), .check_address_i(fe_imem_req_addr),
-    .check_size_i(3'($clog2(FETCH_BYTES))), .check_access_i(3'b100),
+    .check_valid_i(ifu_pmp_check_valid),
+    .check_address_i(ifu_pmp_check_address),
+    .check_size_i(ifu_pmp_check_size),
+    .check_access_i(ifu_pmp_check_access),
     .check_privilege_i(ifu_pmp_privilege), .allow_o(ifu_pmp_allow),
     .matched_o(ifu_pmp_matched), .fault_address_o(ifu_pmp_fault_address)
   );
 
-  // A denied fetch is completed locally as an instruction access fault. The
-  // frontend still observes its original ID/epoch and therefore applies the
-  // same stale-response rules as a memory response after a redirect.
-  assign imem_req_valid_o = rst_ni && fe_imem_req_valid && ifu_pmp_allow;
+  // The 16-byte request is a side-effect-free ITIM/Boot-ROM transport read.
+  // PMP is enforced per 2-byte instruction parcel when the response enters
+  // the fetch queue, so an unrelated parcel cannot fault a legal instruction.
+  assign imem_req_valid_o = rst_ni && fe_imem_req_valid;
   assign imem_req_addr_o = fe_imem_req_addr;
   assign imem_req_id_o = fe_imem_req_id;
   assign imem_req_epoch_o = fe_imem_req_epoch;
-  assign fe_imem_req_ready = rst_ni &&
-                             (ifu_pmp_allow ? imem_req_ready_i :
-                              !ifu_pmp_fault_pending_q);
-  assign fe_imem_rsp_valid = ifu_pmp_fault_pending_q ? 1'b1 : imem_rsp_valid_i;
-  assign fe_imem_rsp_id = ifu_pmp_fault_pending_q ?
-                          ifu_pmp_fault_id_q : imem_rsp_id_i;
-  assign fe_imem_rsp_epoch = ifu_pmp_fault_pending_q ?
-                             ifu_pmp_fault_epoch_q : imem_rsp_epoch_i;
-  assign fe_imem_rsp_data = ifu_pmp_fault_pending_q ? '0 : imem_rsp_data_i;
-  assign fe_imem_rsp_resp = ifu_pmp_fault_pending_q ? 2'b10 : imem_rsp_resp_i;
-  assign imem_rsp_ready_o = !ifu_pmp_fault_pending_q && fe_imem_rsp_ready;
-
-  always_ff @(posedge clk_i) begin
-    if (!rst_ni) begin
-      ifu_pmp_fault_pending_q <= 1'b0;
-      ifu_pmp_fault_id_q <= '0;
-      ifu_pmp_fault_epoch_q <= '0;
-    end else begin
-      if (fe_imem_req_valid && fe_imem_req_ready && !ifu_pmp_allow) begin
-        ifu_pmp_fault_pending_q <= 1'b1;
-        ifu_pmp_fault_id_q <= fe_imem_req_id;
-        ifu_pmp_fault_epoch_q <= fe_imem_req_epoch;
-      end
-      if (ifu_pmp_fault_pending_q && fe_imem_rsp_ready)
-        ifu_pmp_fault_pending_q <= 1'b0;
-    end
-  end
+  assign fe_imem_req_ready = rst_ni && imem_req_ready_i;
+  assign fe_imem_rsp_valid = imem_rsp_valid_i;
+  assign fe_imem_rsp_id = imem_rsp_id_i;
+  assign fe_imem_rsp_epoch = imem_rsp_epoch_i;
+  assign fe_imem_rsp_data = imem_rsp_data_i;
+  assign fe_imem_rsp_resp = imem_rsp_resp_i;
+  assign imem_rsp_ready_o = fe_imem_rsp_ready;
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -422,22 +418,19 @@ module rv_ooo_core #(
   );
 
   logic unused_ifu_pmp;
-  always_comb unused_ifu_pmp = ifu_pmp_matched ^ (^ifu_pmp_fault_address);
+  always_comb unused_ifu_pmp = (^ifu_pmp_matched) ^
+                               (^ifu_pmp_fault_address);
 
 `ifndef SYNTHESIS
-  property p_denied_fetch_never_reaches_memory;
-    @(posedge clk_i) disable iff (!rst_ni)
-      fe_imem_req_valid && !ifu_pmp_allow |-> !imem_req_valid_o;
-  endproperty
-  assert property (p_denied_fetch_never_reaches_memory);
-
-  property p_pmp_fault_response_keeps_identity;
-    @(posedge clk_i) disable iff (!rst_ni)
-      ifu_pmp_fault_pending_q && !fe_imem_rsp_ready |=>
-        ifu_pmp_fault_pending_q &&
-        $stable({ifu_pmp_fault_id_q, ifu_pmp_fault_epoch_q});
-  endproperty
-  assert property (p_pmp_fault_response_keeps_identity);
+  for (genvar parcel = 0; parcel < IFU_PMP_PORTS; parcel++) begin : g_pmp_assert
+    property p_pmp_is_two_byte_instruction_parcel;
+      @(posedge clk_i) disable iff (!rst_ni)
+        ifu_pmp_check_valid[parcel] |->
+          (ifu_pmp_check_size[parcel] == 3'd1) &&
+          (ifu_pmp_check_access[parcel] == 3'b100);
+    endproperty
+    assert property (p_pmp_is_two_byte_instruction_parcel);
+  end
 `endif
 
 endmodule

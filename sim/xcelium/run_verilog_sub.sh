@@ -15,6 +15,7 @@ VERILOG_SUB="${VERILOG_SUB:-verilog_sub}"
 BUILD_DIR="${HTIF_BUILD_DIR:-${CORE_ROOT}/sim/xcelium/out}"
 TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
 HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES:-100000}"
+ELF_VERIFY="${ELF_VERIFY:-1}"
 RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
 TRACE_FILE="${TRACE_FILE:-${BUILD_DIR}/commit_trace.csv}"
 FSDB_ENABLE="${FSDB_ENABLE:-1}"
@@ -52,6 +53,10 @@ if [[ "${FSDB_ENABLE}" != "0" && "${FSDB_ENABLE}" != "1" ]]; then
   printf 'FSDB_ENABLE must be 0 or 1: %s\n' "${FSDB_ENABLE}" >&2
   exit 2
 fi
+if [[ "${ELF_VERIFY}" != "0" && "${ELF_VERIFY}" != "1" ]]; then
+  printf 'ELF_VERIFY must be 0 or 1: %s\n' "${ELF_VERIFY}" >&2
+  exit 2
+fi
 if [[ "${FSDB_DUMP_MDA}" != "0" && "${FSDB_DUMP_MDA}" != "1" ]]; then
   printf 'FSDB_DUMP_MDA must be 0 or 1: %s\n' "${FSDB_DUMP_MDA}" >&2
   exit 2
@@ -86,6 +91,7 @@ printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
   -SV_LIB="${dpi_library}" \
   -TIMEOUT_CYCLES="${TIMEOUT_CYCLES}" \
   -HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES}" \
+  -ELF_VERIFY="${ELF_VERIFY}" \
   -TRACE_FILE="${TRACE_FILE}" \
   -FSDB_ENABLE="${FSDB_ENABLE}" \
   -FSDB_FILE="${FSDB_FILE}" \

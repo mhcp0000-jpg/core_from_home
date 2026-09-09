@@ -17,6 +17,7 @@ module rv_fetch_queue #(
   input  logic [3:0]                         fill_epoch_i,
   input  logic [FETCH_BYTES*8-1:0]           fill_data_i,
   input  logic [1:0]                         fill_resp_i,
+  input  logic [FETCH_BYTES/2-1:0]           fill_pmp_allow_i,
 
   input  logic                               redirect_valid_i,
   input  logic [XLEN-1:0]                    redirect_pc_i,
@@ -162,7 +163,8 @@ module rv_fetch_queue #(
         for (int unsigned source = 0; source < FETCH_BYTES; source++) begin
           if (source >= fill_skip) begin
             byte_d[source - fill_skip] = fill_data_i[source*8 +: 8];
-            fault_d[source - fill_skip] = (fill_resp_i != 2'b00);
+            fault_d[source - fill_skip] = (fill_resp_i != 2'b00) ||
+              !fill_pmp_allow_i[source/2];
           end
         end
         count_d = COUNT_WIDTH'(fill_count);
@@ -188,7 +190,7 @@ module rv_fetch_queue #(
             byte_d[count_integer - consume_bytes + source - fill_skip] =
               fill_data_i[source*8 +: 8];
             fault_d[count_integer - consume_bytes + source - fill_skip] =
-              (fill_resp_i != 2'b00);
+              (fill_resp_i != 2'b00) || !fill_pmp_allow_i[source/2];
           end
         end
         count_d = count_q - COUNT_WIDTH'(consume_bytes) +
@@ -243,6 +245,8 @@ module rv_fetch_queue #(
       $fatal(1, "Fetch queue XLEN must be 32 or 64");
     if ((FETCH_BYTES < 8) || ((FETCH_BYTES & (FETCH_BYTES-1)) != 0))
       $fatal(1, "FETCH_BYTES must be a power of two and at least 8");
+    if ((FETCH_BYTES % 2) != 0)
+      $fatal(1, "FETCH_BYTES must contain whole 2-byte instruction parcels");
     if ((QUEUE_BYTES < (2*FETCH_BYTES)) ||
         ((QUEUE_BYTES % FETCH_BYTES) != 0))
       $fatal(1, "Fetch queue must contain an integer number of blocks");

@@ -8,6 +8,7 @@ module rv_fetch_queue_tb;
   logic [31:0] fill_addr;
   logic [127:0] fill_data;
   logic [1:0] fill_resp;
+  logic [7:0] fill_pmp_allow;
   logic redirect_valid;
   logic [31:0] redirect_pc;
   logic [1:0] out_valid;
@@ -21,9 +22,11 @@ module rv_fetch_queue_tb;
   logic cross_fill_ready;
   logic [31:0] cross_fill_addr;
   logic [127:0] cross_fill_data;
+  logic [7:0] cross_fill_pmp_allow;
   logic [1:0] cross_out_valid;
   logic [1:0][31:0] cross_out_instruction;
   logic [1:0][31:0] cross_out_pc;
+  logic [1:0] cross_out_fault;
 
   always #5 clk = ~clk;
 
@@ -37,6 +40,7 @@ module rv_fetch_queue_tb;
     .fill_epoch_i       (4'd0),
     .fill_data_i        (fill_data),
     .fill_resp_i        (fill_resp),
+    .fill_pmp_allow_i   (fill_pmp_allow),
     .redirect_valid_i   (redirect_valid),
     .redirect_pc_i      (redirect_pc),
     .new_epoch_i        (4'd1),
@@ -58,13 +62,15 @@ module rv_fetch_queue_tb;
     .fill_epoch_i       (4'd0),
     .fill_data_i        (cross_fill_data),
     .fill_resp_i        (2'b00),
+    .fill_pmp_allow_i   (cross_fill_pmp_allow),
     .redirect_valid_i   (1'b0),
     .redirect_pc_i      (32'd0),
     .new_epoch_i        (4'd0),
     .out_valid_o        (cross_out_valid),
     .out_ready_i        (2'b00),
     .out_pc_o           (cross_out_pc),
-    .out_instruction_o  (cross_out_instruction)
+    .out_instruction_o  (cross_out_instruction),
+    .out_fault_o        (cross_out_fault)
   );
 
   initial begin : p_fetch_queue_test
@@ -74,12 +80,14 @@ module rv_fetch_queue_tb;
     fill_addr = 32'h1000;
     fill_data = '0;
     fill_resp = 2'b00;
+    fill_pmp_allow = '1;
     redirect_valid = 1'b0;
     redirect_pc = '0;
     out_ready = 2'b00;
     cross_fill_valid = 1'b0;
     cross_fill_addr = 32'h1000;
     cross_fill_data = '0;
+    cross_fill_pmp_allow = '1;
     repeat (2) @(posedge clk);
     rst_n = 1'b1;
 
@@ -121,14 +129,17 @@ module rv_fetch_queue_tb;
     cross_fill_data = '0;
     cross_fill_data[7:0] = 8'h10;
     cross_fill_data[15:8] = 8'h00;
+    // The high half of this instruction belongs to parcel 0 of the second
+    // block.  Denying that parcel must propagate across the block boundary.
+    cross_fill_pmp_allow = 8'b1111_1110;
     cross_fill_valid = 1'b1;
     @(posedge clk);
     cross_fill_valid = 1'b0;
     #1;
     if (!cross_out_valid[0] ||
         (cross_out_instruction[0] != 32'h0010_0093) ||
-        (cross_out_pc[0] != 32'h100e))
-      $fatal(1, "Cross-block 32-bit assembly failed");
+        (cross_out_pc[0] != 32'h100e) || !cross_out_fault[0])
+      $fatal(1, "Cross-block 32-bit assembly/fault propagation failed");
 
     // A target-buffer hit supplies redirect and aligned block together.  The
     // queue must discard the old path and expose the unaligned target bytes
@@ -157,6 +168,52 @@ module rv_fetch_queue_tb;
     #1;
     if (out_valid != 0)
       $fatal(1, "Redirect did not clear fetch queue");
+
+    // Bytes earlier in the same 16-byte transport block may be denied without
+    // poisoning a legal 32-bit instruction at byte offset 12.  This is the
+    // PMP TOR=0x...8fc boundary case that used to reject the whole block.
+    redirect_pc = 32'h400c;
+    fill_addr = 32'h4000;
+    fill_data = '0;
+    fill_data[12*8 +: 32] = 32'h8000_0b37;
+    fill_pmp_allow = 8'b1100_0000;
+    fill_valid = 1'b1;
+    redirect_valid = 1'b1;
+    @(posedge clk);
+    fill_valid = 1'b0;
+    redirect_valid = 1'b0;
+    #1;
+    if (!out_valid[0] || out_fault[0] ||
+        (out_pc[0] != 32'h400c) ||
+        (out_instruction[0] != 32'h8000_0b37))
+      $fatal(1, "Denied neighboring parcels poisoned legal instruction");
+
+    // A 32-bit instruction needs both of its own 2-byte parcels.
+    fill_pmp_allow = 8'b0100_0000;
+    fill_valid = 1'b1;
+    redirect_valid = 1'b1;
+    @(posedge clk);
+    fill_valid = 1'b0;
+    redirect_valid = 1'b0;
+    #1;
+    if (!out_valid[0] || !out_fault[0])
+      $fatal(1, "Denied second parcel did not fault 32-bit instruction");
+
+    // A compressed instruction consumes exactly one 2-byte parcel.
+    redirect_pc = 32'h5002;
+    fill_addr = 32'h5000;
+    fill_data = '0;
+    fill_data[2*8 +: 16] = 16'h0001;
+    fill_pmp_allow = 8'b1111_1101;
+    fill_valid = 1'b1;
+    redirect_valid = 1'b1;
+    @(posedge clk);
+    fill_valid = 1'b0;
+    redirect_valid = 1'b0;
+    #1;
+    if (!out_valid[0] || !out_fault[0] ||
+        (out_inst_len[0] != INST_LEN_16))
+      $fatal(1, "Denied compressed-instruction parcel was not faulted");
 
     $display("rv_fetch_queue_tb PASS");
     $finish;

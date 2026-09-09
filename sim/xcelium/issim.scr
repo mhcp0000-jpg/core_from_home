@@ -32,6 +32,7 @@ set binary = ""
 set sv_lib = "${build_dir}/libcore_htif_dpi.so"
 set timeout_cycles = "2000000"
 set heartbeat_cycles = "100000"
+set elf_verify = "1"
 set trace_file = "${build_dir}/commit_trace.csv"
 set fsdb_enable = "1"
 set fsdb_file = "${build_dir}/waves.fsdb"
@@ -48,6 +49,8 @@ foreach arg ($argv)
     set timeout_cycles = `echo "$arg" | sed 's/-TIMEOUT_CYCLES=//'`
   else if ("$arg" =~ "-HEARTBEAT_CYCLES=*") then
     set heartbeat_cycles = `echo "$arg" | sed 's/-HEARTBEAT_CYCLES=//'`
+  else if ("$arg" =~ "-ELF_VERIFY=*") then
+    set elf_verify = `echo "$arg" | sed 's/-ELF_VERIFY=//'`
   else if ("$arg" =~ "-TRACE_FILE=*") then
     set trace_file = `echo "$arg" | sed 's/-TRACE_FILE=//'`
   else if ("$arg" =~ "-FSDB_ENABLE=*") then
@@ -157,5 +160,6 @@ exec xrun \
   +elf="$binary" \
   +timeout_cycles="$timeout_cycles" \
   +heartbeat_cycles="$heartbeat_cycles" \
+  +elf_verify="$elf_verify" \
   +trace_file="$trace_file" \
   $fsdb_plusargs

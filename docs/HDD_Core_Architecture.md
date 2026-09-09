@@ -895,7 +895,7 @@ CSR instruction은 read/write suppression 조건을 decode에서 구분하고 �
 
 ### 13.2 PMP
 
-U-mode를 의미 있게 사용하기 위해 8-entry PMP를 구현한다. OFF/TOR/NA4/NAPOT와 R/W/X/L을 지원하고 IFU, LSU0, LSU1 세 access path에서 privilege와 access type을 검사한다.
+U-mode를 의미 있게 사용하기 위해 8-entry PMP를 구현한다. OFF/TOR/NA4/NAPOT와 R/W/X/L을 지원한다. LSU0/LSU1은 각 architectural memory operation 단위로 검사하고, IFU는 기본 16-byte transport block 안의 8개 2-byte instruction parcel을 병렬 검사한다.
 
 - M-mode unlocked region access는 privileged specification 규칙을 따른다.
 - U-mode는 matching PMP permission이 있어야 한다.
@@ -917,12 +917,25 @@ CSR 주소와 write intent에서 생성하는 1-bit 입력이다. `retire_fire_i
 동시에 참이면 다음 cycle에 `redirect_pending_o=1`,
 `architectural_redirect_pc_o=$past(retire_next_pc_i[0])`가 되어야 한다.
 
-미해결 경계 항목: 현재 IFU의 16-byte block 단위 PMP 검사는 TOR 상한이
-`0x800008fc`일 때 `0x800008f0` block을 부분 겹침으로 거부하여 M-mode의
-main 첫 명령까지 instruction access fault 처리한다. 이것은 위 refetch 보완과
-별개의 instruction-granularity 처리 결함이며 아직 수정/검증 완료가 아니다.
-향후 byte/halfword fault metadata, compressed 및 block 경계를 넘는 instruction
-판정과 target-buffer hit의 protection metadata를 함께 정의해야 한다.
+IFU의 `FETCH_BYTES=16`은 ITIM/I-Fabric 전송 최적화이며 architectural PMP access
+크기가 아니다. frontend는 block이 queue에 들어가는 시점에 aligned address
+`block+2*n` (`n=0..7`)을 execute/size=2 bytes로 검사하고 allow bit를 해당 두
+byte의 fault metadata로 보관한다. 16-bit instruction은 한 parcel, 32-bit
+instruction은 자신이 점유한 연속 두 parcel의 fault OR만 사용한다. 32-bit
+instruction이 block 경계를 넘으면 기존 queue의 연속 byte metadata가 두 block의
+결과를 자연스럽게 합친다. target-buffer hit도 저장 당시 권한을 재사용하지 않고
+현재 privilege/PMP 설정으로 parcel 권한을 다시 계산한다.
+
+이 규칙으로 TOR `[0,0x800008fc)`가 `0x800008f0` transport block 일부와 겹쳐도
+`0x800008fc`의 M-mode unlocked/no-match instruction은 default allow로 정상
+실행한다. 반대로 실제 instruction의 어느 parcel이든 거부되면 instruction access
+fault를 ROB에 기록하고 추가 sequential fetch를 정지하며 precise trap redirect가
+queue/epoch를 폐기한다. PMP CSR commit은 기존 architectural refetch를 사용하므로
+queue/target-buffer에 남은 이전 권한 결과가 실행되지 않는다. local Boot ROM/ITIM
+read는 side effect가 없어 block 전체를 물리적으로 읽은 뒤 permission metadata를
+적용한다. 향후 side-effect가 있는 instruction target이나 보안 side-channel 요구가
+추가되면 I-Fabric transaction 자체를 허용 구간별로 split해야 한다. 검증 근거는
+`verification/tests/pmp_fetch_boundary`와 `verification/tests/pmp_refetch`이다.
 
 ### 13.3 trap과 interrupt
 
@@ -1744,6 +1757,7 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 현재 RTL의 top-level port 이름을 그대로 동결한다. `fetch_*[1:0]`은 lane0부터 연속된 prefix만 valid일 수 있고 `fetch_ready_i[1]`은 `fetch_ready_i[0]`이 1일 때만 의미가 있다. `redirect_valid_i`는 backend가 한 cycle pulse로 내며 frontend는 항상 수락하고 같은 edge에서 queue와 aligner를 비우고 epoch를 증가시킨다. redirect cycle에는 새 fetch bundle을 내보내지 않는다.
 
 - request: `imem_req_valid_o/ready_i`, `imem_req_addr_o[PADDR_WIDTH-1:0]`, `imem_req_id_o[3:0]`, `imem_req_epoch_o[3:0]`
+- PMP parcels: `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_check_address_o[FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]`, `pmp_check_allow_i[FETCH_BYTES/2-1:0]`
 - response: `imem_rsp_valid_i/ready_o`, echo `id/epoch`, `imem_rsp_data_i[FETCH_BYTES*8-1:0]`, `imem_rsp_resp_i[1:0]`
 - backend: `fetch_valid_o[1:0]/fetch_ready_i[1:0]`, lane별 `pc[XLEN-1:0]`, raw `instr[31:0]`, `inst_len_e`, `prediction_meta_t`, `fetch_fault`
 
@@ -1753,11 +1767,11 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 
 | Port group | exact signal | 계약 |
 |---|---|---|
-| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]` | 64-byte byte-addressed queue에 최대 4 block 보관 |
+| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 64-byte byte-addressed queue에 최대 4 block과 2-byte parcel별 PMP 결과 보관 |
 | consume | `out_valid_o[1:0]/out_ready_i[1:0]`, lane별 `out_pc_o`, `out_instruction_o[31:0]`, `out_inst_len_o`, `out_fault_o` | C는 low 16-bit만 유효한 raw instruction을 program order로 출력 |
 | control | `redirect_valid_i`, `redirect_pc_i`, `new_epoch_i[3:0]`, `empty_o`, `byte_count_o[6:0]` | redirect가 consume보다 우선; 동시 fill은 새 target block으로 수락 |
 
-queue는 같은 cycle fill과 최대 8-byte consume를 허용한다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`로 설정하며, aligned `fill_addr_i`부터 redirect PC 이전 byte를 제외한 target block만 index 0부터 저장한다. 이 동시 fill은 queue의 기존 점유량과 무관하게 ready여야 한다. access fault가 표시된 block의 첫 instruction PC에서 `EXC_INST_ACCESS_FAULT`를 만들고 그 이후 byte는 redirect까지 architectural instruction으로 내보내지 않는다.
+queue는 같은 cycle fill과 최대 8-byte consume를 허용한다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`로 설정하며, aligned `fill_addr_i`부터 redirect PC 이전 byte를 제외한 target block만 index 0부터 저장한다. 이 동시 fill은 queue의 기존 점유량과 무관하게 ready여야 한다. fabric response error는 fill의 모든 byte에, `fill_pmp_allow_i[n]=0`은 parcel `n`의 두 byte에 fault로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 그 이후 sequential fetch는 redirect까지 정지한다.
 
 #### `rv_fetch_target_buffer`
 
@@ -1901,7 +1915,9 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 #### `rv_pmp`
 
-`rv_pmp` parameter는 `PADDR_WIDTH`, `PMP_ENTRIES=8`, `CHECK_PORTS`이고 CSR file의 flattened `pmpcfg_i[PMP_ENTRIES*8-1:0]`, `pmpaddr_i[PMP_ENTRIES*(PADDR_WIDTH-2)-1:0]`를 받는다. 각 조합 lookup port는 `check_valid_i`, physical address, log2-byte size, access bit R/W/X, privilege를 받고 `allow_o`, `matched_o`, `fault_address_o`를 낸다. core는 IFU용 1-port instance와 LSU용 2-port instance를 사용한다. entry priority는 낮은 index 우선이며 OFF/TOR/NA4/NAPOT과 lock bit를 구현한다. M-mode unlocked bypass와 locked entry 의미를 적용하고, 첫 matching entry가 access 일부만 덮으면 deny한다. LSU는 AGU의 latched size/address를 검사하며 MPRV일 때 MPP를 effective privilege로 사용한다. IFU denied block은 외부 request를 내지 않고 원 ID/epoch의 fault response를 생성한다.
+`rv_pmp` parameter는 `PADDR_WIDTH`, `PMP_ENTRIES=8`, `CHECK_PORTS`이고 CSR file의 flattened `pmpcfg_i[PMP_ENTRIES*8-1:0]`, `pmpaddr_i[PMP_ENTRIES*(PADDR_WIDTH-2)-1:0]`를 받는다. 각 조합 lookup port는 `check_valid_i`, physical address, log2-byte size, access bit R/W/X, privilege를 받고 `allow_o`, `matched_o`, `fault_address_o`를 낸다. core는 IFU용 `FETCH_BYTES/2`-port instance와 LSU용 2-port instance를 사용한다. entry priority는 낮은 index 우선이며 OFF/TOR/NA4/NAPOT과 lock bit를 구현한다. M-mode unlocked bypass와 locked entry 의미를 적용하고, **하나의 architectural access**가 첫 matching entry에 일부만 포함되면 deny한다. LSU는 AGU의 latched size/address를 검사하며 MPRV일 때 MPP를 effective privilege로 사용한다.
+
+IFU frontend exact interface는 `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_check_address_o[FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]`, `pmp_check_allow_i[FETCH_BYTES/2-1:0]`이다. 모든 valid port의 size는 `3'd1`(2 bytes), access는 execute, privilege는 current privilege로 core가 고정한다. memory response 또는 target-buffer hit가 fetch queue에 실제 fill되는 cycle에만 valid이며, allow vector는 `rv_fetch_queue.fill_pmp_allow_i`로 전달된다. fetch queue는 byte별 fabric response error와 parcel deny를 OR하여 보존하고 instruction 길이에 맞춰 `out_fault_o`를 만든다. denied instruction은 외부에 architecturally visible한 실행이나 register/memory side effect를 만들지 않지만, side-effect-free local memory transport request 자체는 16 bytes로 유지된다.
 
 #### `rv_trap_controller`
 
@@ -1917,7 +1933,11 @@ baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝
 
 `rv_host_dpi`는 합성 대상이 아니며 `clk_i/rst_ni`, `rv_axi4_if.master host_axi_m`, SoC의 `soc_ready_i`, Boot ROM WFI 관찰 `boot_wait_i`, HostIF event valid/ready/kind/data를 연결한다. XLEN, AXI data/ID width, BOOTROM/ITIM/DTIM/CLINT/PLIC/HOSTIF base와 size bytes 및 register offset은 module parameter이고 startup의 `host_config()`로 C++에 전달한다. `HTIF_ENABLE`, `TOHOST_ADDR`, `FROMHOST_ADDR`, polling/settling/maximum-print-byte도 parameter다. HTIF 종료는 `htif_exit_valid_o/htif_exit_code_o`로 test top에 전달한다.
 
-DPI-C 함수 계약은 `host_open_elf(path)`, `host_elf_entry()`, `host_segment_count()`, segment별 `paddr/filesz/memsz/byte()` getter, `host_poll_rx()`, `host_event(kind,data)`, `host_finish(code)`다. C++ parser는 ELF32/ELF64 little-endian, `EM_RISCV`, PT_LOAD bounds와 `filesz<=memsz`를 검사한다. SV BFM은 최대 16-beat AXI INCR burst, unaligned head/tail byte strobe와 `memsz-filesz` zero-fill을 구현한다. segment 전체가 parameterized ITIM 또는 DTIM window 안에 있어야 하며 모든 B response가 OKAY인 뒤 HostIF boot entry/flags, 마지막으로 `CLINT_BASE+MSIP_OFF=1`을 기록한다. DPI가 TIM hierarchy나 interrupt wire를 직접 수정하는 것은 금지한다. `rv_soc_dpi_tb`는 기존 custom HostIF 회귀, `rv_soc_htif_dpi_tb`는 server mailbox 회귀를 실행한다. 후자는 Host AXI read/write task로 string/syscall memory와 TOHOST/FROMHOST를 접근하며 제공된 `htif_smoke.elf`로 두 print 방식과 PASS 종료를 확인한다.
+DPI-C 함수 계약은 `host_open_elf(path)`, `host_elf_entry()`, `host_segment_count()`, segment별 `paddr/filesz/memsz/byte()` getter, `host_poll_rx()`, `host_event(kind,data)`, `host_finish(code)`다. C++ parser는 ELF32/ELF64 little-endian, `EM_RISCV`, PT_LOAD bounds와 `filesz<=memsz`를 검사한다. SV BFM은 최대 16-beat AXI INCR burst, unaligned head/tail byte strobe와 `memsz-filesz` zero-fill을 구현한다. segment 전체가 parameterized ITIM 또는 DTIM window 안에 있어야 한다.
+
+적재 후 `rv_host_dpi`는 기본 `+elf_verify=1`에서 Host AXI single-beat read로 모든 최종 PT_LOAD memory byte를 다시 읽는다. expected byte는 `offset<filesz`이면 ELF file image, 그 외 `offset<memsz`이면 BSS의 `0`이다. 여러 PT_LOAD가 겹치면 실제 write 순서와 같이 가장 뒤 segment가 최종 byte owner이며, earlier segment 검증은 later segment가 덮는 byte를 제외한다. 따라서 각 최종 byte는 정확히 한 번 비교된다. unaligned segment head/tail은 aligned 64-bit beat를 읽되 segment 내부 lane만 비교한다. AXI RRESP/ID/LAST 오류 또는 4-state mismatch를 포함한 byte 불일치는 `load_failed_o`를 세우고 segment/address/offset/expected/actual/read beat를 기록한다.
+
+boot ordering 불변조건은 **모든 ELF B response OKAY → 선택된 전체 AXI readback PASS → HostIF boot entry/flags → 마지막 `CLINT_BASE+MSIP_OFF=1`**이다. 그러므로 core가 software interrupt로 깨어날 때 검증되지 않은 instruction/data byte를 실행할 수 없다. readback은 약 `ceil(total final PT_LOAD bytes/8)`개의 추가 AXI read가 필요하므로 큰 ELF simulation timeout에는 load와 verify 시간을 함께 포함한다. Xcelium runner의 `ELF_VERIFY=0`/`+elf_verify=0`은 loader 원인 분리용 임시 디버그 옵션이며 정상 회귀와 server 재현은 기본 ON을 유지한다. DPI가 TIM hierarchy나 interrupt wire를 직접 수정하는 것은 금지한다. `rv_soc_dpi_tb`는 기존 custom HostIF 회귀, `rv_soc_htif_dpi_tb`는 server mailbox 회귀를 실행한다. 후자는 Host AXI read/write task로 string/syscall memory와 TOHOST/FROMHOST를 접근하며 제공된 `htif_smoke.elf`로 두 print 방식과 PASS 종료를 확인한다.
 
 ### 15.37 Backend integration과 top-level ownership
 
@@ -2047,7 +2067,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 - PLIC priority/enable/threshold/claim/complete와 source0=0 검증
 - `rv_soc_top_tb`: Host AXI→BootROM/ITIM/DTIM/CLINT/HostIF 왕복과 unmapped DECERR 검증
 
-현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. CSR interrupt 회귀는 MEIP(11)>MSIP(3)>MTIP(7) 우선순위와 fallback을 검사한다. 독립 trap-controller 회귀는 ROB가 비지 않은 동안 interrupt 진입 금지, 동기 예외와 pending interrupt가 겹칠 때 예외 우선, retired-next-PC를 사용하는 precise interrupt `mepc`, interrupt `mtval=0`, WFI wake/redirect serialization을 검사한다. 같은 조건은 RTL assertion으로도 고정한다. interrupt pending 중 younger dispatch 금지, WFI sleep 중 dispatch 금지, head exception 중 정상 retire 금지, exception payload 보존, interrupt `pc=next_pc`/`tval=0`, trap vector redirect가 매 simulation에서 감시된다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. D-Fabric 회귀는 기존 read response를 반환하는 같은 edge에 다음 read를 받아도 old ID/data와 next metadata가 섞이지 않는지 검사한다. PLIC 회귀는 priority/enable/pending/tie-break/threshold/M·S context claim-complete와 오류 응답을, CLINT 회귀는 mtime progression/MSIP/mtimecmp/MTIP와 오류 응답을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재는 RV32IMF, 혼합폭 RV32C, M/U privilege self-check ELF 모두 HostIF exit(0)까지 통과했다. RV32C image는 압축 ALU/load-store/branch/jump와 cross-halfword 32-bit `FENCE/FENCE.I`를, M/U image는 PMP allow-all 설정, MRET→U, illegal machine CSR trap(cause 2), U ECALL(cause 8), handler 복귀를 포함한다.
+현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. CSR interrupt 회귀는 MEIP(11)>MSIP(3)>MTIP(7) 우선순위와 fallback을 검사한다. 독립 trap-controller 회귀는 ROB가 비지 않은 동안 interrupt 진입 금지, 동기 예외와 pending interrupt가 겹칠 때 예외 우선, retired-next-PC를 사용하는 precise interrupt `mepc`, interrupt `mtval=0`, WFI wake/redirect serialization을 검사한다. 같은 조건은 RTL assertion으로도 고정한다. interrupt pending 중 younger dispatch 금지, WFI sleep 중 dispatch 금지, head exception 중 정상 retire 금지, exception payload 보존, interrupt `pc=next_pc`/`tval=0`, trap vector redirect가 매 simulation에서 감시된다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. IFU 회귀는 16-byte transport의 parcel별 fault 합성, TOR 상한 `0x800008fc` 경계의 정상 M-mode retire, target-buffer warm/cold/fenced PMP refetch 및 locked instruction access fault를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. D-Fabric 회귀는 기존 read response를 반환하는 같은 edge에 다음 read를 받아도 old ID/data와 next metadata가 섞이지 않는지 검사한다. PLIC 회귀는 priority/enable/pending/tie-break/threshold/M·S context claim-complete와 오류 응답을, CLINT 회귀는 mtime progression/MSIP/mtimecmp/MTIP와 오류 응답을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재는 RV32IMF, 혼합폭 RV32C, M/U privilege self-check ELF 모두 HostIF exit(0)까지 통과했다. RV32C image는 압축 ALU/load-store/branch/jump와 cross-halfword 32-bit `FENCE/FENCE.I`를, M/U image는 PMP allow-all 설정, MRET→U, illegal machine CSR trap(cause 2), U ECALL(cause 8), handler 복귀를 포함한다.
 
 ### 18.5 실행 결과와 commit 비교 계약
 
@@ -2064,6 +2084,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | M/U trace | `scripts/verify_rv32_priv_smoke_trace.ps1` | MRET→U, illegal CSR cause 2, ECALL-U cause 8, U resume 및 M-mode exit PASS |
 | GCC C/ASM loop | `scripts/run_c_loop_test.ps1` | integer/FP/load-store 8회 loop, payload 357, FP write 68, lane-1 commit 125, trap 0, signature `0x009e00b9`, exit(0) PASS |
 | CoreMark short RTL | `scripts/run_coremark.ps1` | 2 iterations, CRC 4종 PASS, 464,335 cycles, 576,450 instret, IPC 1.241453, estimated 4.307235 CoreMark/MHz, exit(0) |
+| PMP fetch boundary | `scripts/check_pmp_fetch_boundary.py` | TOR top `0x800008fc`, 16-byte transport 경계의 `0x800008fc` instruction `trap=0` retire 및 HTIF exit(0) PASS |
 
 GCC workload의 재현 소스, 예상/관측값, ELF header/symbol/disassembly, 결과 요약과 전체 commit CSV는 `verification/tests/rv32_c_loop`에 함께 보관한다. 이 테스트는 compiler가 선택한 RV32IMFC instruction 조합과 반복 branch recovery를 실제 SoC 경로에서 검증한다. 특히 recovery와 같은 cycle에 도착한 older load response는 surviving LQ entry를 완료해야 하고, older writeback은 surviving IQ entry의 source-ready를 반드시 갱신해야 한다. 두 상태 전이는 각각 LSQ/IQ 단위 회귀로 고정한다.
 
@@ -2439,3 +2460,5 @@ time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행�
 | v1.14.0 | DTIM 내부 64-bit `TOHOST=0x8002_0000`, `FROMHOST=0x8002_0008`을 package/top/map-check/configurator에 추가. Host AXI polling 기반 HTIF DPI가 raw PASS/FAIL, direct string, console packet, proxy write/exit와 RV32 two-store settling을 처리하고, server Boot ROM이 ELF entry로 jump하도록 구성. `$RTL_DIR/$TB_DIR` filelist, source 환경, `BINARY=` 단일 설정 `run_verilog_sub.sh`, portable Xcelium bundle 및 HTIF smoke ELF/결과 log를 추가. Verilator E2E와 기존 custom HostIF ELF 회귀는 통과했으며 실제 회사 `verilog_sub` invocation은 서버 확인 필요 |
 | v1.14.1 | 모든 합성 `always_ff`의 synchronous active-low reset을 전수 점검하고 target-buffer payload flop을 명시적으로 초기화. TIM/Boot ROM data array만 memory-macro 추론 예외로 정의. reset 중 I/D request를 차단하고, IFU stall hold 및 dual-LSU lane별 fall-through request buffer로 ready/valid payload 안정성을 보장. Xcelium 4-state time-zero immediate assertion은 reset이 알려진 뒤에만 검사하며 verification runner에서 `SYNTHESIS` define을 제거. assertion-enabled HTIF direct/proxy/exit E2E 통과 |
 | v1.14.2 | 기본 CLINT base를 `0x0020_0000`에서 표준 `0x0200_0000`으로 이동. MSIP=`0x0200_0000`, MTIMECMP=`0x0200_4000/4004`, MTIME=`0x0200_BFF8/BFFC` 계약을 RTL package, DPI, Boot ROM, C/CoreMark startup, privilege smoke, configurator, 그림과 검증 artifact에 일괄 반영. block 12종, SoC boot 및 GCC C/FP/LSU ELF 회귀 통과 |
+| v1.14.3 | DPI ELF loader에 기본-ON Host AXI full readback을 추가. 최종 PT_LOAD file byte와 BSS zero-fill을 exact-compare하고 overlap은 last-segment-wins로 판정하며, 전체 PASS 전에는 boot mailbox와 CLINT MSIP를 쓰지 않는다. Xcelium `ELF_VERIFY` 전달·진행률·주소별 mismatch 진단을 추가 |
+| v1.14.4 | IFU의 16-byte memory transport와 architectural PMP 접근 크기를 분리. fetch fill마다 8개의 2-byte parcel을 현재 privilege/PMP로 병렬 판정하고 byte fault metadata로 보존하여 C/32-bit/cross-block instruction이 실제 사용하는 parcel만 검사한다. TOR top `0x800008fc` 경계 정상 retire, locked PMP refetch fault, unit/integration/RV32·RV64 elaboration 회귀를 추가 |

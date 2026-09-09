@@ -21,8 +21,9 @@ SoC 시험은 기존 runner의 `-DSYNTHESIS` 설정이며 Xcelium 검증은 미�
 산술 256개 기대값 비교 회귀와 RV32/RV64 parse/elaboration도 통과했다.
 
 이 보완은 PMP write commit 뒤 queue/target-buffer/epoch 및 younger uop를
-architectural redirect로 폐기한다. TOR 상한 0x800008fc를 걸치는 16-byte fetch
-문제는 별개로 아직 재현되며 수정 완료가 아니다.
+architectural redirect로 폐기한다. 과거 별도 미해결 항목이었던 TOR 상한
+`0x800008fc`와 16-byte fetch transport 경계는 이제 2-byte parcel별 PMP
+metadata로 수정했으며 `verification/tests/pmp_fetch_boundary`에서 검증한다.
 
 ## 재실행
 

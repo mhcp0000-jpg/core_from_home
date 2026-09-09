@@ -169,7 +169,7 @@ module rv_host_dpi #(
     if ((host_axi_m.r_id != next_id_q) ||
         (host_axi_m.r_resp != 2'b00) || !host_axi_m.r_last) begin
       load_failed_o = 1'b1;
-      $error("Host AXI HTIF read failed addr=%h id=%h resp=%h last=%b",
+      $error("Host AXI read failed addr=%h id=%h resp=%h last=%b",
              address, host_axi_m.r_id, host_axi_m.r_resp,
              host_axi_m.r_last);
     end else begin
@@ -412,6 +412,86 @@ module rv_host_dpi #(
     $display("[HOST-DPI][%0t] segment[%0d] complete", $time, segment_index);
   endtask
 
+  // Read every final PT_LOAD byte back through the Host AXI master.  A byte
+  // covered by more than one segment is owned by the last PT_LOAD written,
+  // so an earlier segment skips bytes that a later segment overwrote.  This
+  // keeps the check correct for legal ELF files with overlapping load ranges.
+  task automatic verify_segment(
+    input  int segment_index,
+    input  int segment_count,
+    output longint unsigned verified_bytes
+  );
+    longint unsigned segment_address, file_size, memory_size;
+    longint unsigned first_beat, final_address, current_beat;
+    longint unsigned byte_address, segment_offset;
+    longint unsigned later_address, later_size;
+    longint unsigned scanned_bytes, next_report;
+    logic [63:0] read_data;
+    logic [7:0] expected_byte, actual_byte;
+    logic covered_by_later;
+
+    segment_address = host_segment_paddr(segment_index);
+    file_size = host_segment_filesz(segment_index);
+    memory_size = host_segment_memsz(segment_index);
+    first_beat = segment_address & ~(longint'(DATA_BYTES-1));
+    final_address = segment_address + memory_size;
+    current_beat = first_beat;
+    verified_bytes = 0;
+    next_report = LOAD_PROGRESS_BYTES;
+    $display("[HOST-DPI][%0t] segment[%0d] readback start paddr=0x%08h memsz=%0d",
+             $time, segment_index, segment_address, memory_size);
+
+    while (current_beat < final_address) begin
+      axi_read64(ADDR_WIDTH'(current_beat), read_data);
+      if (load_failed_o) return;
+
+      for (int unsigned byte_lane = 0; byte_lane < DATA_BYTES; byte_lane++) begin
+        byte_address = current_beat + byte_lane;
+        if ((byte_address >= segment_address) &&
+            (byte_address < final_address)) begin
+          covered_by_later = 1'b0;
+          for (int later_segment = segment_index + 1;
+               later_segment < segment_count; later_segment++) begin
+            later_address = host_segment_paddr(later_segment);
+            later_size = host_segment_memsz(later_segment);
+            if ((byte_address >= later_address) &&
+                ((byte_address-later_address) < later_size))
+              covered_by_later = 1'b1;
+          end
+
+          if (!covered_by_later) begin
+            segment_offset = byte_address - segment_address;
+            expected_byte = (segment_offset < file_size) ?
+              8'(host_segment_byte(segment_index, segment_offset)) : 8'h00;
+            actual_byte = read_data[byte_lane*8 +: 8];
+            if (actual_byte !== expected_byte) begin
+              load_failed_o = 1'b1;
+              $error("ELF readback mismatch segment=%0d addr=0x%08h offset=0x%0h expected=0x%02h actual=0x%02h beat=0x%016h",
+                     segment_index, byte_address, segment_offset,
+                     expected_byte, actual_byte, read_data);
+              return;
+            end
+            verified_bytes++;
+          end
+        end
+      end
+
+      current_beat += DATA_BYTES;
+      scanned_bytes = current_beat - first_beat;
+      if ((scanned_bytes >= next_report) ||
+          (current_beat >= final_address)) begin
+        $display("[HOST-DPI][%0t] segment[%0d] readback progress %0d/%0d bytes",
+                 $time, segment_index,
+                 (scanned_bytes > memory_size) ? memory_size : scanned_bytes,
+                 memory_size);
+        next_report = ((scanned_bytes / LOAD_PROGRESS_BYTES) + 1) *
+                      LOAD_PROGRESS_BYTES;
+      end
+    end
+    $display("[HOST-DPI][%0t] segment[%0d] readback PASS checked=%0d bytes",
+             $time, segment_index, verified_bytes);
+  endtask
+
   assign host_event_ready_o = 1'b1;
 
   always_ff @(posedge clk_i) begin
@@ -425,6 +505,9 @@ module rv_host_dpi #(
   initial begin : p_dpi_host
     string elf_path;
     int segment_count;
+    int elf_verify;
+    longint unsigned segment_verified_bytes;
+    longint unsigned total_verified_bytes;
     host_axi_m.aw_id = '0;
     host_axi_m.aw_addr = '0;
     host_axi_m.aw_len = '0;
@@ -454,6 +537,9 @@ module rv_host_dpi #(
     htif_exit_valid_o = 1'b0;
     htif_exit_code_o = '0;
     next_id_q = '0;
+    elf_verify = 1;
+    if (!$value$plusargs("elf_verify=%d", elf_verify))
+      elf_verify = 1;
 
     $display("[HOST-DPI][%0t] initialized; waiting for reset release", $time);
     wait (rst_ni);
@@ -488,8 +574,25 @@ module rv_host_dpi #(
       end
     end
 
+    if (!load_failed_o && (elf_verify != 0)) begin
+      total_verified_bytes = 0;
+      $display("[HOST-DPI][%0t] ELF AXI readback verification enabled",
+               $time);
+      for (int segment = 0; segment < segment_count; segment++) begin
+        verify_segment(segment, segment_count, segment_verified_bytes);
+        total_verified_bytes += segment_verified_bytes;
+        if (load_failed_o) break;
+      end
+      if (!load_failed_o)
+        $display("[HOST-DPI][%0t] ELF AXI readback PASS total=%0d bytes",
+                 $time, total_verified_bytes);
+    end else if (!load_failed_o) begin
+      $display("[HOST-DPI][%0t] ELF AXI readback verification disabled by +elf_verify=0",
+               $time);
+    end
+
     if (!load_failed_o) begin
-      $display("[HOST-DPI][%0t] all ELF segments loaded", $time);
+      $display("[HOST-DPI][%0t] all ELF segments loaded and accepted", $time);
       $display("[HOST-DPI][%0t] writing boot entry 0x%08h to 0x%08h",
                $time, host_elf_entry(),
                HOSTIF_BASE_ADDR + HOSTIF_BOOT_ENTRY_OFFSET);
