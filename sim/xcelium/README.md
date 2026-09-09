@@ -4,7 +4,8 @@
 
 기존 `rd_we/rd_fp/rd/wdata`는 목적지 integer/FP register write를 뜻한다.
 추가된 `gpr_we`와 `fpr_we`로 두 register file을 구분한다.
-CSR 명령은 같은 commit 줄에 `csr_valid/ csr_we/ csr_addr/ csr_wdata`가 추가된다.
+CSR 명령은 같은 commit 줄에
+`csr_valid/ csr_we/ csr_addr/ csr_name/ csr_wdata`가 추가된다.
 `csr_valid=1`은 정상 retire된 CSR 명령, `csr_we=1`은 그 명령의 CSR write
 intent가 commit된 것을 뜻한다. `csr_wdata`는 CSRRS/CSRRC의 set/clear까지
 반영한 write 요청 값이며, WARL 변환/locked PMP write 무시 이후 실제 저장값을
@@ -19,8 +20,24 @@ intent가 commit된 것을 뜻한다. `csr_wdata`는 CSRRS/CSRRC의 set/clear까
 현재 CSR 명령은 lane 0에서만 commit하며 lane 1의 CSR 필드는 0이다.
 로그 줄 맨 끝에는 `mnemonic=CSRRW`처럼 사람이 읽을 수 있는 명령어 이름이
 표시되며, CSV의 마지막 `mnemonic` 열에도 동일한 이름을 기록한다. 압축 명령은
-`C.ADDI`, `C.J` 형식으로 구분한다. CSV는 기존 12개 열 뒤에 GPR/CSR 6개 열과
-`mnemonic` 열을 추가했으므로 기존 열 이름은 유지된다.
+`C.ADDI`, `C.J` 형식으로 구분한다. `csr_addr=0x340` 옆에는
+`csr_name=mscratch`처럼 구현 CSR 이름을 표시하고, 유효한 CSR transaction이
+아니면 `none`, 주소가 표에 없으면 `unknown`으로 표시한다. CSV는 기존 12개 열
+뒤에 GPR/CSR 필드와 이름 필드를 추가했으므로 기존 열 이름은 유지된다.
+
+| 주소 | 출력 이름 | 주소 | 출력 이름 |
+|---:|---|---:|---|
+| `0x001` | `fflags` | `0x002` | `frm` |
+| `0x003` | `fcsr` | `0x300` | `mstatus` |
+| `0x301` | `misa` | `0x304` | `mie` |
+| `0x305` | `mtvec` | `0x306` | `mcounteren` |
+| `0x340` | `mscratch` | `0x341` | `mepc` |
+| `0x342` | `mcause` | `0x343` | `mtval` |
+| `0x344` | `mip` | `0x3A0–0x3A3` | `pmpcfg0–3` |
+| `0x3B0–0x3B7` | `pmpaddr0–7` | `0xB00/0xB80` | `mcycle/mcycleh` |
+| `0xB02/0xB82` | `minstret/minstreth` | `0xC00/0xC80` | `cycle/cycleh` |
+| `0xC01/0xC81` | `time/timeh` | `0xC02/0xC82` | `instret/instreth` |
+| `0xF11–0xF14` | `mvendorid–mhartid` | | |
 
 이 폴더만 보면 Linux 서버 실행 경로를 찾을 수 있도록 구성한다. 여기서
 `verilog_sub`는 폴더 이름이 아니라 회사 서버의 Xcelium 제출 명령이다.

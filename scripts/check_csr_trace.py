@@ -13,6 +13,12 @@ for line in (args.directory / 'symbols.txt').read_text().splitlines():
         symbols[fields[2]] = int(fields[0], 16)
 with (args.directory / 'commit_trace.csv').open(newline='') as f:
     rows = list(csv.DictReader(f))
+implemented_names_seen = {
+    r['csr_addr']: r['csr_name'] for r in rows if r['csr_valid'] == '1'
+}
+for address, name in {'300': 'mstatus', '304': 'mie', '305': 'mtvec',
+                      '340': 'mscratch'}.items():
+    assert implemented_names_seen.get(address) == name, implemented_names_seen
 expected = {
     'check_rw': (10, 0, 1, 0x12, 'CSRRW'),
     'check_rs': (11, 0x12, 1, 0x13, 'CSRRS'),
@@ -31,6 +37,7 @@ for name, (rd, old, we, new, mnemonic) in expected.items():
     assert int(r['rd']) == rd and int(r['gpr_we']) == int(rd != 0), (name,r)
     assert r['csr_valid'] == '1' and int(r['csr_we']) == we, (name,r)
     assert int(r['csr_addr'],16) == 0x340 and int(r['csr_wdata'],16) == new, (name,r)
+    assert r['csr_name'] == 'mscratch', (name,r)
     assert r['mnemonic'] == mnemonic, (name,r)
     assert r['fpr_we'] == '0' and r['trap'] == '0', (name,r)
     if rd:
@@ -39,6 +46,7 @@ faults = [r for r in rows if r['trap'] == '1' and int(r['pc'],16) >= 0x80000000]
 assert len(faults) == 1 and int(faults[0]['pc'],16) == symbols['check_illegal'], faults
 assert faults[0]['cause'] == '2' and faults[0]['gpr_we'] == '0' and faults[0]['csr_we'] == '0', faults
 assert faults[0]['csr_valid'] == '0', faults
+assert faults[0]['csr_name'] == 'none', faults
 assert faults[0]['mnemonic'] == 'CSRRW', faults
 assert all(r['csr_we'] == '0' for r in rows if r['lane'] == '1'), 'CSR misattributed to lane 1'
-print('PASS: 6 CSR forms, read-only register/immediate, rd=x0, illegal write; GPR/CSR fields and mnemonics match')
+print('PASS: 6 CSR forms, read-only register/immediate, rd=x0, illegal write; GPR/CSR fields, CSR names and mnemonics match')

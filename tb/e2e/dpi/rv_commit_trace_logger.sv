@@ -39,6 +39,56 @@ module rv_commit_trace_logger #(
   logic [1:0][11:0] csr_addr;
   logic [1:0][XLEN-1:0] csr_wdata;
 
+  function automatic string csr_address_name(
+    input logic        valid,
+    input logic [11:0] address
+  );
+    if (!valid)
+      return "none";
+    case (address)
+      12'h001: return "fflags";
+      12'h002: return "frm";
+      12'h003: return "fcsr";
+      12'h300: return "mstatus";
+      12'h301: return "misa";
+      12'h304: return "mie";
+      12'h305: return "mtvec";
+      12'h306: return "mcounteren";
+      12'h340: return "mscratch";
+      12'h341: return "mepc";
+      12'h342: return "mcause";
+      12'h343: return "mtval";
+      12'h344: return "mip";
+      12'h3a0: return "pmpcfg0";
+      12'h3a1: return "pmpcfg1";
+      12'h3a2: return "pmpcfg2";
+      12'h3a3: return "pmpcfg3";
+      12'h3b0: return "pmpaddr0";
+      12'h3b1: return "pmpaddr1";
+      12'h3b2: return "pmpaddr2";
+      12'h3b3: return "pmpaddr3";
+      12'h3b4: return "pmpaddr4";
+      12'h3b5: return "pmpaddr5";
+      12'h3b6: return "pmpaddr6";
+      12'h3b7: return "pmpaddr7";
+      12'hb00: return "mcycle";
+      12'hb02: return "minstret";
+      12'hb80: return "mcycleh";
+      12'hb82: return "minstreth";
+      12'hc00: return "cycle";
+      12'hc01: return "time";
+      12'hc02: return "instret";
+      12'hc80: return "cycleh";
+      12'hc81: return "timeh";
+      12'hc82: return "instreth";
+      12'hf11: return "mvendorid";
+      12'hf12: return "marchid";
+      12'hf13: return "mimpid";
+      12'hf14: return "mhartid";
+      default: return "unknown";
+    endcase
+  endfunction
+
   // Human-readable debug aid. The architectural comparison must continue to
   // use the raw instruction bits; this name is intentionally not fed back
   // into the core. ROB stores the original 16-bit C encoding (zero-extended)
@@ -296,7 +346,7 @@ module rv_commit_trace_logger #(
       if (trace_fd == 0)
         $fatal(1, "Unable to open commit trace file: %s", trace_path);
       $fdisplay(trace_fd,
-        "order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval,gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,mnemonic");
+        "order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval,gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,csr_name,mnemonic");
       $fflush(trace_fd);
       $display("[COMMIT][%0t] trace file opened: %s", $time, trace_path);
     end
@@ -317,7 +367,7 @@ module rv_commit_trace_logger #(
         if (trace_valid_i[lane]) begin
           if (trace_fd != 0) begin
             $fdisplay(trace_fd,
-              "%0d,%0d,%0d,%x,%08x,%0d,%0d,%0d,%x,%0d,%0d,%x,%0d,%0d,%0d,%0d,%03x,%x,%s",
+              "%0d,%0d,%0d,%x,%08x,%0d,%0d,%0d,%x,%0d,%0d,%x,%0d,%0d,%0d,%0d,%03x,%x,%s,%s",
               retire_order_q + ((lane == 1) && trace_valid_i[0]), cycle_q, lane,
               trace_pc_i[lane], trace_instr_i[lane],
               trace_rd_write_i[lane], trace_rd_fp_i[lane], trace_rd_i[lane],
@@ -326,9 +376,10 @@ module rv_commit_trace_logger #(
               trace_rd_write_i[lane] && !trace_rd_fp_i[lane],
               trace_rd_write_i[lane] && trace_rd_fp_i[lane],
               csr_valid[lane], csr_we[lane], csr_addr[lane], csr_wdata[lane],
+              csr_address_name(csr_valid[lane], csr_addr[lane]),
               instruction_mnemonic(trace_instr_i[lane]));
           end
-          $display("[COMMIT][%0t] order=%0d cycle=%0d lane=%0d pc=%08h instr=%08h rd_we=%b rd_fp=%b rd=%0d wdata=%08h trap=%b cause=%0d tval=%08h gpr_we=%b fpr_we=%b csr_valid=%b csr_we=%b csr_addr=%03h csr_wdata=%08h mnemonic=%s",
+          $display("[COMMIT][%0t] order=%0d cycle=%0d lane=%0d pc=%08h instr=%08h rd_we=%b rd_fp=%b rd=%0d wdata=%08h trap=%b cause=%0d tval=%08h gpr_we=%b fpr_we=%b csr_valid=%b csr_we=%b csr_addr=0x%03h csr_name=%s csr_wdata=%08h mnemonic=%s",
             $time, retire_order_q + ((lane == 1) && trace_valid_i[0]),
             cycle_q, lane, trace_pc_i[lane], trace_instr_i[lane],
             trace_rd_write_i[lane], trace_rd_fp_i[lane], trace_rd_i[lane],
@@ -336,7 +387,8 @@ module rv_commit_trace_logger #(
             trace_cause_i[lane], trace_tval_i[lane],
             trace_rd_write_i[lane] && !trace_rd_fp_i[lane],
             trace_rd_write_i[lane] && trace_rd_fp_i[lane],
-            csr_valid[lane], csr_we[lane], csr_addr[lane], csr_wdata[lane],
+            csr_valid[lane], csr_we[lane], csr_addr[lane],
+            csr_address_name(csr_valid[lane], csr_addr[lane]), csr_wdata[lane],
             instruction_mnemonic(trace_instr_i[lane]));
         end
       end

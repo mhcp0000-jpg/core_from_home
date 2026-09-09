@@ -7,7 +7,8 @@ GPR에는 old CSR value가, `csr_wdata`에는 set/clear까지 적용한 새 writ
 값이 찍혀야 한다. 이 테스트는 WARL이 없는 mscratch를 사용한다.
 `csr_wdata`는 일반적으로 WARL/lock 적용 후 실제 저장값 readback은 아니다.
 각 record의 마지막 `mnemonic`도 CSRRW/CSRRS/CSRRC 및 immediate 형식과
-일치해야 한다.
+일치해야 하며, `csr_addr=340`의 `csr_name`은 `mscratch`여야 한다. Boot ROM과
+payload에서 관측되는 `mstatus/mie/mtvec` 매핑도 checker가 함께 확인한다.
 
 `test.elf`는 실행 ELF, `symbols.txt`는 각 검사 명령의 PC, `commit_trace.csv`는
 전체 실행 결과, `simulation.txt`는 콘솔 출력이다. 기대 결과는 checker 안에
