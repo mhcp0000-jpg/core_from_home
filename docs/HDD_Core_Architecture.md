@@ -2297,6 +2297,16 @@ orphan speculative response 생성을 방지한다.
 
 `rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,csr_name,mnemonic`을 추가한 20개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. `csr_name`은 CSR 주소의 architectural 이름을, `mnemonic`은 사람이 마지막 실행 명령을 빠르게 찾기 위한 보조 정보를 제공하며 정답 비교는 `instruction` raw bits를 기준으로 한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
+서버 파형 계약(2026-09-09): HTIF Xcelium top은 `RV_FSDB`가 compile define된
+경우에만 Verdi/Novas FSDB system task를 포함한다. `run_verilog_sub.sh`는 기본적으로
+FSDB를 켜고 compile/run 두 job에 동일 PLI spec을 전달한다. 출력 경로, MDA dump,
+주기적 flush cycle은 각각 `FSDB_FILE`, `FSDB_DUMP_MDA`,
+`FSDB_FLUSH_CYCLES`로 조정한다. 일반 simulator와 파형 없는 regression은
+`FSDB_ENABLE=0`으로 vendor task와 PLI 의존성을 완전히 제외한다. 기본 MDA dump는
+TIM 용량 때문에 끄고, core hang 분석 시 top hierarchy의 control/data signal을
+time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행법과 PLI 자동 탐색
+규칙은 `sim/xcelium/README.md`를 단일 운영 가이드로 사용한다.
+
 ## 19. Clock/reset/DFT 원칙
 
 - 초기 RTL은 단일 SoC clock, synchronous active-low reset을 사용한다.

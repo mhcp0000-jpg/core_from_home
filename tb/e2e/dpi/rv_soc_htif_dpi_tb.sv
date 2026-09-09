@@ -37,6 +37,41 @@ module rv_soc_htif_dpi_tb;
   logic [31:0] commit_last_instr;
   integer timeout_cycles;
 
+`ifdef RV_FSDB
+  // FSDB is a server-debug feature.  RV_FSDB is defined only when the Xcelium
+  // scripts have loaded the Verdi/Novas dumper PLI, so ordinary simulators do
+  // not need to recognize any of the vendor system tasks below.
+  initial begin : p_fsdb_dump
+    string fsdb_file;
+    integer fsdb_dump_mda;
+    integer fsdb_flush_cycles;
+    fsdb_file = "waves.fsdb";
+    fsdb_dump_mda = 0;
+    fsdb_flush_cycles = 100_000;
+    void'($value$plusargs("fsdb_file=%s", fsdb_file));
+    void'($value$plusargs("fsdb_dump_mda=%d", fsdb_dump_mda));
+    void'($value$plusargs("fsdb_flush_cycles=%d", fsdb_flush_cycles));
+    $display("[FSDB][%0t] opening %s (mda=%0d flush_cycles=%0d)",
+             $time, fsdb_file, fsdb_dump_mda, fsdb_flush_cycles);
+    $fsdbDumpfile(fsdb_file);
+    $fsdbDumpvars(0, rv_soc_htif_dpi_tb, "+all");
+    if (fsdb_dump_mda != 0) begin
+      $display("[FSDB][%0t] multidimensional-array dumping enabled", $time);
+      $fsdbDumpMDA();
+    end
+    // Write the database header immediately so even an early zero-time stall
+    // leaves a recognizable file on the server.
+    $fsdbDumpflush;
+    if (fsdb_flush_cycles > 0) begin
+      forever begin
+        repeat (fsdb_flush_cycles) @(posedge clk);
+        $fsdbDumpflush;
+        $display("[FSDB][%0t] waveform buffer flushed: %s", $time, fsdb_file);
+      end
+    end
+  end
+`endif
+
   rv_axi4_if #(
     .ADDR_WIDTH (SOC_ADDR_WIDTH),
     .DATA_WIDTH (SOC_DATA_WIDTH),

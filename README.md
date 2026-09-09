@@ -17,8 +17,13 @@ chmod +x sim/xcelium/*.sh
 ./sim/xcelium/run_verilog_sub.sh
 ```
 
-기본 Xcelium 실행은 `SYNTHESIS`를 define하지 않으며 RTL assertion을 계속
-활성화한 상태로 동작합니다.
+이 runner는 기본적으로 `sim/xcelium/out/waves.fsdb`도 생성합니다. PLI를 자동으로
+찾지 못하면 `FSDB_PLI=/path/to/debpli`를 지정하고, 파형이 필요 없는 실행은
+`FSDB_ENABLE=0`으로 끕니다. ITIM/DTIM memory array dump는 파일 크기 때문에 기본
+제외하며 `FSDB_DUMP_MDA=1`로 별도 활성화합니다.
+
+기본 Xcelium 실행은 `SYNTHESIS`를 define하여 simulation-only assertion을 제외합니다.
+assertion까지 검사할 때는 `RTL_ASSERTIONS=1`로 실행합니다.
 
 모든 합성 control/pipeline flip-flop은 synchronous active-low `rst_ni`로
 초기화되며 reset 동안 core I/D request는 차단됩니다. ITIM/DTIM과 Boot ROM의

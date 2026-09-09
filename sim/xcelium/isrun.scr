@@ -29,9 +29,15 @@ else
 endif
 
 set rtl_assertions = "0"
+set fsdb_enable = "1"
+set fsdb_pli = "auto"
 foreach arg ($argv)
   if ("$arg" =~ "-RTL_ASSERTIONS=*") then
     set rtl_assertions = `echo "$arg" | sed 's/-RTL_ASSERTIONS=//'`
+  else if ("$arg" =~ "-FSDB_ENABLE=*") then
+    set fsdb_enable = `echo "$arg" | sed 's/-FSDB_ENABLE=//'`
+  else if ("$arg" =~ "-FSDB_PLI=*") then
+    set fsdb_pli = `echo "$arg" | sed 's/-FSDB_PLI=//'`
   endif
 end
 
@@ -57,6 +63,51 @@ set define_opts = ()
 if ("$rtl_assertions" != "1") then
   set define_opts = (-define SYNTHESIS)
 endif
+set fsdb_opts = ()
+if ("$fsdb_enable" == "1") then
+  set define_opts = ($define_opts -define RV_FSDB)
+  if ("$fsdb_pli" == "auto") then
+    if ($?VERDI_HOME) then
+      foreach candidate ( \
+        "$VERDI_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli" \
+        "$VERDI_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli.so" \
+        "$VERDI_HOME/share/PLI/IUS/LINUX64/boot/debpli" \
+        "$VERDI_HOME/share/PLI/IUS/LINUX64/boot/debpli.so" )
+        if (-e "$candidate") then
+          set fsdb_pli = "$candidate"
+          break
+        endif
+      end
+    endif
+    if ("$fsdb_pli" == "auto" && $?NOVAS_HOME) then
+      foreach candidate ( \
+        "$NOVAS_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli" \
+        "$NOVAS_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli.so" \
+        "$NOVAS_HOME/share/PLI/IUS/LINUX64/boot/debpli" \
+        "$NOVAS_HOME/share/PLI/IUS/LINUX64/boot/debpli.so" )
+        if (-e "$candidate") then
+          set fsdb_pli = "$candidate"
+          break
+        endif
+      end
+    endif
+  endif
+  if ("$fsdb_pli" == "auto" || "$fsdb_pli" == "") then
+    echo "ERROR: FSDB PLI was not found under VERDI_HOME or NOVAS_HOME."
+    echo "Set FSDB_PLI=/path/to/debpli or FSDB_PLI=builtin."
+    exit 2
+  endif
+  if ("$fsdb_pli" != "builtin") then
+    set fsdb_pli_spec = "$fsdb_pli"
+    if ("$fsdb_pli_spec" !~ "*:*") then
+      set fsdb_pli_spec = "${fsdb_pli_spec}:novas_pli_boot"
+    endif
+    set fsdb_opts = (-loadpli1 "$fsdb_pli_spec")
+    echo "FSDB compile PLI: $fsdb_pli_spec"
+  else
+    echo "FSDB compile PLI: site-integrated/builtin"
+  endif
+endif
 
 cd "$CORE_ROOT"
 exec xrun \
@@ -67,6 +118,7 @@ exec xrun \
   -access +rwc \
   +xmtimescale+1ns/1ps \
   $define_opts \
+  $fsdb_opts \
   -f "${XCELIUM_DIR}/rtl.f" \
   -f "${XCELIUM_DIR}/htif_tb.f" \
   -top rv_soc_htif_dpi_tb \

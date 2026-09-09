@@ -1,5 +1,69 @@
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
+## FSDB 파형 생성
+
+`run_verilog_sub.sh`는 기본적으로 FSDB를 활성화하며 결과는 다음 위치에 생성된다.
+
+```text
+sim/xcelium/out/waves.fsdb
+```
+
+기본 실행은 Xcelium 환경을 읽은 뒤 `VERDI_HOME`과 `NOVAS_HOME` 아래의 Xcelium/IUS
+`debpli`를 자동 탐색한다. 서버의 위치가 다르면 library나 entry-point 포함 spec을
+직접 지정한다.
+
+```bash
+FSDB_PLI=/tools/verdi/share/PLI/XCELIUM/LINUX64/boot/debpli \
+  BINARY=/server/path/test.elf ./sim/xcelium/run_verilog_sub.sh
+
+# site 설정이 FSDB PLI를 Xcelium에 이미 등록한 경우
+FSDB_PLI=builtin BINARY=/server/path/test.elf \
+  ./sim/xcelium/run_verilog_sub.sh
+```
+
+실제 PLI 경로를 찾는 예시는 다음과 같다.
+
+```bash
+find "${VERDI_HOME:-${NOVAS_HOME:-/tools/verdi}}/share/PLI" \
+  -path '*/LINUX64/boot/debpli*' -print
+```
+
+실행 로그에 `[FSDB] opening ...`이 나타나야 dump가 시작된 것이다. 코어가
+멈추거나 timeout에 도달해도 중간까지의 파형을 읽을 수 있도록 기본 100,000
+cycle마다 `$fsdbDumpflush`를 수행한다. 주기와 파일 경로는 바꿀 수 있다.
+
+```bash
+FSDB_FILE=/server/scratch/my_test.fsdb FSDB_FLUSH_CYCLES=10000 \
+  BINARY=/server/path/test.elf ./sim/xcelium/run_verilog_sub.sh
+```
+
+기본 dump는 `rv_soc_htif_dpi_tb` 아래 전체 hierarchy와 일반 신호를 대상으로 한다.
+ITIM/DTIM 같은 multidimensional memory까지 필요하면 다음 옵션을 사용한다. 파일이
+매우 커질 수 있으므로 기본값은 0이다.
+
+```bash
+FSDB_DUMP_MDA=1 BINARY=/server/path/test.elf \
+  ./sim/xcelium/run_verilog_sub.sh
+```
+
+성능 회귀처럼 파형이 필요 없는 실행에서는 끌 수 있다. 이때 `RV_FSDB`가 정의되지
+않고 PLI도 load하지 않으므로 기존 환경과 동일하게 동작한다.
+
+```bash
+FSDB_ENABLE=0 BINARY=/server/path/test.elf \
+  ./sim/xcelium/run_verilog_sub.sh
+```
+
+FSDB 활성화 시 compile job과 simulation job 양쪽에 같은 PLI 설정을 전달해야 한다.
+직접 `verilog_sub`를 호출한다면 `isrun.scr`와 `issim.scr` 모두에
+`-FSDB_ENABLE=1 -FSDB_PLI=...`를 넘기고, simulation job에는 `-FSDB_FILE=...`도
+넘긴다. 저장소 runner는 이 전달을 자동으로 처리한다.
+
+현재 Windows 로컬 검증에서는 `RV_FSDB`가 꺼진 Verilator SoC 전체 build/run이
+PASS했다. 실제 FSDB PLI load와 파일 생성은 Xcelium/Verdi가 설치된 Linux 서버에서
+확인해야 한다. 실패하면 `compile.log`의 `FSDB compile PLI`, `simulation.log`의
+`[FSDB] opening` 및 runner가 출력한 `FSDB output` 경로를 먼저 확인한다.
+
 ## Commit 로그의 GPR/CSR 구분
 
 기존 `rd_we/rd_fp/rd/wdata`는 목적지 integer/FP register write를 뜻한다.
