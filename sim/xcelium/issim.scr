@@ -35,10 +35,9 @@ set heartbeat_cycles = "100000"
 set elf_verify = "1"
 set trace_file = "${build_dir}/commit_trace.csv"
 set fsdb_enable = "1"
-set fsdb_file = "${build_dir}/waves.fsdb"
+set fsdb_file = "${build_dir}/binary.fsdb"
 set fsdb_dump_mda = "0"
 set fsdb_flush_cycles = "100000"
-set fsdb_pli = "auto"
 
 foreach arg ($argv)
   if ("$arg" =~ "-BINARY=*") then
@@ -61,8 +60,6 @@ foreach arg ($argv)
     set fsdb_dump_mda = `echo "$arg" | sed 's/-FSDB_DUMP_MDA=//'`
   else if ("$arg" =~ "-FSDB_FLUSH_CYCLES=*") then
     set fsdb_flush_cycles = `echo "$arg" | sed 's/-FSDB_FLUSH_CYCLES=//'`
-  else if ("$arg" =~ "-FSDB_PLI=*") then
-    set fsdb_pli = `echo "$arg" | sed 's/-FSDB_PLI=//'`
   endif
 end
 
@@ -94,54 +91,12 @@ else
 endif
 
 mkdir -p "$build_dir"
-set fsdb_opts = ()
 set fsdb_plusargs = ()
 if ("$fsdb_enable" == "1") then
-  if ("$fsdb_pli" == "auto") then
-    if ($?VERDI_HOME) then
-      foreach candidate ( \
-        "$VERDI_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli" \
-        "$VERDI_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli.so" \
-        "$VERDI_HOME/share/PLI/IUS/LINUX64/boot/debpli" \
-        "$VERDI_HOME/share/PLI/IUS/LINUX64/boot/debpli.so" )
-        if (-e "$candidate") then
-          set fsdb_pli = "$candidate"
-          break
-        endif
-      end
-    endif
-    if ("$fsdb_pli" == "auto" && $?NOVAS_HOME) then
-      foreach candidate ( \
-        "$NOVAS_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli" \
-        "$NOVAS_HOME/share/PLI/XCELIUM/LINUX64/boot/debpli.so" \
-        "$NOVAS_HOME/share/PLI/IUS/LINUX64/boot/debpli" \
-        "$NOVAS_HOME/share/PLI/IUS/LINUX64/boot/debpli.so" )
-        if (-e "$candidate") then
-          set fsdb_pli = "$candidate"
-          break
-        endif
-      end
-    endif
-  endif
-  if ("$fsdb_pli" == "auto" || "$fsdb_pli" == "") then
-    echo "ERROR: FSDB PLI was not found under VERDI_HOME or NOVAS_HOME."
-    echo "Set FSDB_PLI=/path/to/debpli or FSDB_PLI=builtin."
-    exit 2
-  endif
-  if ("$fsdb_pli" != "builtin") then
-    set fsdb_pli_spec = "$fsdb_pli"
-    if ("$fsdb_pli_spec" !~ "*:*") then
-      set fsdb_pli_spec = "${fsdb_pli_spec}:novas_pli_boot"
-    endif
-    set fsdb_opts = (-loadpli1 "$fsdb_pli_spec")
-    echo "FSDB runtime PLI: $fsdb_pli_spec"
-  else
-    echo "FSDB runtime PLI: site-integrated/builtin"
-  endif
   set fsdb_dir = `dirname "$fsdb_file"`
   mkdir -p "$fsdb_dir"
   set fsdb_plusargs = ( \
-    +fsdb_file="$fsdb_file" \
+    +fsdbfile="$fsdb_file" \
     +fsdb_dump_mda="$fsdb_dump_mda" \
     +fsdb_flush_cycles="$fsdb_flush_cycles" )
   echo "FSDB output: $fsdb_file"
@@ -154,7 +109,6 @@ exec xrun \
   -R \
   -snapshot "$snapshot" \
   -xmlibdirname "${build_dir}/xcelium.d" \
-  $fsdb_opts \
   -sv_lib "$sv_lib" \
   -log "${build_dir}/simulation.log" \
   +elf="$binary" \

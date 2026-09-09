@@ -937,6 +937,14 @@ read는 side effect가 없어 block 전체를 물리적으로 읽은 뒤 permiss
 추가되면 I-Fabric transaction 자체를 허용 구간별로 split해야 한다. 검증 근거는
 `verification/tests/pmp_fetch_boundary`와 `verification/tests/pmp_refetch`이다.
 
+성능 계약상 parcel 판정은 memory response/target-buffer fill의 기존 cycle 안에서
+8개 조합 port가 병렬 동작하며 pipeline stage, fetch handshake 또는 stall cycle을
+추가하지 않는다. 따라서 PMP fault가 없는 CoreMark의 architectural cycle/IPC는
+동일해야 한다. 다만 합성 관점에서는 단일 16-byte checker보다 PMP compare logic의
+면적·동적 전력과 response-to-fetch-queue timing 부담이 증가할 수 있으므로 Fmax 영향은
+합성/STA에서 별도로 확인한다. critical path가 되면 data와 8-bit permission vector를
+함께 register하는 response stage를 검토하되, instruction별 parcel fault 계약은 유지한다.
+
 ### 13.3 trap과 interrupt
 
 trap entry는 ROB commit 경계에서 다음 순서로 architectural state를 갱신한다.
@@ -2319,14 +2327,23 @@ orphan speculative response 생성을 방지한다.
 `rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,csr_name,mnemonic`을 추가한 20개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. `csr_name`은 CSR 주소의 architectural 이름을, `mnemonic`은 사람이 마지막 실행 명령을 빠르게 찾기 위한 보조 정보를 제공하며 정답 비교는 `instruction` raw bits를 기준으로 한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
 서버 파형 계약(2026-09-09): HTIF Xcelium top은 `RV_FSDB`가 compile define된
-경우에만 Verdi/Novas FSDB system task를 포함한다. `run_verilog_sub.sh`는 기본적으로
-FSDB를 켜고 compile/run 두 job에 동일 PLI spec을 전달한다. 출력 경로, MDA dump,
+경우에만 FSDB system task를 포함한다. `run_verilog_sub.sh`는 파형 viewer를 실행하거나
+PLI를 탐색/등록하지 않고 FSDB 생성만 요청한다. 기본 출력은 서버 `DUMP` 환경변수가
+있으면 `$DUMP/binary.fsdb`, 없으면 `sim/xcelium/out/binary.fsdb`다. `issim.scr`는
+simulation xrun에 `+fsdbfile=<path>`를 전달하고 TB가 이를 `$fsdbDumpfile()`에
+사용한다. FSDB system task 등록은 서버 Xcelium 환경이 소유한다. 출력 경로, MDA dump,
 주기적 flush cycle은 각각 `FSDB_FILE`, `FSDB_DUMP_MDA`,
 `FSDB_FLUSH_CYCLES`로 조정한다. 일반 simulator와 파형 없는 regression은
 `FSDB_ENABLE=0`으로 vendor task와 PLI 의존성을 완전히 제외한다. 기본 MDA dump는
 TIM 용량 때문에 끄고, core hang 분석 시 top hierarchy의 control/data signal을
-time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행법과 PLI 자동 탐색
-규칙은 `sim/xcelium/README.md`를 단일 운영 가이드로 사용한다.
+time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행법과 PLI 전달 규칙은
+`sim/xcelium/README.md`를 단일 운영 가이드로 사용한다.
+
+FSDB dump는 testbench 기능이므로 `mcycle`, `minstret`, CoreMark timed-region cycle과
+IPC를 바꾸지 않는다. 대신 모든 hierarchy 변화를 기록하므로 simulator wall-clock과
+disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`, hang 재현은
+`FSDB_ENABLE=1`을 기본 운영 규칙으로 사용한다. ELF AXI readback 역시 core wake 이전
+시간만 늘리므로 CoreMark 내부 `start_time()`~`stop_time()` 측정에는 포함되지 않는다.
 
 ## 19. Clock/reset/DFT 원칙
 
@@ -2462,3 +2479,4 @@ time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행�
 | v1.14.2 | 기본 CLINT base를 `0x0020_0000`에서 표준 `0x0200_0000`으로 이동. MSIP=`0x0200_0000`, MTIMECMP=`0x0200_4000/4004`, MTIME=`0x0200_BFF8/BFFC` 계약을 RTL package, DPI, Boot ROM, C/CoreMark startup, privilege smoke, configurator, 그림과 검증 artifact에 일괄 반영. block 12종, SoC boot 및 GCC C/FP/LSU ELF 회귀 통과 |
 | v1.14.3 | DPI ELF loader에 기본-ON Host AXI full readback을 추가. 최종 PT_LOAD file byte와 BSS zero-fill을 exact-compare하고 overlap은 last-segment-wins로 판정하며, 전체 PASS 전에는 boot mailbox와 CLINT MSIP를 쓰지 않는다. Xcelium `ELF_VERIFY` 전달·진행률·주소별 mismatch 진단을 추가 |
 | v1.14.4 | IFU의 16-byte memory transport와 architectural PMP 접근 크기를 분리. fetch fill마다 8개의 2-byte parcel을 현재 privilege/PMP로 병렬 판정하고 byte fault metadata로 보존하여 C/32-bit/cross-block instruction이 실제 사용하는 parcel만 검사한다. TOR top `0x800008fc` 경계 정상 retire, locked PMP refetch fault, unit/integration/RV32·RV64 elaboration 회귀를 추가 |
+| v1.14.5 | Xcelium runner의 FSDB PLI 설치경로 자동 탐색과 `-loadpli1` 주입을 제거. 서버 환경이 FSDB system task 등록을 소유하고, runner는 `$DUMP/binary.fsdb` 경로를 `+fsdbfile` plusarg로 HTIF TB에 전달해 dump 생성만 수행하도록 단순화 |

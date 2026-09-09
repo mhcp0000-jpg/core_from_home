@@ -41,16 +41,16 @@ module rv_soc_htif_dpi_tb;
 
 `ifdef RV_FSDB
   // FSDB is a server-debug feature.  RV_FSDB is defined only when the Xcelium
-  // scripts have loaded the Verdi/Novas dumper PLI, so ordinary simulators do
-  // not need to recognize any of the vendor system tasks below.
+  // run enables waveform dumping, so ordinary simulators do not need to
+  // recognize any of the vendor system tasks below.
   initial begin : p_fsdb_dump
     string fsdb_file;
     integer fsdb_dump_mda;
     integer fsdb_flush_cycles;
-    fsdb_file = "waves.fsdb";
+    fsdb_file = "binary.fsdb";
     fsdb_dump_mda = 0;
     fsdb_flush_cycles = 100_000;
-    void'($value$plusargs("fsdb_file=%s", fsdb_file));
+    void'($value$plusargs("fsdbfile=%s", fsdb_file));
     void'($value$plusargs("fsdb_dump_mda=%d", fsdb_dump_mda));
     void'($value$plusargs("fsdb_flush_cycles=%d", fsdb_flush_cycles));
     $display("[FSDB][%0t] opening %s (mda=%0d flush_cycles=%0d)",

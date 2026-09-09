@@ -19,12 +19,10 @@ ELF_VERIFY="${ELF_VERIFY:-1}"
 RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
 TRACE_FILE="${TRACE_FILE:-${BUILD_DIR}/commit_trace.csv}"
 FSDB_ENABLE="${FSDB_ENABLE:-1}"
-FSDB_FILE="${FSDB_FILE:-${BUILD_DIR}/waves.fsdb}"
+DUMP_DIR="${DUMP:-${BUILD_DIR}}"
+FSDB_FILE="${FSDB_FILE:-${DUMP_DIR}/binary.fsdb}"
 FSDB_DUMP_MDA="${FSDB_DUMP_MDA:-0}"
 FSDB_FLUSH_CYCLES="${FSDB_FLUSH_CYCLES:-100000}"
-# auto: isrun/issim search VERDI_HOME and NOVAS_HOME after sourcing the EDA env.
-# builtin: define the dump calls without adding -loadpli1 (site-integrated PLI).
-FSDB_PLI="${FSDB_PLI:-auto}"
 CXX_BIN="${CXX:-g++}"
 COMPILE_SCRIPT="${COMPILE_SCRIPT:-${XCELIUM_DIR}/isrun.scr}"
 SIM_SCRIPT="${SIM_SCRIPT:-${XCELIUM_DIR}/issim.scr}"
@@ -65,8 +63,8 @@ fi
 mkdir -p "${BUILD_DIR}"
 if [[ "${FSDB_ENABLE}" == "1" ]]; then
   mkdir -p "$(dirname -- "${FSDB_FILE}")"
-  printf 'FSDB enabled: file=%s mda=%s flush_cycles=%s pli=%s\n' \
-    "${FSDB_FILE}" "${FSDB_DUMP_MDA}" "${FSDB_FLUSH_CYCLES}" "${FSDB_PLI}"
+  printf 'FSDB enabled: +fsdbfile=%s mda=%s flush_cycles=%s\n' \
+    "${FSDB_FILE}" "${FSDB_DUMP_MDA}" "${FSDB_FLUSH_CYCLES}"
 else
   printf 'FSDB disabled (FSDB_ENABLE=0)\n'
 fi
@@ -82,8 +80,7 @@ cd "${CORE_ROOT}"
 printf 'Step 1: Compiling/elaborating RTL...\n'
 "${VERILOG_SUB}" -Is -compile "${COMPILE_SCRIPT}" \
   -RTL_ASSERTIONS="${RTL_ASSERTIONS}" \
-  -FSDB_ENABLE="${FSDB_ENABLE}" \
-  -FSDB_PLI="${FSDB_PLI}"
+  -FSDB_ENABLE="${FSDB_ENABLE}"
 
 printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
 "${VERILOG_SUB}" -Is -short "${SIM_SCRIPT}" \
@@ -97,5 +94,4 @@ printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
   -FSDB_FILE="${FSDB_FILE}" \
   -FSDB_DUMP_MDA="${FSDB_DUMP_MDA}" \
   -FSDB_FLUSH_CYCLES="${FSDB_FLUSH_CYCLES}" \
-  -FSDB_PLI="${FSDB_PLI}" \
   "$@"

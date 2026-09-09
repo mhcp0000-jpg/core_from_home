@@ -5,27 +5,17 @@
 `run_verilog_sub.sh`는 기본적으로 FSDB를 활성화하며 결과는 다음 위치에 생성된다.
 
 ```text
-sim/xcelium/out/waves.fsdb
+sim/xcelium/out/binary.fsdb
 ```
 
-기본 실행은 Xcelium 환경을 읽은 뒤 `VERDI_HOME`과 `NOVAS_HOME` 아래의 Xcelium/IUS
-`debpli`를 자동 탐색한다. 서버의 위치가 다르면 library나 entry-point 포함 spec을
-직접 지정한다.
+기본 파일명은 실제로 `sim/xcelium/out/binary.fsdb`이며, 서버가 `DUMP` 환경변수를
+정의하면 `$DUMP/binary.fsdb`가 된다. `FSDB_FILE`로 명시적인 위치를 덮어쓸 수 있다.
+runner는 파형 viewer를 실행하지 않고 PLI를 탐색하거나 `-loadpli1`으로 등록하지도
+않는다. 서버 Xcelium 환경이 FSDB system task 등록을 소유한다.
 
 ```bash
-FSDB_PLI=/tools/verdi/share/PLI/XCELIUM/LINUX64/boot/debpli \
-  BINARY=/server/path/test.elf ./sim/xcelium/run_verilog_sub.sh
-
-# site 설정이 FSDB PLI를 Xcelium에 이미 등록한 경우
-FSDB_PLI=builtin BINARY=/server/path/test.elf \
+DUMP=/server/scratch/dump BINARY=/server/path/test.elf \
   ./sim/xcelium/run_verilog_sub.sh
-```
-
-실제 PLI 경로를 찾는 예시는 다음과 같다.
-
-```bash
-find "${VERDI_HOME:-${NOVAS_HOME:-/tools/verdi}}/share/PLI" \
-  -path '*/LINUX64/boot/debpli*' -print
 ```
 
 실행 로그에 `[FSDB] opening ...`이 나타나야 dump가 시작된 것이다. 코어가
@@ -54,15 +44,19 @@ FSDB_ENABLE=0 BINARY=/server/path/test.elf \
   ./sim/xcelium/run_verilog_sub.sh
 ```
 
-FSDB 활성화 시 compile job과 simulation job 양쪽에 같은 PLI 설정을 전달해야 한다.
-직접 `verilog_sub`를 호출한다면 `isrun.scr`와 `issim.scr` 모두에
-`-FSDB_ENABLE=1 -FSDB_PLI=...`를 넘기고, simulation job에는 `-FSDB_FILE=...`도
-넘긴다. 저장소 runner는 이 전달을 자동으로 처리한다.
+직접 `verilog_sub`를 호출한다면 compile job에 `-FSDB_ENABLE=1`, simulation job에
+`-FSDB_ENABLE=1 -FSDB_FILE=$DUMP/binary.fsdb`를 넘긴다. `issim.scr`가 실제 xrun에
+`+fsdbfile=$DUMP/binary.fsdb`를 전달하고 TB가 이를 `$fsdbDumpfile()`에 사용한다.
+저장소 runner는 이 전달을 자동으로 처리한다.
 
 현재 Windows 로컬 검증에서는 `RV_FSDB`가 꺼진 Verilator SoC 전체 build/run이
-PASS했다. 실제 FSDB PLI load와 파일 생성은 Xcelium/Verdi가 설치된 Linux 서버에서
-확인해야 한다. 실패하면 `compile.log`의 `FSDB compile PLI`, `simulation.log`의
-`[FSDB] opening` 및 runner가 출력한 `FSDB output` 경로를 먼저 확인한다.
+PASS했다. 실제 FSDB system task와 파일 생성은 해당 기능이 구성된 Linux 서버에서
+확인해야 한다. 실패하면 `simulation.log`의 `[FSDB] opening` 및 runner가 출력한
+`FSDB output` 경로를 먼저 확인한다.
+
+FSDB는 TB dump이므로 코어의 `mcycle/minstret`나 CoreMark IPC를 바꾸지는 않지만,
+simulation wall-clock과 파일 사용량은 크게 늘 수 있다. CoreMark 성능 측정은
+`FSDB_ENABLE=0`, 멈춤 원인 분석은 `FSDB_ENABLE=1` 사용을 권장한다.
 
 ## Commit 로그의 GPR/CSR 구분
 

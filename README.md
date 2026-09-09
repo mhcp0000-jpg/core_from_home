@@ -17,9 +17,10 @@ chmod +x sim/xcelium/*.sh
 ./sim/xcelium/run_verilog_sub.sh
 ```
 
-이 runner는 기본적으로 `sim/xcelium/out/waves.fsdb`도 생성합니다. PLI를 자동으로
-찾지 못하면 `FSDB_PLI=/path/to/debpli`를 지정하고, 파형이 필요 없는 실행은
-`FSDB_ENABLE=0`으로 끕니다. ITIM/DTIM memory array dump는 파일 크기 때문에 기본
+이 runner는 파형 viewer나 PLI 탐색/등록을 수행하지 않고
+`${DUMP:-sim/xcelium/out}/binary.fsdb` 생성만 요청합니다. simulation xrun에는
+`+fsdbfile=...`을 전달하며 서버 환경이 FSDB system task 등록을 소유합니다.
+파형이 필요 없는 실행은 `FSDB_ENABLE=0`으로 끕니다. ITIM/DTIM memory array dump는 파일 크기 때문에 기본
 제외하며 `FSDB_DUMP_MDA=1`로 별도 활성화합니다.
 
 기본 Xcelium 실행은 `SYNTHESIS`를 define하여 simulation-only assertion을 제외합니다.
