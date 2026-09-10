@@ -30,11 +30,14 @@ endif
 
 set rtl_assertions = "0"
 set fsdb_enable = "1"
+set fsdb_pli = "auto"
 foreach arg ($argv)
   if ("$arg" =~ "-RTL_ASSERTIONS=*") then
     set rtl_assertions = `echo "$arg" | sed 's/-RTL_ASSERTIONS=//'`
   else if ("$arg" =~ "-FSDB_ENABLE=*") then
     set fsdb_enable = `echo "$arg" | sed 's/-FSDB_ENABLE=//'`
+  else if ("$arg" =~ "-FSDB_PLI=*") then
+    set fsdb_pli = `echo "$arg" | sed 's/-FSDB_PLI=//'`
   endif
 end
 
@@ -57,12 +60,34 @@ endif
 
 mkdir -p "$build_dir"
 set define_opts = ()
+set loadpli_opts = ()
 if ("$rtl_assertions" != "1") then
   set define_opts = (-define SYNTHESIS)
 endif
 if ("$fsdb_enable" == "1") then
   set define_opts = ($define_opts -define RV_FSDB)
-  echo "FSDB dump calls enabled; server environment owns dumper registration"
+  if ("$fsdb_pli" == "builtin") then
+    set define_opts = ($define_opts -define FSDB_PLI_BUILTIN)
+    echo "FSDB dump calls enabled; using builtin PLI"
+  else
+    # The Novas PLI registers the $fsdb* system tasks.  It must be loaded
+    # during elaboration; the snapshot carries the registration into the
+    # simulation (xrun -R) step, which only needs the Novas library path.
+    if ($?NOVAS_NC_ENV) then
+      set novas_nc_env = "$NOVAS_NC_ENV"
+    else
+      set novas_nc_env = "/appl/SOL/NOVAS/Verdi3-201906sp2-4/novas_nc_64bit_linux.env"
+    endif
+    if (-f "$novas_nc_env") then
+      source "$novas_nc_env"
+      set loadpli_opts = (-loadpli1 debpli:novas_pli_boot -pli_export)
+      echo "FSDB dump calls enabled; loading Novas PLI via $novas_nc_env"
+    else
+      echo "ERROR: Novas PLI environment file not found: $novas_nc_env"
+      echo "Set NOVAS_NC_ENV to the server's novas_nc_*_linux.env file, or pass -FSDB_PLI=builtin."
+      exit 2
+    endif
+  endif
 endif
 
 cd "$CORE_ROOT"
@@ -74,6 +99,7 @@ exec xrun \
   -access +rwc \
   +xmtimescale+1ns/1ps \
   $define_opts \
+  $loadpli_opts \
   -f "${XCELIUM_DIR}/rtl.f" \
   -f "${XCELIUM_DIR}/htif_tb.f" \
   -top rv_soc_htif_dpi_tb \
