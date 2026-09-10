@@ -2434,6 +2434,37 @@ funct3 operation-select는 유지한다.
 구분한다. 이 TB는 순차 request/result 검사이므로 backpressure/flush 및 core-level
 FCSR 누적의 모든 조합을 증명하지 않는다. 기존 6,470개 fast fixture는 그대로 유지한다.
 
+#### CSR corner regression (2026-09-10)
+
+`rv_csr_file_tb`는 기존 trap/privilege 검사에 다음 directed checks를 추가한다.
+
+- CSRRS/CSRRC old-value 반환, rs1=x0 쓰기 억제, CSRRW x0의 zero write.
+  값이 0인 non-x0 source는 여전히 write intent이므로 read-only CSR에서 illegal이다.
+- execute에서 캡처한 주소/데이터가 live 입력 변경에 영향받지 않는지,
+  flush 후 늦은 commit pulse가 취소된 CSR write를 되살리지 않는지 검사한다.
+- mtvec reserved mode→direct, mepc bit0 제거와 bit1 보존, mie/mcounteren mask,
+  unsupported MPP→U, FS=Dirty의 SD 표시, fcsr/frm/fflags alias를 검사한다.
+- fflags 초기값 32개에 accrue OR 후 frm write가 flag를 보존하는지 검사한다.
+- dual-retire minstret carry와 low/high alias, time low/high read,
+  연속 동기 trap의 mepc/mcause/mtval 덮어쓰기와 MPIE 캡처를 검사한다.
+- MRET→U의 MPRV clear, U-mode MRET illegal, M-mode WFI의 local enable wake와
+  global MIE delivery 구분, U-mode TW 및 machine interrupt eligibility를 검사한다.
+- PMP reserved bit read-zero, R=0/W=1 WARL 처리, locked TOR entry와 이전
+  pmpaddr의 write 보호를 검사한다.
+
+이 회귀에서 `pmpcfg0=0x7f` write가 reserved `[6:5]`를 보존하여 `0x7f`로
+readback되는 오류를 재현했다. 기본 PMP의 해당 비트를 commit 시 0으로 정규화하여
+readback이 `0x1f`가 되도록 수정했다. 다른 entry의 L/A/R/W/X 필드와 lock 동작은
+유지한다. 기준은 [RISC-V Machine-Level ISA PMP](https://docs.riscv.org/reference/isa/v20260120/priv/machine.html)다.
+
+실행: `powershell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1`.
+CSR 포함 unit 18종과 Verilator backend integration은 PASS다.
+Icarus runner는 SVA 대신 TB의 명시적 check를 실행한다.
+FP flag/CSR의 같은 cycle commit은 ROB serializing 규칙으로 분리되므로 임의로
+동시 입력을 만들어 ISA order를 추정하지 않는다. 이 검사는 FP instruction의
+FS=Off 접근 제한/FS dirty 추적 전체 경로나 모든 core-level CSR instruction
+조합의 sign-off를 대신하지 않는다.
+
 ### 18.5 실행 결과와 commit 비교 계약
 
 | Gate | 실행 산출물 | 2026-09-10 결과 |

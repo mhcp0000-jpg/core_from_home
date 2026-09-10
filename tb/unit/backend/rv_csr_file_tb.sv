@@ -26,6 +26,7 @@ module rv_csr_file_tb;
   logic [4:0] fflags;
   logic [7:0][7:0] pmpcfg;
   logic [7:0][29:0] pmpaddr;
+  logic flush_all;
 
   always #5 clk = ~clk;
 
@@ -53,7 +54,7 @@ module rv_csr_file_tb;
     .interrupt_pending_o(interrupt_pending),
     .interrupt_cause_o(interrupt_cause), .retire_count_i(retire_count),
     .fflags_accrue_valid_i(fflags_accrue_valid),
-    .fflags_accrue_i(fflags_accrue), .flush_all_i(1'b0),
+    .fflags_accrue_i(fflags_accrue), .flush_all_i(flush_all),
     .privilege_o(privilege),
     .mstatus_o(mstatus), .mtvec_o(mtvec), .mepc_o(mepc),
     .frm_o(frm), .fflags_o(fflags), .pmpcfg_o(pmpcfg),
@@ -84,6 +85,7 @@ module rv_csr_file_tb;
     retire_count = '0;
     fflags_accrue_valid = 1'b0;
     fflags_accrue = '0;
+    flush_all = 1'b0;
   endtask
 
   task automatic write_csr(input logic [11:0] address,
@@ -126,6 +128,46 @@ module rv_csr_file_tb;
     csr_valid = 1'b0;
     csr_execute = 1'b0;
     csr_cmd = CSR_CMD_NONE;
+  endtask
+
+  task automatic expect_csr(input logic [11:0] address,
+                            input logic [31:0] expected);
+    logic [31:0] actual;
+    logic illegal;
+    read_csr(address, actual, illegal);
+    if (illegal || actual !== expected)
+      $fatal(1, "CSR %h got=%h expected=%h illegal=%b",
+             address, actual, expected, illegal);
+  endtask
+
+  task automatic check_rmw(input csr_cmd_e command,
+                           input logic zero_source,
+                           input logic [31:0] operand,
+                           input logic [31:0] before_value,
+                           input logic [31:0] after_value);
+    @(negedge clk);
+    csr_valid = 1;
+    csr_execute = 1;
+    csr_addr = 12'h340;
+    csr_cmd = command;
+    csr_rs1_zero = zero_source;
+    csr_operand = operand;
+    #1;
+    if (csr_illegal || csr_rdata !== before_value ||
+        csr_write_effect !== ((command == CSR_CMD_WRITE) || !zero_source))
+      $fatal(1, "CSR RMW old-value/write-intent mismatch");
+    @(posedge clk);
+    @(negedge clk);
+    csr_execute = 0;
+    // Live request inputs must not replace the captured transaction.
+    csr_addr = 12'h343;
+    csr_operand = 32'hbad0_bad0;
+    csr_commit = 1;
+    @(posedge clk);
+    @(negedge clk);
+    csr_valid = 0;
+    csr_commit = 0;
+    expect_csr(12'h340, after_value);
   endtask
 
   initial begin : p_test
@@ -265,6 +307,171 @@ module rv_csr_file_tb;
     fflags_accrue_valid = 1'b0;
     if ((frm != 3) || (fflags != 5'b10101))
       $fatal(1, "FCSR write/accrue semantics are wrong");
+
+    // Return from U to M before machine-CSR corner checks.
+    trap_valid = 1;
+    trap_is_interrupt = 0;
+    trap_pc = 32'h8000_0102;
+    trap_cause = 8;
+    @(posedge clk);
+    @(negedge clk);
+    trap_valid = 0;
+
+    write_csr(12'h340, 32'h55aa_00ff);
+    check_rmw(CSR_CMD_SET, 0, 32'h0000_ff00, 32'h55aa_00ff, 32'h55aa_ffff);
+    check_rmw(CSR_CMD_CLEAR, 0, 32'h00ff_00ff, 32'h55aa_ffff, 32'h5500_ff00);
+    check_rmw(CSR_CMD_SET, 1, 0, 32'h5500_ff00, 32'h5500_ff00);
+    check_rmw(CSR_CMD_CLEAR, 1, 0, 32'h5500_ff00, 32'h5500_ff00);
+    check_rmw(CSR_CMD_WRITE, 1, 0, 32'h5500_ff00, 0);
+    $display("CSR corners: RMW old-value, x0 suppression, captured payload PASS");
+
+    // A non-x0 register holding zero still expresses write intent on CSRRS/C.
+    for (int cmd = 1; cmd <= 3; cmd++) begin
+      for (int zero_src = 0; zero_src < 2; zero_src++) begin
+        csr_valid = 1;
+        csr_addr = 12'hf14;
+        csr_cmd = csr_cmd_e'(cmd);
+        csr_operand = 0;
+        csr_rs1_zero = (zero_src != 0);
+        #1;
+        if (csr_rdata !== 3 || csr_illegal !==
+            ((csr_cmd == CSR_CMD_WRITE) || !csr_rs1_zero) || csr_write_effect)
+          $fatal(1, "Read-only CSR zero-source corner failed");
+      end
+    end
+    csr_valid = 0;
+    read_csr(12'h777, value, illegal);
+    if (!illegal) $fatal(1, "Unknown CSR accepted");
+
+    // Captured speculative transaction is canceled before a delayed commit.
+    @(negedge clk);
+    csr_valid = 1; csr_execute = 1; csr_addr = 12'h340;
+    csr_cmd = CSR_CMD_WRITE; csr_operand = 32'hfeed_face;
+    @(posedge clk);
+    @(negedge clk);
+    csr_valid = 0; csr_execute = 0; flush_all = 1;
+    @(posedge clk);
+    @(negedge clk);
+    flush_all = 0; csr_commit = 1;
+    @(posedge clk);
+    @(negedge clk);
+    csr_commit = 0;
+    expect_csr(12'h340, 0);
+    $display("CSR corners: read-only access, unknown address, flush cancellation PASS");
+
+    write_csr(12'h305, 32'h8000_0203);
+    expect_csr(12'h305, 32'h8000_0200);
+    write_csr(12'h341, 32'h8000_0103);
+    expect_csr(12'h341, 32'h8000_0102);
+    write_csr(12'h304, 32'hffff_ffff);
+    expect_csr(12'h304, 32'h888);
+    write_csr(12'h306, 32'hffff_ffff);
+    expect_csr(12'h306, 7);
+    write_csr(12'h300, 32'h0000_0800); // unsupported MPP=S -> U
+    if (mstatus[12:11] != PRIV_U) $fatal(1, "MPP WARL failed");
+    write_csr(12'h300, 32'h0000_6000);
+    expect_csr(12'h300, 32'h8000_6000); // SD reflects FS=Dirty
+    write_csr(12'h003, 32'hffff_ffff);
+    expect_csr(12'h003, 32'hff);
+    write_csr(12'h001, 0);
+    expect_csr(12'h003, 32'he0);
+    write_csr(12'h002, 2);
+    expect_csr(12'h003, 32'h40);
+    // Clear and accrue all flag combinations; frm writes must preserve flags.
+    for (int bits = 0; bits < 32; bits++) begin
+      write_csr(12'h001, bits);
+      fflags_accrue = 5'h15;
+      fflags_accrue_valid = 1;
+      @(posedge clk);
+      @(negedge clk);
+      fflags_accrue_valid = 0;
+      expect_csr(12'h001, bits | 32'h15);
+      write_csr(12'h002, 2);
+      expect_csr(12'h003, 32'h40 | bits | 32'h15);
+    end
+    $display("CSR corners: WARL masks, mepc halfword, FCSR aliases/SD PASS");
+
+    // Instret counts both retire lanes. Test carry using architectural writes
+    // to initialize the counter, without hierarchical state forcing.
+    write_csr(12'hb82, 32'h1234);
+    write_csr(12'hb02, 32'hffff_fffe);
+    retire_count = 2;
+    @(posedge clk);
+    @(negedge clk);
+    retire_count = 0;
+    expect_csr(12'hb02, 0);
+    expect_csr(12'hb82, 32'h1235);
+    expect_csr(12'hc02, 0);
+    expect_csr(12'hc82, 32'h1235);
+    expect_csr(12'hc01, 32'h89ab_cdef);
+    expect_csr(12'hc81, 32'h0123_4567);
+
+    // Nested synchronous exceptions overwrite the one architectural trap
+    // context; software must save it when nesting is wanted.
+    write_csr(12'h300, 8);
+    trap_valid = 1; trap_pc = 32'h8000_0222; trap_cause = 7;
+    trap_tval = 32'hdead_0000;
+    @(posedge clk);
+    @(negedge clk);
+    if (mstatus[3] || !mstatus[7] || mstatus[12:11] != PRIV_M)
+      $fatal(1, "First trap status push failed");
+    trap_pc = 32'h8000_0332; trap_cause = 5; trap_tval = 32'hbad0_0000;
+    @(posedge clk);
+    @(negedge clk);
+    trap_valid = 0;
+    expect_csr(12'h341, 32'h8000_0332);
+    expect_csr(12'h342, 5);
+    expect_csr(12'h343, 32'hbad0_0000);
+    if (mstatus[7]) $fatal(1, "Nested trap MPIE should capture cleared MIE");
+    write_csr(12'h300, 32'h0002_0080); // MPRV, MPIE, MPP=U
+    mret_valid = 1; mret_commit = 1;
+    @(posedge clk);
+    @(negedge clk);
+    mret_valid = 0; mret_commit = 0;
+    if (privilege != PRIV_U || mstatus[17] || !mstatus[3] || !mstatus[7])
+      $fatal(1, "MRET privilege/MPRV/status restoration failed");
+    mret_valid = 1;
+    #1;
+    if (!mret_illegal) $fatal(1, "U-mode MRET accepted");
+    mret_valid = 0;
+    trap_valid = 1;
+    @(posedge clk);
+    @(negedge clk);
+    trap_valid = 0;
+    $display("CSR corners: counters, nested trap, MRET/MPRV PASS");
+
+    // Baseline PMP has no extension using bits 6:5: they read as zero.
+    write_csr(12'h3a0, 32'h0000_007f);
+    expect_csr(12'h3a0, 32'h0000_001f);
+    write_csr(12'h3a0, 32'h0000_000a); // reserved R=0,W=1 -> no permission
+    expect_csr(12'h3a0, 8);
+    write_csr(12'h3b0, 32'h111);
+    write_csr(12'h3b1, 32'h222);
+    write_csr(12'h3a0, 32'h0000_8900); // locked TOR entry1 locks addr0 too
+    write_csr(12'h3b0, 32'h333);
+    write_csr(12'h3b1, 32'h444);
+    write_csr(12'h3a0, 0);
+    expect_csr(12'h3b0, 32'h111);
+    expect_csr(12'h3b1, 32'h222);
+    expect_csr(12'h3a0, 32'h8900);
+    $display("CSR corners: PMP reserved bits, WARL, TOR neighbor lock PASS");
+
+    // MIE=0 suppresses M-mode delivery, but locally enabled sources wake WFI.
+    write_csr(12'h300, 32'h0020_0000); // TW=1, MIE=0, MPP=U
+    write_csr(12'h304, 8);
+    irq_software = 1; wfi_valid = 1;
+    #1;
+    if (interrupt_pending || !wfi_wake || wfi_illegal)
+      $fatal(1, "M-mode WFI local/global interrupt gates failed");
+    mret_valid = 1; mret_commit = 1;
+    @(posedge clk);
+    @(negedge clk);
+    mret_valid = 0; mret_commit = 0;
+    #1;
+    if (!interrupt_pending || !wfi_illegal)
+      $fatal(1, "U-mode TW or machine interrupt global eligibility failed");
+    wfi_valid = 0; irq_software = 0;
+    $display("CSR corners: WFI/TW and U-mode interrupt eligibility PASS");
 
     $display("rv_csr_file_tb PASS");
     $finish;

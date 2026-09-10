@@ -409,6 +409,9 @@ module rv_csr_file #(
                   if (XLEN == 64)
                     entry_index = (cfg_csr / 2) * 8 + byte_index;
                   cfg_value = csr_pending_wdata_q[byte_index*8 +: 8];
+                  // Baseline PMP reserves bits 6:5 as read-only zero.
+                  // No optional PMP extension consumes them in this core.
+                  cfg_value[6:5] = 2'b00;
                   if ((entry_index < PMP_ENTRIES) &&
                       !pmpcfg_q[entry_index][7]) begin
                     // Reserved R=0,W=1 is coerced to no permissions.
