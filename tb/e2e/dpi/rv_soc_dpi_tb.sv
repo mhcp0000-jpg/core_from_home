@@ -17,6 +17,9 @@ module rv_soc_dpi_tb;
   logic [1:0][5:0] trace_cause;
   logic [1:0][31:0] trace_rd_wdata;
   logic [1:0][31:0] trace_tval;
+  logic [1:0] trace_mem_valid;
+  logic [1:0][31:0] trace_mem_addr;
+  logic [1:0][63:0] trace_mem_wdata;
   integer timeout_cycles;
   logic exit_pending;
   logic [3:0] exit_delay;
@@ -51,12 +54,39 @@ module rv_soc_dpi_tb;
     .trace_rd_fp_i(trace_rd_fp), .trace_rd_wdata_i(trace_rd_wdata),
     .trace_trap_i(trace_trap), .trace_cause_i(trace_cause),
     .trace_tval_i(trace_tval),
+    .trace_mem_valid_i(trace_mem_valid),
+    .trace_mem_addr_i(trace_mem_addr),
+    .trace_mem_wdata_i(trace_mem_wdata),
     .csr_commit_valid_i(u_dut.u_core.u_backend.csr_commit &&
                         u_dut.u_core.u_backend.u_csr_file.csr_pending_q),
     .csr_commit_write_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_write_q),
     .csr_commit_addr_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_addr_q),
     .csr_commit_wdata_i(u_dut.u_core.u_backend.u_csr_file.csr_pending_wdata_q)
   );
+
+  always_comb begin : p_retire_memory_trace
+    trace_mem_valid = '0;
+    trace_mem_addr = '0;
+    trace_mem_wdata = '0;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      if (trace_valid[lane] &&
+          u_dut.u_core.u_backend.retire_is_load[lane]) begin
+        trace_mem_valid[lane] = 1'b1;
+        trace_mem_addr[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_q[
+            u_dut.u_core.u_backend.retire_lq_index[lane]];
+      end else if (trace_valid[lane] &&
+                   u_dut.u_core.u_backend.retire_is_store[lane]) begin
+        trace_mem_valid[lane] = 1'b1;
+        trace_mem_addr[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_address_q[
+            u_dut.u_core.u_backend.retire_sq_index[lane]];
+        trace_mem_wdata[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_data_q[
+            u_dut.u_core.u_backend.retire_sq_index[lane]];
+      end
+    end
+  end
 
   rv_host_dpi #(
     .XLEN(32), .ADDR_WIDTH(SOC_ADDR_WIDTH), .DATA_WIDTH(SOC_DATA_WIDTH),

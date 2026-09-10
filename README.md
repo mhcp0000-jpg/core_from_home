@@ -24,6 +24,10 @@ chmod +x sim/xcelium/*.sh
 simulation plusarg 경로에 파형을 기록합니다. 파형이 필요 없는 실행은
 `FSDB_ENABLE=0`으로 끕니다.
 
+동일 실행에서 `sim/xcelium/out/trace_log.out`은 서버의 Spike 비교용 2-line commit
+형식으로 생성됩니다. 기존 상세 CSV `commit_trace.csv`도 함께 유지됩니다. 비교 로그
+경로는 `SPIKE_TRACE_FILE=/path/name.log`로 지정할 수 있습니다.
+
 기본 Xcelium 실행은 `SYNTHESIS`를 define하여 simulation-only assertion을 제외합니다.
 assertion까지 검사할 때는 `RTL_ASSERTIONS=1`로 실행합니다.
 

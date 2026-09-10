@@ -96,6 +96,11 @@ SOURCES = (
     "tb/unit/backend/rv_csr_file_tb.sv",
     "tb/unit/backend/rv_pmp_tb.sv",
     "tb/integration/backend/rv_backend_int_tb.sv",
+    "tb/e2e/dpi/rv_host_dpi.sv",
+    "tb/e2e/dpi/rv_commit_trace_logger.sv",
+    "tb/e2e/dpi/rv_perf_profiler.sv",
+    "tb/e2e/dpi/rv_soc_dpi_tb.sv",
+    "tb/e2e/dpi/rv_soc_htif_dpi_tb.sv",
 )
 
 
@@ -157,7 +162,7 @@ def main() -> int:
         "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb, "
         "decode2_tb, divider_tb, fetch_queue_tb, fetch_target_buffer_tb, lsu_pipe_tb, store_buffer_tb, "
         "lsq_tb, writeback_arbiter_tb, branch_recovery_tb, branch_predictor_tb, result_buffer_tb, "
-        "csr_file_tb, pmp_tb, plic_tb, clint_tb, backend_int_tb"
+        "csr_file_tb, pmp_tb, plic_tb, clint_tb, backend_int_tb, dpi_e2e_tbs"
     )
     return 0
 

@@ -31,6 +31,9 @@ module rv_soc_htif_dpi_tb;
   logic [1:0] trace_trap;
   logic [1:0][5:0] trace_cause;
   logic [1:0][31:0] trace_tval;
+  logic [1:0] trace_mem_valid;
+  logic [1:0][31:0] trace_mem_addr;
+  logic [1:0][63:0] trace_mem_wdata;
   logic commit_last_valid;
   logic [63:0] commit_retire_order;
   logic [63:0] commit_cycle;
@@ -126,6 +129,9 @@ module rv_soc_htif_dpi_tb;
     .trace_trap_i          (trace_trap),
     .trace_cause_i         (trace_cause),
     .trace_tval_i          (trace_tval),
+    .trace_mem_valid_i     (trace_mem_valid),
+    .trace_mem_addr_i      (trace_mem_addr),
+    .trace_mem_wdata_i     (trace_mem_wdata),
     .csr_commit_valid_i    (u_dut.u_core.u_backend.csr_commit &&
                             u_dut.u_core.u_backend.u_csr_file.csr_pending_q),
     .csr_commit_write_i    (u_dut.u_core.u_backend.u_csr_file.csr_pending_write_q),
@@ -138,6 +144,33 @@ module rv_soc_htif_dpi_tb;
     .last_commit_pc_o      (commit_last_pc),
     .last_commit_instr_o   (commit_last_instr)
   );
+
+  // Capture effective addresses and aligned store beats from the LSQ on the
+  // exact retire edge.  The LSQ releases these entries with nonblocking
+  // assignments on that same edge, so the logger observes the final state.
+  always_comb begin : p_retire_memory_trace
+    trace_mem_valid = '0;
+    trace_mem_addr = '0;
+    trace_mem_wdata = '0;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      if (trace_valid[lane] &&
+          u_dut.u_core.u_backend.retire_is_load[lane]) begin
+        trace_mem_valid[lane] = 1'b1;
+        trace_mem_addr[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_q[
+            u_dut.u_core.u_backend.retire_lq_index[lane]];
+      end else if (trace_valid[lane] &&
+                   u_dut.u_core.u_backend.retire_is_store[lane]) begin
+        trace_mem_valid[lane] = 1'b1;
+        trace_mem_addr[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_address_q[
+            u_dut.u_core.u_backend.retire_sq_index[lane]];
+        trace_mem_wdata[lane] =
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_data_q[
+            u_dut.u_core.u_backend.retire_sq_index[lane]];
+      end
+    end
+  end
 
   // Server-side fetch-fault discriminator.  A commit trace reports architectural
   // cause=1 for both a PMP rejection and an instruction-fabric error; these

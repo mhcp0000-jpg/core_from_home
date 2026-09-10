@@ -13,6 +13,12 @@ module rv_commit_trace_logger #(
   input logic [1:0]                   trace_trap_i,
   input logic [1:0][5:0]              trace_cause_i,
   input logic [1:0][XLEN-1:0]         trace_tval_i,
+  // Retire-time LSQ state used only by the Spike-compatible text trace.
+  // Store data is the 64-bit, byte-lane-aligned LSQ beat; the logger shifts
+  // it back to the architectural rs2 value before printing.
+  input logic [1:0]                   trace_mem_valid_i,
+  input logic [1:0][XLEN-1:0]         trace_mem_addr_i,
+  input logic [1:0][63:0]             trace_mem_wdata_i,
   // CSR instructions retire only in lane 0. These inputs describe the saved
   // evaluation transaction at its commit edge, never the current decode.
   input logic                        csr_commit_valid_i,
@@ -28,7 +34,9 @@ module rv_commit_trace_logger #(
   );
 
   integer trace_fd;
+  integer spike_trace_fd;
   string trace_path;
+  string spike_trace_path;
   longint unsigned retire_order_q;
   longint unsigned cycle_q;
   longint unsigned cycles_since_commit_q;
@@ -38,6 +46,108 @@ module rv_commit_trace_logger #(
   logic [1:0] csr_valid, csr_we;
   logic [1:0][11:0] csr_addr;
   logic [1:0][XLEN-1:0] csr_wdata;
+
+  function automatic logic instruction_is_csr(input logic [31:0] instruction);
+    return (instruction[1:0] == 2'b11) &&
+           (instruction[6:0] == 7'b1110011) &&
+           (instruction[14:12] != 3'b000);
+  endfunction
+
+  function automatic logic instruction_is_int_load(input logic [31:0] instruction);
+    logic is_c;
+    is_c = instruction[1:0] != 2'b11;
+    return (!is_c && (instruction[6:0] == 7'b0000011)) ||
+           (is_c && (instruction[1:0] == 2'b00) &&
+            (instruction[15:13] == 3'b010)) ||
+           (is_c && (instruction[1:0] == 2'b10) &&
+            (instruction[15:13] == 3'b010));
+  endfunction
+
+  function automatic logic instruction_is_int_store(input logic [31:0] instruction);
+    logic is_c;
+    is_c = instruction[1:0] != 2'b11;
+    return (!is_c && (instruction[6:0] == 7'b0100011)) ||
+           (is_c && (instruction[1:0] == 2'b00) &&
+            (instruction[15:13] == 3'b110)) ||
+           (is_c && (instruction[1:0] == 2'b10) &&
+            (instruction[15:13] == 3'b110));
+  endfunction
+
+  function automatic logic instruction_is_fp_load(input logic [31:0] instruction);
+    logic is_c;
+    is_c = instruction[1:0] != 2'b11;
+    return (!is_c && (instruction[6:0] == 7'b0000111)) ||
+           (is_c && (instruction[1:0] == 2'b00) &&
+            ((instruction[15:13] == 3'b001) ||
+             (instruction[15:13] == 3'b011))) ||
+           (is_c && (instruction[1:0] == 2'b10) &&
+            ((instruction[15:13] == 3'b001) ||
+             (instruction[15:13] == 3'b011)));
+  endfunction
+
+  function automatic logic instruction_is_fp_store(input logic [31:0] instruction);
+    logic is_c;
+    is_c = instruction[1:0] != 2'b11;
+    return (!is_c && (instruction[6:0] == 7'b0100111)) ||
+           (is_c && (instruction[1:0] == 2'b00) &&
+            ((instruction[15:13] == 3'b101) ||
+             (instruction[15:13] == 3'b111))) ||
+           (is_c && (instruction[1:0] == 2'b10) &&
+            ((instruction[15:13] == 3'b101) ||
+             (instruction[15:13] == 3'b111)));
+  endfunction
+
+  function automatic logic instruction_is_fp_to_gpr(input logic [31:0] instruction);
+    return (instruction[1:0] == 2'b11) &&
+           (instruction[6:0] == 7'b1010011) &&
+           ((instruction[31:25] == 7'b1100000) ||
+            (instruction[31:25] == 7'b1110000) ||
+            (instruction[31:25] == 7'b1010000));
+  endfunction
+
+  function automatic logic instruction_is_fp_to_fpr(input logic [31:0] instruction);
+    logic [6:0] opcode;
+    opcode = instruction[6:0];
+    return (instruction[1:0] == 2'b11) &&
+           (((opcode == 7'b1010011) &&
+             !instruction_is_fp_to_gpr(instruction)) ||
+            (opcode == 7'b1000011) || (opcode == 7'b1000111) ||
+            (opcode == 7'b1001011) || (opcode == 7'b1001111));
+  endfunction
+
+  function automatic logic instruction_has_no_write(input logic [31:0] instruction);
+    logic is_c;
+    logic c_j;
+    logic c_jr;
+    logic c_ebreak;
+    is_c = instruction[1:0] != 2'b11;
+    c_j = is_c && (instruction[1:0] == 2'b01) &&
+          (instruction[15:13] == 3'b101);
+    c_jr = is_c && (instruction[1:0] == 2'b10) &&
+           (instruction[15:13] == 3'b100) && !instruction[12] &&
+           (instruction[6:2] == 5'b0);
+    c_ebreak = is_c && (instruction[1:0] == 2'b10) &&
+               (instruction[15:13] == 3'b100) && instruction[12] &&
+               (instruction[11:7] == 5'b0) &&
+               (instruction[6:2] == 5'b0);
+    return ((!is_c && (instruction[6:0] == 7'b1100011)) ||
+            (is_c && (instruction[1:0] == 2'b01) &&
+             ((instruction[15:13] == 3'b110) ||
+              (instruction[15:13] == 3'b111))) ||
+            c_j || c_jr || c_ebreak ||
+            (!is_c && (instruction[6:0] == 7'b1110011) &&
+             (instruction[14:12] == 3'b000)) ||
+            (!is_c && (instruction[6:0] == 7'b0001111)));
+  endfunction
+
+  function automatic logic [31:0] architectural_store_data(
+    input logic [63:0] aligned_data,
+    input logic [XLEN-1:0] address
+  );
+    logic [63:0] shifted_data;
+    shifted_data = aligned_data >> (address[2:0] * 8);
+    return shifted_data[31:0];
+  endfunction
 
   function automatic string csr_address_name(
     input logic        valid,
@@ -341,6 +451,7 @@ module rv_commit_trace_logger #(
 
   initial begin
     trace_fd = 0;
+    spike_trace_fd = 0;
     if ($value$plusargs("trace_file=%s", trace_path)) begin
       trace_fd = $fopen(trace_path, "w");
       if (trace_fd == 0)
@@ -349,6 +460,17 @@ module rv_commit_trace_logger #(
         "order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval,gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,csr_name,mnemonic");
       $fflush(trace_fd);
       $display("[COMMIT][%0t] trace file opened: %s", $time, trace_path);
+    end
+    // This is a second, comparison-oriented stream.  Keep the richer CSV and
+    // console logger intact so existing debug/analysis scripts do not change.
+    if ($value$plusargs("spike_trace_file=%s", spike_trace_path)) begin
+      spike_trace_fd = $fopen(spike_trace_path, "w");
+      if (spike_trace_fd == 0)
+        $fatal(1, "Unable to open Spike-compatible trace file: %s",
+               spike_trace_path);
+      $fflush(spike_trace_fd);
+      $display("[COMMIT][%0t] Spike-compatible trace file opened: %s",
+               $time, spike_trace_path);
     end
     $display("[COMMIT][%0t] live logger enabled: every retired instruction",
              $time);
@@ -378,6 +500,88 @@ module rv_commit_trace_logger #(
               csr_valid[lane], csr_we[lane], csr_addr[lane], csr_wdata[lane],
               csr_address_name(csr_valid[lane], csr_addr[lane]),
               instruction_mnemonic(trace_instr_i[lane]));
+          end
+          if (spike_trace_fd != 0) begin
+            // Match the supplied server trace byte-for-byte at the record
+            // level: one disassembly-source line followed by one state line.
+            // Privilege is intentionally printed as 3, matching that logger.
+            $fwrite(spike_trace_fd,
+                    "core   %0d: 0x%08x (0x%08x)\n",
+                    0, trace_pc_i[lane], trace_instr_i[lane]);
+            $fwrite(spike_trace_fd,
+                    "core   %0d: %0d 0x%08x (0x%08x)",
+                    0, 3, trace_pc_i[lane], trace_instr_i[lane]);
+            if (trace_trap_i[lane]) begin
+              // Exception/interrupt records retain both base lines but have
+              // no architectural x/f/c/mem write suffix.
+            end else if (instruction_is_csr(trace_instr_i[lane])) begin
+              $fwrite(spike_trace_fd,
+                      " x%0d 0x%08x c%0d 0x%08x",
+                      trace_rd_i[lane],
+                      (trace_rd_i[lane] == 0) ? 32'b0 :
+                        trace_rd_wdata_i[lane][31:0],
+                      trace_instr_i[lane][31:20],
+                      (lane == 0 && csr_commit_valid_i) ?
+                        csr_commit_wdata_i[31:0] : 32'b0);
+            end else if (instruction_is_int_load(trace_instr_i[lane])) begin
+              if (!trace_mem_valid_i[lane])
+                $display("[COMMIT][WARN] missing retire LSQ address for load pc=%08h",
+                         trace_pc_i[lane]);
+              $fwrite(spike_trace_fd,
+                      " x%0d 0x%08x mem 0x%08x",
+                      trace_rd_i[lane],
+                      (trace_rd_i[lane] == 0) ? 32'b0 :
+                        trace_rd_wdata_i[lane][31:0],
+                      trace_mem_addr_i[lane][31:0]);
+            end else if (instruction_is_int_store(trace_instr_i[lane])) begin
+              if (!trace_mem_valid_i[lane])
+                $display("[COMMIT][WARN] missing retire LSQ data for store pc=%08h",
+                         trace_pc_i[lane]);
+              $fwrite(spike_trace_fd,
+                      " mem 0x%08x 0x%08x",
+                      trace_mem_addr_i[lane][31:0],
+                      architectural_store_data(trace_mem_wdata_i[lane],
+                                               trace_mem_addr_i[lane]));
+            end else if (instruction_is_fp_load(trace_instr_i[lane])) begin
+              if (!trace_mem_valid_i[lane])
+                $display("[COMMIT][WARN] missing retire LSQ address for FP load pc=%08h",
+                         trace_pc_i[lane]);
+              $fwrite(spike_trace_fd,
+                      " f%0d 0x%08x mem 0x%08x",
+                      trace_rd_i[lane], trace_rd_wdata_i[lane][31:0],
+                      trace_mem_addr_i[lane][31:0]);
+            end else if (instruction_is_fp_store(trace_instr_i[lane])) begin
+              if (!trace_mem_valid_i[lane])
+                $display("[COMMIT][WARN] missing retire LSQ data for FP store pc=%08h",
+                         trace_pc_i[lane]);
+              // Preserve the supplied server logger's literal suffix so an
+              // existing text comparator sees exactly the same record shape.
+              $fwrite(spike_trace_fd,
+                      " mem 0x%08x 0x%08x /*TEMP:fp store data unverified*/",
+                      trace_mem_addr_i[lane][31:0],
+                      architectural_store_data(trace_mem_wdata_i[lane],
+                                               trace_mem_addr_i[lane]));
+            end else if (instruction_is_fp_to_gpr(trace_instr_i[lane])) begin
+              $fwrite(spike_trace_fd, " x%0d 0x%08x ",
+                      trace_rd_i[lane],
+                      (trace_rd_i[lane] == 0) ? 32'b0 :
+                        trace_rd_wdata_i[lane][31:0]);
+            end else if (instruction_is_fp_to_fpr(trace_instr_i[lane])) begin
+              $fwrite(spike_trace_fd, " f%0d 0x%08x ",
+                      trace_rd_i[lane], trace_rd_wdata_i[lane][31:0]);
+            end else if (instruction_has_no_write(trace_instr_i[lane])) begin
+              // Branch/system/fence and compressed jump-without-link records
+              // have no architectural write suffix in the supplied format.
+            end else begin
+              // The supplied logger intentionally emits x0=0 for integer
+              // instructions whose architectural destination is x0 (for
+              // example C.NOP or JAL x0), so do not gate this on rd_write.
+              $fwrite(spike_trace_fd, " x%0d 0x%08x ",
+                      trace_rd_i[lane],
+                      (trace_rd_i[lane] == 0) ? 32'b0 :
+                        trace_rd_wdata_i[lane][31:0]);
+            end
+            $fwrite(spike_trace_fd, "\n");
           end
           $display("[COMMIT][%0t] order=%0d cycle=%0d lane=%0d pc=%08h instr=%08h rd_we=%b rd_fp=%b rd=%0d wdata=%08h trap=%b cause=%0d tval=%08h gpr_we=%b fpr_we=%b csr_valid=%b csr_we=%b csr_addr=0x%03h csr_name=%s csr_wdata=%08h mnemonic=%s",
             $time, retire_order_q + ((lane == 1) && trace_valid_i[0]),
@@ -413,12 +617,16 @@ module rv_commit_trace_logger #(
       // the file remains useful even before the simulation reaches timeout.
       if ((trace_fd != 0) && (cycle_q[9:0] == 10'b0))
         $fflush(trace_fd);
+      if ((spike_trace_fd != 0) && (cycle_q[9:0] == 10'b0))
+        $fflush(spike_trace_fd);
     end
   end
 
   final begin
     if (trace_fd != 0)
       $fclose(trace_fd);
+    if (spike_trace_fd != 0)
+      $fclose(spike_trace_fd);
   end
 
 endmodule

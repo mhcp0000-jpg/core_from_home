@@ -237,11 +237,19 @@ commit trace PC를 출력한다. 간격은 plusarg로 바꿀 수 있고 `0`이�
 모든 retire 명령은 제한 없이 Xcelium 콘솔/`simulation.log`에 `[COMMIT]` 형식으로
 출력되고, 동시에 `sim/xcelium/out/commit_trace.csv`에 저장된다. CSV는 order, cycle,
 lane, PC, instruction, integer/FP destination과 write data, trap/cause/tval을 포함한다.
+같은 retire stream은 서버 기준 로그와 동일한 2-line 형식으로
+`sim/xcelium/out/trace_log.out`에도 기록된다. 첫 줄은 PC/instruction, 둘째 줄은
+`core 0`, privilege `3`, PC/instruction 뒤에 실제 commit 결과인 `xN`/`fN`, CSR의
+`c<decimal-address>`, load/store의 `mem <address> [data]`를 붙인다. load/store 주소와
+store data는 retire 순간의 LQ/SQ 엔트리에서 가져오므로 speculative 실행 결과가
+섞이지 않는다. exception/interrupt record는 두 기본 줄만 남기고 write suffix는
+생략한다. 출력 경로는 `SPIKE_TRACE_FILE=/path/reference.log`로 바꿀 수 있다.
 코어가 retire를 멈추더라도 주기적으로 file buffer를 flush하므로 실행 중인 서버에서
 다음처럼 마지막 명령을 확인할 수 있다.
 
 ```bash
 tail -n 40 sim/xcelium/out/commit_trace.csv
+tail -n 40 sim/xcelium/out/trace_log.out
 ```
 
 ```bash

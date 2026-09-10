@@ -5,6 +5,7 @@ param(
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [string]$BuildRoot = "C:\rv_build\soc_elf",
   [string]$TracePath = "",
+  [string]$SpikeTracePath = "",
   [string]$PerfPath = "",
   [switch]$Htif,
   [ValidateRange(1, 32)]
@@ -86,6 +87,14 @@ try {
       New-Item -ItemType Directory -Force -Path $traceDirectory | Out-Null
     }
     $simulationArgs += "+trace_file=$resolvedTrace"
+  }
+  if ($SpikeTracePath) {
+    $resolvedSpikeTrace = [System.IO.Path]::GetFullPath($SpikeTracePath)
+    $spikeTraceDirectory = Split-Path -Parent $resolvedSpikeTrace
+    if ($spikeTraceDirectory) {
+      New-Item -ItemType Directory -Force -Path $spikeTraceDirectory | Out-Null
+    }
+    $simulationArgs += "+spike_trace_file=$resolvedSpikeTrace"
   }
   if ($PerfPath) {
     $resolvedPerf = [System.IO.Path]::GetFullPath($PerfPath)

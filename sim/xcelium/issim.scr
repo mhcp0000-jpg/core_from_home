@@ -34,6 +34,7 @@ set timeout_cycles = "2000000"
 set heartbeat_cycles = "100000"
 set elf_verify = "1"
 set trace_file = "${build_dir}/commit_trace.csv"
+set spike_trace_file = "${build_dir}/trace_log.out"
 set fsdb_enable = "1"
 set fsdb_file = ""
 set fsdb_file_explicit = "0"
@@ -53,6 +54,8 @@ foreach arg ($argv)
     set elf_verify = `echo "$arg" | sed 's/-ELF_VERIFY=//'`
   else if ("$arg" =~ "-TRACE_FILE=*") then
     set trace_file = `echo "$arg" | sed 's/-TRACE_FILE=//'`
+  else if ("$arg" =~ "-SPIKE_TRACE_FILE=*") then
+    set spike_trace_file = `echo "$arg" | sed 's/-SPIKE_TRACE_FILE=//'`
   else if ("$arg" =~ "-FSDB_ENABLE=*") then
     set fsdb_enable = `echo "$arg" | sed 's/-FSDB_ENABLE=//'`
   else if ("$arg" =~ "-FSDB_FILE=*") then
@@ -152,4 +155,5 @@ exec xrun \
   +heartbeat_cycles="$heartbeat_cycles" \
   +elf_verify="$elf_verify" \
   +trace_file="$trace_file" \
+  +spike_trace_file="$spike_trace_file" \
   $fsdb_plusargs
