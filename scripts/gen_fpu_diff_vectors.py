@@ -28,6 +28,21 @@ OP_FMSUB = 5
 OP_FNMSUB = 6
 OP_FNMADD = 7
 OP_SQRT = 8
+OP_FSGNJ = 9
+OP_FSGNJN = 10
+OP_FSGNJX = 11
+OP_FMIN = 12
+OP_FMAX = 13
+OP_FEQ = 14
+OP_FLT = 15
+OP_FLE = 16
+OP_FCVT_W_S = 17
+OP_FCVT_WU_S = 18
+OP_FCVT_S_W = 19
+OP_FCVT_S_WU = 20
+OP_FCLASS = 21
+OP_FMV_X_W = 22
+OP_FMV_W_X = 23
 
 
 def sign(bits: int) -> int:
@@ -193,6 +208,93 @@ def square_root(a: int, rm: int) -> tuple[int, int]:
     return significand, flags
 
 
+def ordered_less(a: int, b: int) -> bool:
+    if a == b or (is_zero(a) and is_zero(b)):
+        return False
+    if sign(a) != sign(b):
+        return bool(sign(a))
+    if sign(a):
+        return (a & 0x7FFFFFFF) > (b & 0x7FFFFFFF)
+    return (a & 0x7FFFFFFF) < (b & 0x7FFFFFFF)
+
+
+def min_max(a: int, b: int, select_max: bool) -> tuple[int, int]:
+    flags = NV if is_snan(a) or is_snan(b) else 0
+    if is_nan(a) and is_nan(b):
+        return CANONICAL_NAN, flags
+    if is_nan(a):
+        return b, flags
+    if is_nan(b):
+        return a, flags
+    if is_zero(a) and is_zero(b):
+        result_sign = (sign(a) & sign(b)) if select_max else (sign(a) | sign(b))
+        return result_sign << 31, flags
+    less = ordered_less(a, b)
+    return ((b if less else a) if select_max else (a if less else b)), flags
+
+
+def compare(a: int, b: int, operation: int) -> tuple[int, int]:
+    if is_nan(a) or is_nan(b):
+        invalid = operation != OP_FEQ or is_snan(a) or is_snan(b)
+        return 0, NV if invalid else 0
+    equal = a == b or (is_zero(a) and is_zero(b))
+    less = ordered_less(a, b)
+    if operation == OP_FEQ:
+        return int(equal), 0
+    if operation == OP_FLT:
+        return int(less), 0
+    return int(less or equal), 0
+
+
+def fp_to_integer(a: int, unsigned: bool, rm: int) -> tuple[int, int]:
+    if is_nan(a) or is_inf(a):
+        if unsigned:
+            result = 0 if (is_inf(a) and sign(a)) else 0xFFFFFFFF
+        else:
+            result = 0x80000000 if (is_inf(a) and sign(a)) else 0x7FFFFFFF
+        return result, NV
+
+    value = finite_fraction(a)
+    negative = value < 0
+    magnitude = -value if negative else value
+    rounded, inexact = round_integer(
+        magnitude.numerator, magnitude.denominator, negative, rm
+    )
+    if unsigned:
+        invalid = (negative and rounded != 0) or rounded > 0xFFFFFFFF
+        if invalid:
+            return (0 if negative else 0xFFFFFFFF), NV
+        result = rounded
+    else:
+        invalid = (negative and rounded > 0x80000000) or (
+            not negative and rounded > 0x7FFFFFFF
+        )
+        if invalid:
+            return (0x80000000 if negative else 0x7FFFFFFF), NV
+        result = (-rounded if negative else rounded) & 0xFFFFFFFF
+    return result, NX if inexact else 0
+
+
+def integer_to_fp(a: int, unsigned: bool, rm: int) -> tuple[int, int]:
+    value = a if unsigned or a < 0x80000000 else a - (1 << 32)
+    return round_binary32(Fraction(value, 1), rm)
+
+
+def classify(a: int) -> int:
+    negative = sign(a)
+    exp = exponent(a)
+    frac = fraction_field(a)
+    if is_inf(a):
+        return 1 << (0 if negative else 7)
+    if is_nan(a):
+        return 1 << (8 if is_snan(a) else 9)
+    if is_zero(a):
+        return 1 << (3 if negative else 4)
+    if exp == 0:
+        return 1 << (2 if negative else 5)
+    return 1 << (1 if negative else 6)
+
+
 def exact_zero_sign(lhs_zero: bool, lhs_sign: int, rhs_zero: bool, rhs_sign: int, rm: int) -> bool:
     if lhs_zero and rhs_zero and lhs_sign == rhs_sign:
         return bool(lhs_sign)
@@ -293,6 +395,30 @@ def execute(operation: int, rm: int, a: int, b: int, c: int) -> tuple[int, int]:
         return fused(a, b, c, True, True, rm)
     if operation == OP_SQRT:
         return square_root(a, rm)
+    if operation == OP_FSGNJ:
+        return (a & 0x7FFFFFFF) | (b & 0x80000000), 0
+    if operation == OP_FSGNJN:
+        return (a & 0x7FFFFFFF) | ((~b) & 0x80000000), 0
+    if operation == OP_FSGNJX:
+        return (a & 0x7FFFFFFF) | ((a ^ b) & 0x80000000), 0
+    if operation == OP_FMIN:
+        return min_max(a, b, False)
+    if operation == OP_FMAX:
+        return min_max(a, b, True)
+    if operation in (OP_FEQ, OP_FLT, OP_FLE):
+        return compare(a, b, operation)
+    if operation == OP_FCVT_W_S:
+        return fp_to_integer(a, False, rm)
+    if operation == OP_FCVT_WU_S:
+        return fp_to_integer(a, True, rm)
+    if operation == OP_FCVT_S_W:
+        return integer_to_fp(a, False, rm)
+    if operation == OP_FCVT_S_WU:
+        return integer_to_fp(a, True, rm)
+    if operation == OP_FCLASS:
+        return classify(a), 0
+    if operation in (OP_FMV_X_W, OP_FMV_W_X):
+        return a, 0
     raise ValueError(f"unsupported operation {operation}")
 
 
@@ -303,6 +429,13 @@ SPECIAL = [
     0x3F800000, 0xBF800000, 0x40000000, 0xC0000000,
     0x7F7FFFFF, 0xFF7FFFFF, 0x7F800000, 0xFF800000,
     0x7FC00001, 0xFFC12345, 0x7F800001, 0xFF800001,
+]
+
+INT_SPECIAL = [
+    0x00000000, 0x00000001, 0x00000002, 0x007FFFFF,
+    0x00800000, 0x00FFFFFF, 0x01000000, 0x01000001,
+    0x3FFFFFFF, 0x40000000, 0x7FFFFFFE, 0x7FFFFFFF,
+    0x80000000, 0x80000001, 0xFFFFFFFE, 0xFFFFFFFF,
 ]
 
 
@@ -317,17 +450,21 @@ def random_finite(rng: random.Random) -> int:
 def build_vectors(seed: int, random_per_op_rm: int) -> list[tuple[int, int, int, int, int, int, int]]:
     rng = random.Random(seed)
     vectors: list[tuple[int, int, int, int, int, int, int]] = []
-    operations = range(9)
+    operations = range(24)
 
     for operation in operations:
-        for rm in range(5):
-            for index, a in enumerate(SPECIAL):
+        uses_rounding = operation <= OP_SQRT or OP_FCVT_W_S <= operation <= OP_FCVT_S_WU
+        integer_source = operation in (OP_FCVT_S_W, OP_FCVT_S_WU, OP_FMV_W_X)
+        rounding_modes = range(5) if uses_rounding else (RNE,)
+        operand_values = INT_SPECIAL if integer_source else SPECIAL
+        for rm in rounding_modes:
+            for index, a in enumerate(operand_values):
                 b = SPECIAL[(index * 7 + operation * 3 + rm) % len(SPECIAL)]
                 c = SPECIAL[(index * 11 + operation + rm * 5) % len(SPECIAL)]
                 expected, flags = execute(operation, rm, a, b, c)
                 vectors.append((operation, rm, a, b, c, expected, flags))
             for _ in range(random_per_op_rm):
-                a = random_finite(rng)
+                a = rng.getrandbits(32) if integer_source else random_finite(rng)
                 b = random_finite(rng)
                 c = random_finite(rng)
                 expected, flags = execute(operation, rm, a, b, c)
@@ -351,6 +488,11 @@ def main() -> None:
     assert divide(0x3F800000, 0x00000000, RNE) == (0x7F800000, DZ)
     assert square_root(0x40800000, RNE) == (0x40000000, 0)
     assert square_root(0xBF800000, RNE) == (CANONICAL_NAN, NV)
+    assert fp_to_integer(0x40600000, False, RNE) == (4, NX)
+    assert fp_to_integer(0xBF000000, True, RTZ) == (0, NX)
+    assert integer_to_fp(0xFFFFFFFF, True, RNE) == (0x4F800000, NX)
+    assert min_max(0x00000000, 0x80000000, False) == (0x80000000, 0)
+    assert classify(0x7F800001) == 0x100
 
     vectors = build_vectors(args.seed, args.random_per_op_rm)
     content = "".join(

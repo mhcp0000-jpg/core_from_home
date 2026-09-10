@@ -10,6 +10,7 @@ module rv_fpu_diff_tb;
   logic [31:0] result_data;
   logic [4:0] result_fflags;
   logic result_exception_valid;
+  reg_class_e destination_class;
   reg_class_e result_destination_class;
 
   string vector_path;
@@ -17,7 +18,7 @@ module rv_fpu_diff_tb;
   integer scan_count;
   integer vector_count;
   integer vector_index;
-  logic [3:0] vector_operation;
+  logic [4:0] vector_operation;
   logic [2:0] vector_rm;
   logic [31:0] vector_a, vector_b, vector_c;
   logic [31:0] vector_expected;
@@ -26,26 +27,55 @@ module rv_fpu_diff_tb;
   always #5 clk = ~clk;
 
   function automatic logic [31:0] arithmetic_instruction(
-    input logic [3:0] operation,
+    input logic [4:0] operation,
     input logic [2:0] rm
   );
     logic [6:0] opcode;
     logic [6:0] funct7;
+    logic [4:0] rs2;
+    logic [2:0] funct3;
+    opcode = 7'h53;
+    funct7 = '0;
+    rs2 = 5'd2;
+    funct3 = rm;
     case (operation)
-      4'd0: begin opcode = 7'h53; funct7 = 7'h00; end // FADD.S
-      4'd1: begin opcode = 7'h53; funct7 = 7'h04; end // FSUB.S
-      4'd2: begin opcode = 7'h53; funct7 = 7'h08; end // FMUL.S
-      4'd3: begin opcode = 7'h53; funct7 = 7'h0c; end // FDIV.S
-      4'd4: begin opcode = 7'h43; funct7 = 7'h00; end // FMADD.S
-      4'd5: begin opcode = 7'h47; funct7 = 7'h00; end // FMSUB.S
-      4'd6: begin opcode = 7'h4b; funct7 = 7'h00; end // FNMSUB.S
-      default: begin opcode = 7'h4f; funct7 = 7'h00; end // FNMADD.S
+      5'd0: funct7 = 7'h00; // FADD.S
+      5'd1: funct7 = 7'h04; // FSUB.S
+      5'd2: funct7 = 7'h08; // FMUL.S
+      5'd3: funct7 = 7'h0c; // FDIV.S
+      5'd4: opcode = 7'h43; // FMADD.S
+      5'd5: opcode = 7'h47; // FMSUB.S
+      5'd6: opcode = 7'h4b; // FNMSUB.S
+      5'd7: opcode = 7'h4f; // FNMADD.S
+      5'd8: begin funct7 = 7'h2c; rs2 = 0; end // FSQRT.S
+      5'd9: begin funct7 = 7'h10; funct3 = 0; end // FSGNJ.S
+      5'd10: begin funct7 = 7'h10; funct3 = 1; end // FSGNJN.S
+      5'd11: begin funct7 = 7'h10; funct3 = 2; end // FSGNJX.S
+      5'd12: begin funct7 = 7'h14; funct3 = 0; end // FMIN.S
+      5'd13: begin funct7 = 7'h14; funct3 = 1; end // FMAX.S
+      5'd14: begin funct7 = 7'h50; funct3 = 2; end // FEQ.S
+      5'd15: begin funct7 = 7'h50; funct3 = 1; end // FLT.S
+      5'd16: begin funct7 = 7'h50; funct3 = 0; end // FLE.S
+      5'd17: begin funct7 = 7'h60; rs2 = 0; end // FCVT.W.S
+      5'd18: begin funct7 = 7'h60; rs2 = 1; end // FCVT.WU.S
+      5'd19: begin funct7 = 7'h68; rs2 = 0; end // FCVT.S.W
+      5'd20: begin funct7 = 7'h68; rs2 = 1; end // FCVT.S.WU
+      5'd21: begin funct7 = 7'h70; rs2 = 0; funct3 = 1; end // FCLASS.S
+      5'd22: begin funct7 = 7'h70; rs2 = 0; funct3 = 0; end // FMV.X.W
+      default: begin funct7 = 7'h78; rs2 = 0; funct3 = 0; end // FMV.W.X
     endcase
-    if (operation < 4)
-      return {funct7, 5'd2, 5'd1, rm, 5'd3, opcode};
-    if (operation == 8)
-      return {7'h2c, 5'd0, 5'd1, rm, 5'd3, 7'h53};
-    return {5'd3, 2'b00, 5'd2, 5'd1, rm, 5'd4, opcode};
+    if ((operation >= 4) && (operation <= 7))
+      return {5'd3, 2'b00, 5'd2, 5'd1, rm, 5'd4, opcode};
+    return {funct7, rs2, 5'd1, funct3, 5'd3, opcode};
+  endfunction
+
+  function automatic reg_class_e operation_destination_class(
+    input logic [4:0] operation
+  );
+    if (((operation >= 14) && (operation <= 18)) ||
+        (operation == 21) || (operation == 22))
+      return REG_INT;
+    return REG_FP;
   endfunction
 
   rv_fpu #(
@@ -57,7 +87,7 @@ module rv_fpu_diff_tb;
     .operand_b_i(operand_b), .operand_c_i(operand_c),
     .rounding_mode_i(rounding_mode), .frm_i(3'b000),
     .sequence_i(sequence_id), .destination_valid_i(1'b1),
-    .destination_class_i(REG_FP), .destination_phys_i(7'd40),
+    .destination_class_i(destination_class), .destination_phys_i(7'd40),
     .flush_valid_i(1'b0), .flush_all_i(1'b0), .flush_sequence_i('0),
     .result_valid_o(result_valid), .result_ready_i(1'b1),
     .result_sequence_o(result_sequence),
@@ -74,14 +104,15 @@ module rv_fpu_diff_tb;
     operand_a = vector_a;
     operand_b = vector_b;
     operand_c = vector_c;
-    rounding_mode = vector_rm;
+    rounding_mode = instruction[14:12];
+    destination_class = operation_destination_class(vector_operation);
     request_valid = 1'b1;
     do @(posedge clk); while (!request_ready);
     @(negedge clk);
     request_valid = 1'b0;
     do @(posedge clk); while (!result_valid);
     if (result_exception_valid || (result_sequence !== sequence_id) ||
-        (result_destination_class !== REG_FP) ||
+        (result_destination_class !== destination_class) ||
         (result_data !== vector_expected) ||
         (result_fflags !== vector_flags)) begin
       $fatal(1,
@@ -103,6 +134,7 @@ module rv_fpu_diff_tb;
     operand_b = '0;
     operand_c = '0;
     rounding_mode = '0;
+    destination_class = REG_FP;
     sequence_id = 8'h20;
     vector_count = 0;
     vector_index = 0;
