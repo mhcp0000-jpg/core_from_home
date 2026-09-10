@@ -90,6 +90,25 @@ else
   endif
 endif
 
+if ("$fsdb_enable" == "1") then
+  # The Novas PLI is registered during elaboration (isrun.scr), but xmsim may
+  # still resolve the PLI library through LD_LIBRARY_PATH at simulation time,
+  # so source the same Novas environment here as well.
+  if ($?NOVAS_NC_ENV) then
+    set novas_nc_env = "$NOVAS_NC_ENV"
+  else
+    set novas_nc_env = "/appl/SOL/NOVAS/Verdi3-201906sp2-4/novas_nc_64bit_linux.env"
+  endif
+  if (-f "$novas_nc_env") then
+    source "$novas_nc_env"
+    echo "FSDB Novas environment sourced: $novas_nc_env"
+  else
+    echo "ERROR: Novas PLI environment file not found: $novas_nc_env"
+    echo "Set NOVAS_NC_ENV to the server's novas_nc_*_linux.env file."
+    exit 2
+  endif
+endif
+
 mkdir -p "$build_dir"
 set fsdb_plusargs = ()
 if ("$fsdb_enable" == "1") then
