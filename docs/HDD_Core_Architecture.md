@@ -2411,6 +2411,29 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 추가로 EBREAK/C.EBREAK 통합 회귀는 cause 3, informative `mtval`, faulting `mepc`,
 raw C encoding trace와 same-bundle younger write squash를 검사한다.
 
+#### RV32F extended corner regression (2026-09-10)
+
+`python scripts/run_fpu_corners.py`로 113,600개 vector를 static `rm`과
+dynamic `rm=111, frm=vector_rm` 두 경로에서 실행한다 (총 227,200 comparisons).
+Icarus의 `iverilog`와 `vvp`가 PATH에 필요하며 Windows에서는
+`--iverilog C:/iverilog/bin/iverilog.exe --vvp C:/iverilog/bin/vvp.exe`를 지정할 수 있다.
+기본 seed는 `0x20260910`, random-per-op-rm은 1024다. 결과는
+`out/fpu_corners/{generate,compile,static,dynamic}.log`와 `vectors.hex`에 보관한다.
+생성한 vector 파일은 `op rm a b c expected_result expected_fflags` 형식이다.
+
+검사 범위는 기존 24개 RV32F operation의 random/특수값에 더해
+ADD/SUB/MUL/DIV/MIN/MAX/비교의 22개 특수값 전체 pair,
+4종 FMA의 10개 대표값 전체 triple, min-normal 경계, half-ULP ties,
+인접 값 cancellation, FP→정수의 반올림·포화 경계다. 음수/양수 zero,
+subnormal, infinity, qNaN/sNaN 조합을 포함하며 result와 5개 fflags를 함께 비교한다.
+dynamic 검사는 arithmetic/conversion에만 rm=111을 적용하고 sign/min/compare 등의
+funct3 operation-select는 유지한다.
+
+두 경로 모두 PASS했고 추가 RTL 산술 오류는 발견되지 않았다. 기준값은 host FP를
+쓰지 않는 exact rational/integer-sqrt oracle이며 외부 Spike/SoftFloat sign-off와는
+구분한다. 이 TB는 순차 request/result 검사이므로 backpressure/flush 및 core-level
+FCSR 누적의 모든 조합을 증명하지 않는다. 기존 6,470개 fast fixture는 그대로 유지한다.
+
 ### 18.5 실행 결과와 commit 비교 계약
 
 | Gate | 실행 산출물 | 2026-09-10 결과 |

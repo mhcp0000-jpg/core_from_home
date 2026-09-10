@@ -5,6 +5,8 @@ module rv_fpu_diff_tb;
   logic request_valid, request_ready;
   logic [31:0] instruction, operand_a, operand_b, operand_c;
   logic [2:0] rounding_mode;
+  logic [2:0] frm;
+  bit dynamic_rounding;
   logic [7:0] sequence_id, result_sequence;
   logic result_valid;
   logic [31:0] result_data;
@@ -85,10 +87,10 @@ module rv_fpu_diff_tb;
     .request_valid_i(request_valid), .request_ready_o(request_ready),
     .instruction_i(instruction), .operand_a_i(operand_a),
     .operand_b_i(operand_b), .operand_c_i(operand_c),
-    .rounding_mode_i(rounding_mode), .frm_i(3'b000),
+    .rounding_mode_i(rounding_mode), .frm_i(frm),
     .sequence_i(sequence_id), .destination_valid_i(1'b1),
     .destination_class_i(destination_class), .destination_phys_i(7'd40),
-    .flush_valid_i(1'b0), .flush_all_i(1'b0), .flush_sequence_i('0),
+    .flush_valid_i(1'b0), .flush_all_i(1'b0), .flush_sequence_i(8'b0),
     .result_valid_o(result_valid), .result_ready_i(1'b1),
     .result_sequence_o(result_sequence),
     .result_destination_valid_o(),
@@ -101,6 +103,12 @@ module rv_fpu_diff_tb;
 
   task automatic issue_vector;
     instruction = arithmetic_instruction(vector_operation, vector_rm);
+    // Only arithmetic/conversion instructions interpret funct3 as rm.
+    // Sign/min/compare/class/move retain their operation-select funct3.
+    frm = vector_rm;
+    if (dynamic_rounding && ((vector_operation <= 8) ||
+        ((vector_operation >= 17) && (vector_operation <= 20))))
+      instruction[14:12] = 3'b111;
     operand_a = vector_a;
     operand_b = vector_b;
     operand_c = vector_c;
@@ -134,6 +142,8 @@ module rv_fpu_diff_tb;
     operand_b = '0;
     operand_c = '0;
     rounding_mode = '0;
+    frm = '0;
+    dynamic_rounding = $test$plusargs("fpu_dynamic_rm");
     destination_class = REG_FP;
     sequence_id = 8'h20;
     vector_count = 0;
@@ -164,7 +174,8 @@ module rv_fpu_diff_tb;
     $fclose(vector_file);
     if (vector_count == 0)
       $fatal(1, "FPU differential vector file was empty");
-    $display("rv_fpu_diff_tb PASS vectors=%0d", vector_count);
+    $display("rv_fpu_diff_tb PASS vectors=%0d dynamic_rm=%0b",
+             vector_count, dynamic_rounding);
     $finish;
   end
 endmodule

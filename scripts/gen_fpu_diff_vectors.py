@@ -472,11 +472,69 @@ def build_vectors(seed: int, random_per_op_rm: int) -> list[tuple[int, int, int,
     return vectors
 
 
+def corner_vectors() -> list[tuple[int, int, int, int, int, int, int]]:
+    """Cross special classes and deliberately hit cancellation/rounding edges.
+
+    Kept separate from the fast checked-in manifest so extended runs are opt-in.
+    Expected results use the same exact rational oracle, not the RTL algorithm.
+    """
+    vectors = []
+
+    def append(op: int, rm: int, a: int, b: int = 0, c: int = 0) -> None:
+        result, flags = execute(op, rm, a, b, c)
+        vectors.append((op, rm, a, b, c, result, flags))
+
+    for op in (OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_FMIN, OP_FMAX,
+               OP_FEQ, OP_FLT, OP_FLE):
+        for rm in (range(5) if op <= OP_DIV else (RNE,)):
+            for a in SPECIAL:
+                for b in SPECIAL:
+                    append(op, rm, a, b)
+
+    # Include both zero signs, both infinity signs, signaling/quiet NaN,
+    # smallest subnormal, largest finite, and ordinary positive/negative values.
+    fma_classes = (0, 0x80000000, 1, 0x3F800000, 0xBF800000,
+                   0x7F7FFFFF, 0x7F800000, 0xFF800000,
+                   0x7FC00001, 0x7F800001)
+    for op in range(OP_FMADD, OP_FNMADD + 1):
+        for rm in range(5):
+            for a in fma_classes:
+                for b in fma_classes:
+                    for c in fma_classes:
+                        append(op, rm, a, b, c)
+
+    for rm in range(5):
+        # Adjacent values around zero, min-normal, half integers and integer
+        # conversion saturation thresholds. Exercise both signs.
+        for center in (1, 0x00800000, 0x3F000000, 0x3FC00000,
+                       0x4B800000, 0x4F000000, 0x4F800000, 0x7F7FFFFF):
+            for delta in range(-2, 3):
+                for sign_bit in (0, 0x80000000):
+                    a = max(0, center + delta) | sign_bit
+                    for op in (OP_SQRT, OP_FCVT_W_S, OP_FCVT_WU_S):
+                        append(op, rm, a)
+        for exp in (1, 2, 24, 64, 126, 127, 128, 200, 253, 254):
+            a = exp << 23
+            for delta in (-1, 0, 1):
+                b = (a + delta) ^ 0x80000000
+                append(OP_ADD, rm, a, b)
+                # FMA cancellation with an unrounded product residue.
+                for op in range(OP_FMADD, OP_FNMADD + 1):
+                    append(op, rm, a + 1, 0x3F800001, b)
+        for a in (0x3F800000, 0x3F800001, 0xBF800000, 0xBF800001):
+            for b in (0x337FFFFF, 0x33800000, 0x33800001):
+                append(OP_ADD, rm, a, b)
+                append(OP_SUB, rm, a, b)
+    return vectors
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("tb/fixtures/fpu/fpu_diff_vectors.hex"))
     parser.add_argument("--seed", type=lambda value: int(value, 0), default=0x5EED1234)
     parser.add_argument("--random-per-op-rm", type=int, default=64)
+    parser.add_argument("--corners", action="store_true",
+                        help="add special-class cross products and rounding/conversion boundaries")
     parser.add_argument("--check", action="store_true", help="fail if the checked-in vector file is stale")
     args = parser.parse_args()
 
@@ -495,6 +553,8 @@ def main() -> None:
     assert classify(0x7F800001) == 0x100
 
     vectors = build_vectors(args.seed, args.random_per_op_rm)
+    if args.corners:
+        vectors.extend(corner_vectors())
     content = "".join(
         f"{operation:x} {rm:x} {a:08x} {b:08x} {c:08x} {expected:08x} {flags:02x}\n"
         for operation, rm, a, b, c, expected, flags in vectors
