@@ -103,6 +103,21 @@ module rv_fpu #(
     return !(|value[30:0]);
   endfunction
 
+  // IEEE-754 exact-zero sign rule.  Two zero addends with the same effective
+  // sign preserve that sign.  Opposite-sign zeros, or exact cancellation of
+  // non-zero magnitudes, produce -0 only for roundTowardNegative (RDN).
+  function automatic logic exact_sum_zero_sign(
+    input logic lhs_is_zero,
+    input logic lhs_sign,
+    input logic rhs_is_zero,
+    input logic rhs_sign,
+    input logic [2:0] rm
+  );
+    if (lhs_is_zero && rhs_is_zero && (lhs_sign == rhs_sign))
+      return lhs_sign;
+    return rm == 3'b010;
+  endfunction
+
   function automatic logic [23:0] fp_mantissa(input logic [31:0] value);
     if (value[30:23] == 0)
       return {1'b0, value[22:0]};
@@ -314,7 +329,8 @@ module rv_fpu #(
     if (sign_b) signed_b = -signed_b;
     signed_sum = signed_a + signed_b;
     if (signed_sum == 0) begin
-      result.data[31] = (rm == 3'b010);
+      result.data[31] = exact_sum_zero_sign(fp_is_zero(a), sign_a,
+                                            fp_is_zero(b), sign_b, rm);
       return result;
     end
     result_sign = signed_sum[128];
@@ -419,7 +435,9 @@ module rv_fpu #(
     if (c_sign) signed_c = -signed_c;
     signed_sum = signed_product + signed_c;
     if (signed_sum == 0) begin
-      result.data[31] = (rm == 3'b010);
+      result.data[31] = exact_sum_zero_sign(fp_is_zero(a) || fp_is_zero(b),
+                                           product_sign, fp_is_zero(c), c_sign,
+                                           rm);
       return result;
     end
     result_sign = signed_sum[128];

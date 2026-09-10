@@ -22,11 +22,14 @@ module rv_backend_int_tb;
   logic [1:0] trace_valid;
   logic [1:0][31:0] trace_pc, trace_instr, trace_wdata;
   logic [1:0][4:0] trace_rd;
-  logic [1:0] trace_rd_write, trace_trap;
+  logic [1:0] trace_rd_write, trace_rd_fp, trace_trap;
 
   int unsigned write_count;
   logic [4:0] write_rd [0:15];
   logic [31:0] write_data [0:15];
+  int unsigned fp_write_count;
+  logic [4:0] fp_write_rd [0:7];
+  logic [31:0] fp_write_data [0:7];
   logic saw_bad_x6;
   int unsigned memory_write_count;
   int unsigned memory_read_count;
@@ -71,6 +74,7 @@ module rv_backend_int_tb;
     .trace_valid_o(trace_valid), .trace_pc_o(trace_pc),
     .trace_instr_o(trace_instr), .trace_rd_o(trace_rd),
     .trace_rd_write_o(trace_rd_write), .trace_rd_wdata_o(trace_wdata),
+    .trace_rd_fp_o(trace_rd_fp),
     .trace_trap_o(trace_trap)
   );
 
@@ -106,12 +110,19 @@ module rv_backend_int_tb;
   always @(negedge clk) begin
     if (rst_n) begin
       for (int unsigned lane = 0; lane < 2; lane++) begin
-        if (trace_valid[lane] && trace_rd_write[lane]) begin
+        if (trace_valid[lane] && trace_rd_write[lane] &&
+            !trace_rd_fp[lane]) begin
           write_rd[write_count] = trace_rd[lane];
           write_data[write_count] = trace_wdata[lane];
           if ((trace_rd[lane] == 6) && (trace_wdata[lane] == 99))
             saw_bad_x6 = 1'b1;
           write_count = write_count + 1;
+        end
+        if (trace_valid[lane] && trace_rd_write[lane] &&
+            trace_rd_fp[lane]) begin
+          fp_write_rd[fp_write_count] = trace_rd[lane];
+          fp_write_data[fp_write_count] = trace_wdata[lane];
+          fp_write_count = fp_write_count + 1;
         end
       end
     end
@@ -176,6 +187,7 @@ module rv_backend_int_tb;
     rst_n = 1'b0;
     clear_fetch();
     write_count = 0;
+    fp_write_count = 0;
     saw_bad_x6 = 1'b0;
     irq_software = 1'b0;
     repeat (4) @(posedge clk);
@@ -272,6 +284,24 @@ module rv_backend_int_tb;
              memory_read_count);
     if (!saw_dual_load_request)
       $fatal(1, "Two ready loads did not use both LSU request ports");
+
+    // Exercise the complete FP backend path, including same-pair rename
+    // dependency, FP PRF wakeup, FPU writeback and in-order ROB retirement.
+    // IEEE-754 requires +0 + +0 to remain +0 even under RDN.
+    send_pair(32'h2800, 32'hf000_00d3, 1'b1,
+              32'h2804, 32'h0010_a153); // fmv.w.x f1,x0; fadd.s f2,f1,f1,rdn
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while ((fp_write_count < 2) && (timeout < 160)) begin
+        @(negedge clk);
+        timeout++;
+      end
+    end
+    if ((fp_write_count != 2) || (fp_write_rd[0] != 1) ||
+        (fp_write_data[0] != 32'h0000_0000) || (fp_write_rd[1] != 2) ||
+        (fp_write_data[1] != 32'h0000_0000))
+      $fatal(1, "Integrated FADD.S +0 + +0 RDN sign result failed");
 
     // Commit-time CSR execution: lane1 CSRRW depends on the lane0 LUI and
     // must return old mtvec while updating it only at architectural commit.

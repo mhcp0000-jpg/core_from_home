@@ -117,8 +117,22 @@ module rv_fpu_tb;
                      3'b000, 3'b000, 32'h3f80_0000, 0, 1'b0, REG_FP); // FMV.W.X
     issue_and_expect(fp_op(7'h00, 2, 0), 32'h3f80_0000, 32'h4000_0000, 0,
                      3'b000, 3'b000, 32'h4040_0000, 0, 1'b0, REG_FP); // FADD.S
+    // Exact-zero sign rules: equal-sign zero inputs preserve their sign;
+    // opposite-sign zeros use -0 only under roundTowardNegative.
+    issue_and_expect(fp_op(7'h00, 2, 2), 32'h0000_0000, 32'h0000_0000, 0,
+                     3'b010, 3'b000, 32'h0000_0000, 0, 1'b0, REG_FP); // +0 + +0, RDN
+    issue_and_expect(fp_op(7'h00, 2, 0), 32'h8000_0000, 32'h8000_0000, 0,
+                     3'b000, 3'b000, 32'h8000_0000, 0, 1'b0, REG_FP); // -0 + -0, RNE
+    issue_and_expect(fp_op(7'h00, 2, 0), 32'h0000_0000, 32'h8000_0000, 0,
+                     3'b000, 3'b000, 32'h0000_0000, 0, 1'b0, REG_FP); // +0 + -0, RNE
+    issue_and_expect(fp_op(7'h00, 2, 2), 32'h0000_0000, 32'h8000_0000, 0,
+                     3'b010, 3'b000, 32'h8000_0000, 0, 1'b0, REG_FP); // +0 + -0, RDN
     issue_and_expect(fp_op(7'h04, 2, 0), 32'h40b0_0000, 32'h4000_0000, 0,
                      3'b000, 3'b000, 32'h4060_0000, 0, 1'b0, REG_FP); // FSUB.S
+    issue_and_expect(fp_op(7'h04, 2, 2), 32'h0000_0000, 32'h8000_0000, 0,
+                     3'b010, 3'b000, 32'h0000_0000, 0, 1'b0, REG_FP); // +0 - -0, RDN
+    issue_and_expect(fp_op(7'h04, 2, 2), 32'h0000_0000, 32'h0000_0000, 0,
+                     3'b010, 3'b000, 32'h8000_0000, 0, 1'b0, REG_FP); // +0 - +0, RDN
     issue_and_expect(fp_op(7'h08, 2, 0), 32'h3fc0_0000, 32'h4000_0000, 0,
                      3'b000, 3'b000, 32'h4040_0000, 0, 1'b0, REG_FP); // FMUL.S
     issue_and_expect(fp_op(7'h0c, 2, 0), 32'h3f80_0000, 32'h4000_0000, 0,
@@ -161,6 +175,12 @@ module rv_fpu_tb;
     issue_and_expect(fp_fma_op(7'h43), 32'h3fc0_0000, 32'h4000_0000,
                      32'h3f00_0000, 3'b000, 3'b000, 32'h4060_0000,
                      0, 1'b0, REG_FP); // FMADD.S
+    issue_and_expect(fp_fma_op(7'h43), 32'h0000_0000, 32'h3f80_0000,
+                     32'h0000_0000, 3'b010, 3'b000, 32'h0000_0000,
+                     0, 1'b0, REG_FP); // +0 * +1 + +0, RDN
+    issue_and_expect(fp_fma_op(7'h43), 32'h8000_0000, 32'h3f80_0000,
+                     32'h8000_0000, 3'b000, 3'b000, 32'h8000_0000,
+                     0, 1'b0, REG_FP); // -0 * +1 + -0, RNE
     issue_and_expect(fp_op(7'h00, 2, 0), 32'h3f80_0000, 32'h0000_0001, 0,
                      3'b011, 3'b000, 32'h3f80_0001, 5'b00001, 1'b0, REG_FP); // RUP
     issue_and_expect(fp_op(7'h00, 2, 7), 32'h3f80_0000, 32'h4000_0000, 0,
