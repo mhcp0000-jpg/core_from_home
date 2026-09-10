@@ -85,6 +85,26 @@ module rv_divider_tb;
                32'hffff_ffff, 8'd4);
     run_divide(32'h8000_0000, 32'hffff_ffff, DIV_SIGNED_QUOTIENT,
                32'h8000_0000, 8'd5);
+    run_divide(32'h8000_0000, 32'hffff_ffff, DIV_SIGNED_REMAINDER,
+               32'h0, 8'd6);
+    run_divide(32'h8000_0000, 0, DIV_SIGNED_QUOTIENT,
+               32'hffff_ffff, 8'd7);
+    run_divide(32'h8000_0000, 0, DIV_SIGNED_REMAINDER,
+               32'h8000_0000, 8'd8);
+    run_divide(32'hffff_ffff, 0, DIV_UNSIGNED_REMAINDER,
+               32'hffff_ffff, 8'd9);
+    run_divide(0, 0, DIV_UNSIGNED_QUOTIENT, 32'hffff_ffff, 8'd10);
+    run_divide(0, 0, DIV_SIGNED_REMAINDER, 0, 8'd11);
+    run_divide(-32'sd20, -32'sd3, DIV_SIGNED_QUOTIENT, 6, 8'd12);
+    run_divide(-32'sd20, -32'sd3, DIV_SIGNED_REMAINDER, -32'sd2, 8'd13);
+    run_divide(32'd20, -32'sd3, DIV_SIGNED_REMAINDER, 2, 8'd14);
+    run_divide(-32'sd2, 32'd3, DIV_SIGNED_QUOTIENT, 0, 8'd15);
+    run_divide(-32'sd2, 32'd3, DIV_SIGNED_REMAINDER, -32'sd2, 8'd16);
+    run_divide(32'h8000_0000, 1, DIV_SIGNED_QUOTIENT, 32'h8000_0000, 8'd17);
+    run_divide(32'hffff_ffff, 32'h8000_0000, DIV_UNSIGNED_QUOTIENT, 1, 8'd18);
+    run_divide(32'hffff_ffff, 32'h8000_0000, DIV_UNSIGNED_REMAINDER,
+               32'h7fff_ffff, 8'd19);
+    $display("DIV/REM corners: zero divisor, overflow, remainder sign and magnitude boundaries PASS");
 
     $display("rv_divider_tb PASS");
     $finish;

@@ -6,6 +6,7 @@ module rv_fpu_tb;
   logic [31:0] instruction, operand_a, operand_b, operand_c;
   logic [2:0] rounding_mode, frm;
   logic [7:0] sequence_id, result_sequence;
+  logic [7:0] flush_sequence;
   logic destination_valid, flush_valid, flush_all;
   reg_class_e destination_class, result_destination_class;
   logic [6:0] destination_phys, result_destination_phys;
@@ -37,7 +38,7 @@ module rv_fpu_tb;
     .destination_valid_i(destination_valid),
     .destination_class_i(destination_class),
     .destination_phys_i(destination_phys), .flush_valid_i(flush_valid),
-    .flush_all_i(flush_all), .flush_sequence_i('0),
+    .flush_all_i(flush_all), .flush_sequence_i(flush_sequence),
     .result_valid_o(result_valid), .result_ready_i(result_ready),
     .result_sequence_o(result_sequence),
     .result_destination_valid_o(result_destination_valid),
@@ -108,6 +109,7 @@ module rv_fpu_tb;
     destination_phys = 7'd40;
     flush_valid = 1'b0;
     flush_all = 1'b0;
+    flush_sequence = '0;
     result_ready = 1'b1;
     repeat (3) @(posedge clk);
     @(negedge clk);
@@ -186,6 +188,71 @@ module rv_fpu_tb;
     issue_and_expect(fp_op(7'h00, 2, 7), 32'h3f80_0000, 32'h4000_0000, 0,
                      3'b111, 3'b101, 0, 0, 1'b1, REG_FP); // reserved dynamic rm
 
+    // Fill the two-stage elastic pipe with back-to-back, distinct payloads.
+    // Hold WB ready low: both data and identity must remain stable.
+    result_ready = 0;
+    destination_class = REG_FP;
+    instruction = fp_op(7'h78, 0, 0); // FMV.W.X: exact bit-preserving payload
+    rounding_mode = 0; frm = 0;
+    sequence_id = 8'hfe; operand_a = 32'h12345678; destination_phys = 7'd41;
+    request_valid = 1;
+    #1;
+    if (!request_ready) $fatal(1, "Empty FPU did not accept first request");
+    @(posedge clk); @(negedge clk);
+    sequence_id = 8'hff; operand_a = 32'h87654321; destination_phys = 7'd42;
+    #1;
+    if (!request_ready) $fatal(1, "FPU cannot accept back-to-back request");
+    @(posedge clk); @(negedge clk);
+    request_valid = 0;
+    repeat (4) begin
+      #1;
+      if (request_ready || !result_valid || result_sequence !== 8'hfe ||
+          result_data !== 32'h12345678 || result_destination_phys !== 7'd41 ||
+          result_fflags !== 0 || result_exception_valid)
+        $fatal(1, "FPU stalled output changed or full pipe accepted request");
+      @(posedge clk); @(negedge clk);
+    end
+    // A branch boundary of FE kills FF but preserves FE, even across wrap.
+    flush_sequence = 8'hfe; flush_valid = 1;
+    @(posedge clk); @(negedge clk);
+    flush_valid = 0;
+    #1;
+    if (!result_valid || result_sequence !== 8'hfe)
+      $fatal(1, "Selective flush killed older FPU result");
+    result_ready = 1;
+    @(posedge clk); @(negedge clk);
+    repeat (3) begin
+      #1;
+      if (result_valid) $fatal(1, "Flushed FPU result leaked or old result duplicated");
+      @(posedge clk); @(negedge clk);
+    end
+    // Explicit modular-age case: seq 00 is younger than boundary FF.
+    result_ready = 0;
+    sequence_id = 8'h00; operand_a = 32'hdeadbeef; request_valid = 1;
+    @(posedge clk); @(negedge clk);
+    request_valid = 0;
+    @(posedge clk); @(negedge clk);
+    flush_valid = 1; flush_sequence = 8'hff;
+    @(posedge clk); @(negedge clk);
+    flush_valid = 0;
+    #1;
+    if (result_valid) $fatal(1, "FPU sequence-wrap flush failed");
+    // Full flush discards all occupied stages under output backpressure.
+    sequence_id = 8'h10; request_valid = 1;
+    @(posedge clk); @(negedge clk);
+    sequence_id = 8'h11;
+    @(posedge clk); @(negedge clk);
+    request_valid = 0; flush_valid = 1; flush_all = 1;
+    @(posedge clk); @(negedge clk);
+    flush_valid = 0; flush_all = 0; result_ready = 1;
+    repeat (3) begin
+      #1;
+      if (result_valid) $fatal(1, "FPU full-flush leaked a result");
+      @(posedge clk); @(negedge clk);
+    end
+    issue_and_expect(fp_op(7'h00, 2, 0), 32'h3f800000, 32'h40000000, 0,
+                     0, 0, 32'h40400000, 0, 0, REG_FP);
+    $display("FPU transport: back-to-back, stall stability, selective/wrap/full flush and restart PASS");
     $display("rv_fpu_tb PASS");
     $finish;
   end

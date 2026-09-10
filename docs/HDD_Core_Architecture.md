@@ -2465,6 +2465,24 @@ FP flag/CSR의 같은 cycle commit은 ROB serializing 규칙으로 분리되므�
 FS=Off 접근 제한/FS dirty 추적 전체 경로나 모든 core-level CSR instruction
 조합의 sign-off를 대신하지 않는다.
 
+#### Local execution-unit control corners (2026-09-10)
+
+`rv_fpu_tb`에 두 개의 연속 FMV.W.X payload `12345678/tag41/seqFE`,
+`87654321/tag42/seqFF`를 넣고 output ready를 4 cycle 내린 검사를 추가했다.
+full pipe에서 request ready가 내려가고 첫 result의 data/tag/flags가 유지되어야 한다.
+boundary FE의 selective flush는 FF만 제거하며, boundary FF에 대한 seq00도
+modular age상 younger이므로 제거한다. full flush와 flush 이후 FADD 1+2=3도 검사한다.
+flush cycle에는 request를 보내지 않고 result ready도 0으로 두므로, 이 회귀가
+flush와 동시 handshake의 모든 조합을 보장하지는 않는다.
+
+`rv_divider_tb`는 기존 5개에 14개 explicit expected-value case를 더했다.
+INT_MIN/-1 quotient=INT_MIN 및 remainder=0, divisor=0의 quotient=FFFFFFFF와
+remainder=dividend, 0/0, 음수/양수 remainder sign, |dividend|<|divisor|,
+INT_MIN/1 및 unsigned FFFFFFFF/80000000의 quotient=1/remainder=7FFFFFFF를 검사한다.
+FPU transport와 DIV/REM 모두 PASS이며 추가 RTL 수정은 필요하지 않았다.
+unit 18종 전체 회귀도 PASS다. 기존 LSQ forwarding/older-store stall 회귀는
+재실행했으며 이번 절의 신규 검사에는 dual-LSU 충돌 시나리오 확장을 포함하지 않는다.
+
 ### 18.5 실행 결과와 commit 비교 계약
 
 | Gate | 실행 산출물 | 2026-09-10 결과 |
