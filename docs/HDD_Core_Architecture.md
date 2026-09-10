@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | Integration baseline v1.14.2 (standard CLINT memory map) |
+| 상태 | RTL-synchronized integration baseline v1.15.1 (2026-09-10) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -24,8 +24,8 @@
 | Predictor | 256-entry 4-way BTB, 2 Ki bimodal + 2 Ki gshare + 2 Ki chooser tournament, 16-entry RAS |
 | OoO window | ROB 48, branch checkpoint 8 |
 | Rename | INT/FP RAT+RRAT, INT/FP PRF 각 80 entries |
-| Issue | global 2 uop/cycle, INT IQ 24, MEM IQ 16, FP IQ 16 |
-| Execute | ALU 2, BRU 1, MUL 1, DIV 1, LSU/AGU 2, FP cluster 1 |
+| Issue | unified IQ 56 entries(`24+16+16` capacity knobs), global 2 uop/cycle |
+| Execute | ALU 2, BRU 1, 2-stage MUL 1, iterative DIV 1, LSU/AGU 2, unified 3-stage FP pipe 1 |
 | Memory ordering | LQ 24, SQ 16, store buffer 16, conservative older-store blocking |
 | Precise state | execution OoO, commit 최대 2개/cycle in order |
 | Initial memory | ITIM/DTIM 각 128 KiB, 2-bank × 64-bit, bank별 1R1W |
@@ -36,7 +36,9 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-02)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성**이다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 RV32F 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 HostIF와 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. v1.12.2 대비 cycle은 3.89% 감소하고 IPC는 4.05% 증가했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀를 검사한다. 단, 이는 10초 미만 구현 비교치이며 random long-run, Spike/Sail differential과 riscv-arch-test 및 전체 ISA sign-off는 아직 남아 있다.
+현재 구현 상태(2026-09-10)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성 및 IFU PMP parcel-boundary 수정 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, EBREAK/debug 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
+
+이 문서의 표기 규칙은 다음과 같다. **현재 RTL**은 저장소의 합성 module이 실제로 구현하는 동작이고, **확장 목표**는 현재 port를 유지하며 교체할 예정인 구조다. 두 표현이 충돌하면 현재 RTL 설명이 구현 기준이다. `HAS_SMODE=1`, EBREAK/debug module, cache/MMU와 분리형 FP divsqrt는 확장 목표이며 기본 sign-off configuration은 `XLEN=32`, `HAS_C=1`, `HAS_F=1`, `HAS_SMODE=0`이다.
 
 ## 1. 목적과 성능 포지션
 
@@ -165,7 +167,7 @@ flowchart TB
 
     subgraph WINDOW["Out-of-order scheduling window"]
       direction LR
-      IQ["Split issue queues<br/>INT 24 / MEM 16 / FP 16<br/>ROB-age oldest-ready candidates"]
+      IQ["Unified issue queue 56<br/>24+16+16 capacity knobs<br/>ROB-age oldest-ready candidates"]
       ARB["Global issue arbiter<br/>5 compatible ports<br/>maximum 2 grants/cycle"]
       OPR["Operand read + bypass<br/>for the two granted uops"]
       IQ --> ARB --> OPR
@@ -175,7 +177,7 @@ flowchart TB
       direction LR
       INTEX["P0 INT0: ALU0 + branch + CSR hook<br/>P1 INT1: ALU1 + MUL + DIV side unit"]
       MEMEX["P2 MEM0: AGU0 + LSU0<br/>P3 MEM1: AGU1 + LSU1"]
-      FPEX["P4 FP cluster<br/>FMA + misc + div/sqrt"]
+      FPEX["P4 unified FP pipe<br/>RV32F bit-level execute<br/>3-stage elastic transport"]
     end
 
     subgraph MEM["LSU cluster - ordering and memory visibility"]
@@ -365,9 +367,9 @@ ELF load, direct-string print, proxy write syscall, TOHOST=1 종료는 Verilator
 | ROB entries | 48 | 지연 은닉과 초기 구현 복잡도의 절충 |
 | Integer physical registers | 80 | x0 포함 32 architectural + 최대 48 speculative destination |
 | FP physical registers | 80 | 32 architectural + speculative destination |
-| Integer IQ | 24 | ALU/branch/multiply 대기 |
-| Memory IQ | 16 | AGU issue 대기 |
-| FP IQ | 16 | FP 연산 대기 |
+| Integer IQ capacity knob | 24 | 현재 unified IQ 총량에 더하는 구성값 |
+| Memory IQ capacity knob | 16 | 현재 별도 partition이 아닌 총량 구성값 |
+| FP IQ capacity knob | 16 | 현재 별도 partition이 아닌 총량 구성값 |
 | Load queue | 24 | dual LSU의 speculative load 추적 |
 | Store queue | 16 | 두 store address/data update와 forwarding |
 | Committed store buffer | 16 | dual enqueue와 cache backpressure 흡수 |
@@ -414,6 +416,46 @@ parameter화됐지만 instruction bundle 폭은 여러 module interface에서 `[
 별도 milestone로 연다. 4-wide에서도 dual LSU와 2-bank 1R1W DTIM은 유지할 수 있지만
 memory instruction이 3개 이상 준비된 cycle에는 구조적 backpressure가 발생한다.
 
+### 4.2 Package encoding과 폭 계약
+
+재구현 시 enum의 선언 순서를 바꾸면 decode, issue mask, trace와 testbench가 동시에
+깨질 수 있으므로 아래 값은 wire encoding으로 고정한다. 명시하지 않은 reserved 값은
+생성하지 않으며 입력에서 발견되면 illegal/default 처리한다.
+
+| Type | 값 |
+|---|---|
+| `exec_port_e` | `INT0=0`, `INT1=1`, `MEM0=2`, `MEM1=3`, `FP=4` |
+| `fu_class_e` | `NONE=0`, `INT=1`, `BRANCH=2`, `MUL=3`, `DIV=4`, `LOAD=5`, `STORE=6`, `FP=7`, `CSR=8`, `FENCE=9` |
+| `reg_class_e` | `NONE=0`, `INT=1`, `FP=2` |
+| `inst_len_e` | `NONE=0`, `16=1`, `32=2` |
+| `privilege_e` | `U=2'b00`, `S=2'b01`, `M=2'b11` |
+| `csr_cmd_e` | `NONE=0`, `WRITE=1`, `SET=2`, `CLEAR=3` |
+| `multiply_op_e` | `LOW=0`, `HIGH_SS=1`, `HIGH_SU=2`, `HIGH_UU=3` |
+| `divide_op_e` | signed quotient=0, unsigned quotient=1, signed remainder=2, unsigned remainder=3 |
+| `axi_resp_e` | `OKAY=00`, `EXOKAY=01`, `SLVERR=10`, `DECERR=11` |
+| `soc_target_e` | I-local=0, D-local=1, PLIC=2, HostIF=3, reserved=4, error=5 |
+| `host_event_e` | TOHOST=0, EXIT=1, CONSOLE_TX=2, RESERVED=3 |
+
+`int_alu_op_e`는 ADD, SUB, SLT, SLTU, XOR, OR, AND, SLL, SRL, SRA,
+COPY_SRC0, COPY_SRC1 순서로 `0..11`이고 `branch_op_e`는 NONE, EQ, NE, LT,
+GE, LTU, GEU, JAL, JALR 순서로 `0..8`이다. exception cause는 RISC-V 값을
+그대로 사용한다: instruction misaligned/access/illegal/breakpoint=`0/1/2/3`,
+load misaligned/access=`4/5`, store misaligned/access=`6/7`, ECALL U/S/M=`8/9/11`.
+
+`lsq_stall_reason_e`는 NONE, UNKNOWN_ADDR, STORE_DATA, PARTIAL_OVERLAP,
+BANK_CONFLICT, DEVICE_SERIALIZE 순서의 `0..5`다. local fabric의
+`mem_replay_reason_e`는 NONE, BANK_CONFLICT, UNKNOWN_STORE, STORE_DATA,
+PARTIAL_OVERLAP, FLUSHED 순서의 `0..5`다. 현재 D-Fabric은 충돌 request를
+handshake하지 않는 backpressure 방식을 우선 사용하므로 replay 값은 주로 bridge와
+향후 decoupled memory 경로의 계약으로 남는다.
+
+`prediction_meta_t`의 packed field는 `valid`, `taken`, `bimodal_taken`,
+`global_taken`, `use_global`, `is_call`, `is_return`, `target[63:0]`,
+`global_history[10:0]`, `btb_index[7:0]`, `ras_pointer[3:0]`,
+`ras_count[4:0]` 순서다. `target`은 RV32에서도 64-bit로 저장하며 consumer가
+`[XLEN-1:0]`만 사용한다. 현재 RTL은 별도의 `decoded_uop_t` package struct를
+사용하지 않고 동일 필드를 `rv_decode2`의 flattened port로 전달한다.
+
 ## 5. 파이프라인
 
 ### 5.1 정상 ITIM-hit 경로
@@ -428,7 +470,7 @@ memory instruction이 3개 이상 준비된 cycle에는 구조적 backpressure�
 | R0 | Rename | RAT lookup, physical destination allocation, intra-pair dependency bypass |
 | D1 | Dispatch | ROB/IQ/LQ/SQ를 원자적으로 할당 |
 | I0 | Select | ready wakeup, age 기반 select, global 2-uop grant |
-| E0..n | Execute | ALU/BRU 1, MUL 2, DIV variable, FPU variable, load 3+ cycles |
+| E0..n | Execute | ALU/BRU 1, MUL 2, DIV variable, FPU 3-stage, load 3+ cycles |
 | W0 | Writeback | PRF write, dependent wakeup, ROB completion |
 | C0 | Commit | head부터 최대 2개 retire, RRAT/CSR/fflags 갱신 |
 
@@ -487,7 +529,7 @@ I local fabric은 IFU request와 Main Xbar inbound access를 Boot ROM 또는 ITI
 - architectural redirect와 `FENCE.I`는 target/loop block buffer valid를 모두 지운다.
 - predicted redirect와 current memory response가 겹치면 old-path response는 queue에 넣지 않고 수락하여 outstanding slot만 해제한다. target-buffer block이 redirect+fill 경로를 단독 사용한다.
 
-### 6.4 Target/loop block buffer
+### 6.3 Target/loop block buffer
 
 `rv_fetch_target_buffer`는 16-byte fetch block 16개를 보존하는 direct-mapped 구조다. 각 entry는 valid, physical block tag, 128-bit data를 저장하며 기본 용량은 `IF_TARGET_BUFFER_ENTRIES`로 parameter화한다. 이는 일반적인 coherent I-cache가 아니라, 이미 정상 응답을 받은 backward branch target을 짧게 재사용해 correct predicted-taken branch마다 64-byte queue 전체를 다시 채우는 비용을 줄이는 frontend 전용 buffer다.
 
@@ -495,7 +537,7 @@ memory response가 current epoch이고 OKAY일 때 `outstanding_addr_q`의 align
 
 direct-mapped 16-entry와 32-entry CoreMark A/B는 각각 548,343 cycle과 548,318 cycle로 차이가 25 cycle뿐이었다. 따라서 추가 256-byte data/tag 면적을 정당화하지 못해 16-entry를 기본값으로 유지했다. 실행 중 Host/LSU가 ITIM을 수정한 뒤에는 반드시 `FENCE.I`를 실행해야 하며, architectural redirect가 buffer 전체를 invalidate하므로 self-modifying code가 stale block을 재사용하지 않는다.
 
-### 6.3 branch predictor
+### 6.4 branch predictor
 
 초기 predictor는 다음 세 요소를 사용한다.
 
@@ -505,7 +547,7 @@ direct-mapped 16-entry와 32-entry CoreMark A/B는 각각 548,343 cycle과 548,3
 - 2048-entry PC-indexed 2-bit chooser: bimodal과 gshare가 다를 때 맞은 component 쪽으로 학습
 - 16-entry RAS: JAL/JALR hint에 따른 call/return 추적
 
-conditional branch는 chooser가 bimodal 또는 gshare 결과를 선택한다. resolve 시 두 PHT를 모두 실제 결과로 학습하고, 두 component의 예측이 달랐을 때만 chooser를 갱신한다. `prediction_meta_t`가 두 component 결과와 선택값을 uop/ROB까지 운반하므로 학습은 lookup 당시 판단을 기준으로 한다. 예측기는 speculative history와 committed/recovery state를 구분한다. branch resolve 시 direction 또는 target이 틀리면 해당 branch checkpoint로 rename state와 predictor history를 복구하고 younger state를 flush한다.
+conditional branch는 chooser가 bimodal 또는 gshare 결과를 선택한다. resolve 시 두 PHT를 모두 실제 결과로 학습하고, 두 component의 예측이 달랐을 때만 chooser를 갱신한다. `prediction_meta_t`는 IQ와 backend의 ROB-sequence-indexed branch table이 실행 완료까지 보관하므로 학습은 lookup 당시 판단을 기준으로 한다. ROB entry 자체에는 이 metadata가 없다. 예측기는 speculative history와 committed/recovery state를 구분한다. branch resolve 시 direction 또는 target이 틀리면 해당 branch checkpoint로 rename state와 predictor history를 복구하고 younger state를 flush한다.
 
 ## 7. Decode와 명령어 표현
 
@@ -521,6 +563,29 @@ decode 결과는 최소 다음 제어 정보를 가진다.
 - serializing, illegal, fetch fault 표시
 
 초기 구현은 macro-op fusion을 사용하지 않는다. C는 별도 uop이 아니라 32-bit canonical instruction으로 확장한다.
+
+### 7.1 현재 decoder/commit 구현 범위
+
+아래 표는 장기 ISA 목표가 아니라 2026-09-10 RTL의 실제 경로다. “decode”만 된
+명령과 ROB-head에서 architectural completion까지 되는 명령을 구분한다.
+
+| 그룹 | 현재 completion 경로 | 비고 |
+|---|---|---|
+| RV32I integer | LUI/AUIPC/JAL/JALR, 6 branch, LB/LH/LW/LBU/LHU, SB/SH/SW, OP-IMM/OP | natural-aligned memory만 지원 |
+| RV64 base hook | LD/LWU/SD, OP-IMM-32, OP-32 | `XLEN=64` elaboration 경로이며 SoC sign-off 대상은 아직 RV32 |
+| M | MUL/MULH/MULHSU/MULHU, DIV/DIVU/REM/REMU 및 RV64 W forms | MUL 2-stage, DIV iterative |
+| F | FLW/FSW, FADD.S/FSUB.S/FMUL.S/FDIV.S/FSQRT.S, FMADD family, sign/min/max/compare/class/convert/move | unified 3-stage transport, full differential sign-off 전 |
+| C | `rv_c_expander`가 legal RV32C를 canonical instruction으로 변환 | raw 16-bit는 predictor/trace, canonical 32-bit는 execute에 사용 |
+| Zicsr/system | 6 CSR RMW forms, ECALL, MRET, WFI | CSR/system은 ROB head에서 serialize |
+| Zifencei | FENCE, FENCE.I | conservative D-memory drain + retire redirect |
+| 예외 | fetch/access/illegal, address-misaligned, ECALL U/M | precise ROB-head trap |
+
+현재 gap을 숨기지 않는다. EBREAK는 decoder encoding은 존재하지만 backend
+ROB-head completion/breakpoint trap 연결이 아직 없으므로 지원 완료로 간주하지 않는다.
+`HAS_SMODE=1`에서 SRET decode와 PLIC S-context는 열리지만 S-mode CSR/delegation 및
+SRET completion은 미구현이므로 기본값은 반드시 0이다. `debug_halt_req_i`는 새
+dispatch를 막는 quiesce 입력일 뿐 Debug Module/abstract command/resume 기능이 아니다.
+A/B/V/D, misaligned split access, MMU/page fault는 범위 밖이다.
 
 ## 8. Rename, PRF, free list
 
@@ -538,7 +603,7 @@ rename은 architectural register 이름의 false dependency인 WAR/WAW를 제거
 | FP PRF | 80 × 32 | F-extension value, `FLEN=32` |
 | Free list | INT/FP 각 80 bits+allocator | 사용 가능한 physical register |
 | Busy/ready table | INT/FP 각 80 bits | producer writeback 완료 여부 |
-| Branch checkpoint | 8 entries | RAT/free-list/predictor/queue recovery state |
+| Branch checkpoint | 8 entries | `rv_rename2`의 INT/FP RAT와 free bitmap snapshot; predictor/queue는 sequence 기반 별도 복구 |
 
 x0는 zero 전용 physical register p0에 고정하고 ready=1/value=0으로 유지한다. destination x0에는 새 physical register를 할당하지 않는다.
 
@@ -569,7 +634,7 @@ dispatch에 필요한 ROB/IQ/LSQ/checkpoint 중 하나라도 부족하면 두 la
 - commit 전에는 stale physical register를 free-list로 반환하지 않는다.
 - flush된 instruction이 할당한 physical register는 정확히 한 번 반환한다.
 - 80-entry PRF는 32 architectural + 최대 48 ROB destination을 수용해 PRF 부족이 ROB보다 먼저 발생하지 않는 기준선이다.
-- logical INT 4R2W, FP 4R2W는 구현이 단순한 flop-array로 먼저 검증하고, PPA 단계에서 banking/replication으로 교체한다.
+- 현재 backend instance는 INT/FP 각각 8 data-read + 6 readiness-query + 2 write + 2 allocation port의 flop-array다. PPA 단계에서 banking/replication으로 교체한다.
 
 ## 9. ROB와 precise state
 
@@ -583,14 +648,21 @@ dispatch에 필요한 ROB/IQ/LSQ/checkpoint 중 하나라도 부족하면 두 la
 
 | 분류 | 필드 |
 |---|---|
-| Identity/order | valid, monotonically wrapped sequence, ROB index, PC, raw/expanded instruction, length |
+| Identity/order | `valid`, wrapped `sequence_id`, array index(implicit), PC, raw instruction, length |
 | Rename | destination class, architectural destination, new physical tag, stale physical tag, writes-destination |
-| Completion | dispatched, issued(optional debug), complete, result/writeback accepted |
-| Exception | exception valid, cause, `tval`, fetch/access/illegal source |
-| Branch | checkpoint ID, predicted direction/target, actual direction/target, mispredict |
-| Memory | load/store flag, LQ/SQ index, size/mask, store-commit-ready |
-| System | CSR address/op/value, fence/serializing, privilege snapshot |
-| FP | rounding metadata, accrued `fflags` |
+| Operand/system aid | source0 physical tag, serializing bit |
+| Completion | `complete`; writeback acceptance이 이 bit를 set |
+| Exception | exception valid, cause, `tval` |
+| Branch | is-branch, mispredict bit, resolved next-PC/target |
+| Memory | is-load/is-store, LQ index, SQ index |
+| FP | accrued `fflags[4:0]` |
+
+ROB entry에는 canonical instruction, branch checkpoint/prediction meta, memory
+address/size/mask, CSR write data를 저장하지 않는다. canonical instruction과 predictor
+meta는 IQ 및 별도 branch sequence table이 실행 완료까지 보유하고, 주소/데이터는
+LQ/SQ가, CSR RMW pending state는 `rv_csr_file`이 소유한다. ROB의
+`alloc_instruction_i`에는 retire trace와 system 재분류에 필요한 raw instruction이
+들어간다.
 
 `sequence`는 ROB index가 wrap된 뒤에도 age를 비교할 수 있게 한다. IQ와 LQ/SQ는 ROB index만이 아니라 sequence 또는 wrap-aware age 정보를 함께 보관한다.
 
@@ -599,8 +671,8 @@ dispatch에 필요한 ROB/IQ/LSQ/checkpoint 중 하나라도 부족하면 두 la
 | 이벤트 | ROB 상태 변화 |
 |---|---|
 | Dispatch | tail에서 최대 2 entry 원자 할당, metadata 기록, complete=0 |
-| Issue | architectural 상태 변화 없음; debug/timeout용 issued 상태만 선택 기록 |
-| Execute | branch actual, memory address, exception metadata를 해당 entry에 기록 |
+| Issue | ROB 상태 변화 없음; issued 상태는 IQ/execution unit만 소유 |
+| Execute | 승인된 completion이 branch resolved-next-PC/mispredict, exception, fflags와 complete를 갱신; memory address/data는 LQ/SQ에만 기록 |
 | Writeback | PRF write가 승인되면 destination instruction complete=1 |
 | Store execute | SQ address/data 준비를 기록하되 ROB complete는 필요한 store operand가 모두 준비된 때 설정 |
 | Commit | head부터 최대 2 entry 제거, RRAT/CSR/fflags/store-buffer side effect 적용 |
@@ -616,13 +688,13 @@ head/tail 규칙:
 ### 9.4 precise exception, interrupt, branch recovery
 
 - head exception: faulting instruction은 commit하지 않는다. `mepc/mcause/mtval`을 기록하고 younger ROB/IQ/LQ/SQ, execution result를 flush한다. RAT은 RRAT에서 복원한다.
-- interrupt: 현재 head 이전까지 정상 commit된 instruction 경계에서 받는다. 선택된 commit lane 뒤를 `mepc`로 만들고 speculative state를 flush한다.
-- branch mispredict: branch 자신은 complete 상태로 남고 해당 checkpoint보다 younger인 state만 제거한다. RAT/free-list, fetch history, ROB tail, LQ/SQ tail을 checkpoint로 복구한다.
+- interrupt: 현재 baseline은 ROB가 완전히 빈 instruction boundary에서만 받는다. 마지막 retire가 만든 architectural next-PC를 `mepc`로 사용하고 speculative state를 full recovery한다.
+- branch mispredict: branch 자신은 complete 상태로 남고 해당 sequence보다 younger인 state만 제거한다. RAT/free-list는 rename checkpoint로 복구하고 predictor history는 prediction metadata로 복구한다. ROB는 tail/count를 재계산하고 IQ/LQ/SQ/checkpoint table은 sequence 비교로 younger entry를 각각 무효화한다.
 - store: commit된 store만 store buffer로 이동한다. store buffer가 필요한 entry를 받을 수 없으면 ROB head에서 commit을 대기한다.
 
 ### 9.5 불변조건과 예시
 
-- ROB sequence는 program order와 동일하고 commit sequence는 감소하거나 건너뛸 수 없다.
+- ROB sequence는 allocation program order와 동일하고 commit sequence는 감소할 수 없다. wrong-path flush가 만든 sequence gap은 건너뛸 수 있다.
 - exception instruction과 그 younger instruction은 register/CSR/memory side effect를 만들 수 없다.
 - 같은 cycle의 dual commit에서 lane1 side effect는 lane0 side effect보다 논리적으로 뒤다.
 - ROB 밖 또는 generation이 다른 writeback은 PRF ready와 complete를 변경할 수 없다.
@@ -633,18 +705,23 @@ head/tail 규칙:
 
 ### 10.1 issue policy
 
-Issue Queue의 목적은 operand가 준비된 uop을 program order와 무관하게 실행 유닛으로 보내 latency를 숨기는 것이다. 각 entry는 `valid`, ROB index/sequence, functional-unit mask, physical source tag 최대 3개, source-ready bit, destination tag, immediate/operation control, LQ/SQ index를 저장한다.
+Issue Queue의 목적은 operand가 준비된 uop을 program order와 무관하게 실행 유닛으로 보내 latency를 숨기는 것이다. 각 entry는 `valid`, ROB sequence, FU/5-bit execution-port mask, 최대 3개의 source used/class/physical tag/ready, destination valid/class/tag, PC/canonical instruction/length/prediction, immediate/operation과 operand-select control, memory size/sign, rounding mode, branch checkpoint와 LQ/SQ index, store-address-issued를 저장한다. ROB array index는 저장하지 않으며 sequence가 completion/recovery identity다.
 
 상태 전이:
 
 1. dispatch가 ROB와 대상 IQ entry를 같은 cycle에 원자 할당한다.
 2. dispatch 시 busy table과 같은-cycle writeback/bypass로 source-ready 초기값을 만든다.
 3. writeback tag broadcast와 일치하는 source를 ready로 바꾼다.
-4. INT/MEM/FP queue가 각각 oldest-ready candidate를 만든다.
-5. central arbiter가 포트 호환성과 unit busy를 검사해 전 클러스터 합산 최대 2 uop을 grant한다.
+4. 단일 unified IQ가 전체 entry에서 oldest-ready candidate 최대 두 개를 만든다.
+5. central arbiter가 두 candidate의 포트 호환성과 unit busy를 검사해 최대 2 uop을 grant한다.
 6. execution unit이 request를 accept한 때에만 IQ entry를 제거한다. backpressure이면 payload를 유지한다.
 
-INT/MEM/FP queue는 분리하지만 age는 공통 ROB sequence로 비교한다. oldest-ready를 기본으로 하되 compatible pair를 선택해 한 포트의 제한 때문에 다른 독립 포트가 비지 않게 한다.
+현재 RTL은 INT/MEM/FP를 물리적으로 분리하지 않는다. `INT_IQ_ENTRIES`,
+`MEM_IQ_ENTRIES`, `FP_IQ_ENTRIES`는 `rv_backend`에서 합산되어
+`IQ_ENTRIES=56`을 만들며 모든 FU class가 하나의 `rv_issue_queue`를 공유한다.
+따라서 한 class가 전체 queue를 점유할 수 있고 정적 partition imbalance는 없지만,
+56-entry wakeup/select fan-in이 timing·전력 부담이 된다. 향후 split IQ로 바꿀 때에도
+공통 ROB sequence age와 global 2-grant arbiter 계약은 유지한다.
 
 불변조건:
 
@@ -654,7 +731,9 @@ INT/MEM/FP queue는 분리하지만 age는 공통 ROB sequence로 비교한다. 
 - flush된 ROB sequence의 entry는 다음 cycle까지 모두 invalid가 되어야 한다.
 - 실행 포트는 5개지만 global issue count는 cycle당 2 이하이다.
 
-split IQ는 unified IQ보다 wakeup/select timing과 CAM 전력을 줄이지만, 한 queue가 가득 찬 동안 다른 queue의 빈 entry를 빌릴 수 없다. queue-full 성능 counter로 실제 imbalance를 측정한 뒤 용량을 조정한다.
+unified IQ는 모든 class가 빈 entry를 공유해 용량 활용은 좋지만 wakeup/select 비교망이
+커진다. PPA 단계에서 INT/MEM/FP split을 적용하면 timing과 CAM 전력은 줄지만 class별
+고정 용량 imbalance가 생기므로 queue-full/class-occupancy counter를 근거로 분할한다.
 
 ### 10.2 확정 execution resource
 
@@ -668,13 +747,15 @@ split IQ는 unified IQ보다 wakeup/select timing과 CAM 전력을 줄이지만,
 | AGU | 2 | 두 load/store virtual address 동시 생성 |
 | D-TLB/PMP path | 2 | 초기 PMP/PMA, 향후 D-TLB를 LSU0/1과 1:1 추가 |
 | D local request path | 2 | LSU0/1 → D-Arbiter |
-| FP cluster | 1 | cycle당 최대 1 FP uop accept |
-| FP FMA pipeline | 1 | add/sub/mul/FMA의 주 pipelined datapath |
-| FP misc pipeline | 1 | compare/classify/sign/min/max/convert/move, FP issue slot 공유 |
-| FP div/sqrt side unit | 1 | iterative long-latency unit |
+| FP unified execute/transport | 1 | RV32F 전 연산을 accept 시 계산하고 3-stage elastic pipe로 전달 |
 | CSR/privileged unit | 1 | commit과 INT0에 결합, serializing 처리 |
 
-`FP cluster 1개`는 모든 FP 연산을 하나의 blocking unit에서 처리한다는 뜻이 아니다. FMA/misc pipeline과 iterative div/sqrt unit은 내부적으로 분리한다. FP issue bandwidth는 1 uop/cycle이지만, div/sqrt가 실행되는 동안 다음 FP add/mul/FMA를 계속 받을 수 있다. 두 unit 결과가 같은 cycle에 완료되면 FP writeback arbiter와 skid buffer가 순서를 조정한다.
+현재 `rv_fpu`는 FMA/misc/div/sqrt를 물리적으로 나눈 상용 FPU가 아니다. request
+handshake 시 synthesizable integer/bit-level 함수로 결과와 flags를 계산하고 동일한
+`LATENCY=3` elastic pipe에 넣는다. output이 흐르면 operation 종류와 관계없이
+1 uop/cycle을 받을 수 있고, output backpressure가 pipe 전체로 전파된다. 향후
+fully-pipelined FMA + misc + iterative divsqrt로 교체하더라도 외부 request/result와
+ROB-precise `fflags` 계약은 유지한다.
 
 ### 10.3 execution port binding
 
@@ -684,7 +765,7 @@ split IQ는 unified IQ보다 wakeup/select timing과 CAM 전력을 줄이지만,
 | P1 / INT1 | ALU1 + MUL + DIV accept | add/sub, logic, shift, compare, multiply, divide/remainder | 1/cycle |
 | P2 / MEM0 | AGU0 + LSU0 | integer/FP load/store | 1/cycle |
 | P3 / MEM1 | AGU1 + LSU1 | integer/FP load/store | 1/cycle |
-| P4 / FP | FP FMA/misc + div/sqrt accept | F extension arithmetic/convert/compare/move | 1/cycle |
+| P4 / FP | unified RV32F pipe | F arithmetic/FMA/div/sqrt/convert/compare/move | 1/cycle |
 
 모든 포트가 동시에 grant되지는 않는다. central arbiter는 준비된 후보 중 age, 포트 호환성, long-latency unit ready를 검사해 최대 2개를 선택한다.
 
@@ -702,7 +783,10 @@ split IQ는 unified IQ보다 wakeup/select timing과 CAM 전력을 줄이지만,
 | FP + FP | 불가 | FP issue bandwidth가 1 |
 | branch + branch | 불가 | BRU가 1개 |
 
-INT IQ는 P0/P1에 호환되는 최대 두 후보를 만들고 MEM IQ는 최대 두 후보, FP IQ는 한 후보를 만든다. central arbiter는 oldest-ready를 우선하되, 한 포트에만 실행 가능한 older uop 때문에 다른 독립 포트가 불필요하게 비지 않도록 compatible pair를 선택한다. 두 MEM 후보는 AGU 이후 계산된 bank가 같을 수 있으므로 bank-conflict replay metadata를 보존한다.
+unified IQ는 전체 class에서 age가 가장 오래된 ready 후보 최대 두 개를 만든다. central
+arbiter는 candidate의 5-bit port mask와 unit-ready가 반영된 effective mask를 사용해
+서로 다른 포트에 최대 두 개를 배치한다. 두 MEM 후보는 AGU 이후 계산된 bank가 같을
+수 있으므로 D-Fabric의 request backpressure와 replay metadata를 보존한다.
 
 ### 10.4 latency와 throughput
 
@@ -714,21 +798,21 @@ INT IQ는 P0/P1에 호환되는 최대 두 후보를 만들고 MEM IQ는 최대 
 | integer divide/remainder | 2~34 | 2~66 | non-pipelined, early-out |
 | DTIM-hit integer/FP load | 3 이상 | 3 이상 | 최대 2/cycle, bank conflict 제외 |
 | FP add/sub/mul | 3 | 3 | 1/cycle |
-| FP fused multiply-add | 4 | 4 | 1/cycle |
-| FP compare/classify/move | 1~2 | 1~2 | 1/cycle |
-| FP convert | 2~3 | 2~3 | 1/cycle |
-| FP divide/square-root | 구현 측정 후 고정 | 구현 측정 후 고정 | iterative |
+| 현재 FP 모든 operation | 3 | 3-stage transport, RV64 F는 별도 sign-off 필요 | 1/cycle if unstalled |
 
-integer multiplier는 `2*XLEN` full product를 만든다. divider와 FP div/sqrt는 operand를 받아 side unit으로 넘긴 다음 해당 issue port를 해제한다. side unit이 busy이면 같은 종류의 새 uop만 stall하고 일반 ALU/FMA 연산은 계속 진행한다.
+integer multiplier는 `2*XLEN` full product를 만들고 2-stage elastic pipe로 전달한다.
+integer divider만 non-pipelined iterative side unit이며 특수 case가 아니면 RV32는 32회,
+RV64는 64회 radix-2 iteration을 수행한다. FP div/sqrt는 현재 별도 busy side unit이
+아니라 다른 FP operation과 동일하게 3-stage pipe를 사용한다.
 
 ### 10.5 PRF와 writeback bandwidth
 
 논리 register-file port 기준선은 다음과 같다.
 
-- Integer PRF: 4 read port, 2 write port
-- FP PRF: 4 read port, 2 write port
-- integer 4 read는 두 개의 integer store 또는 ALU + integer store 동시 issue를 지원한다.
-- FP 4 read는 3-source FMA와 FP store의 동시 issue를 지원한다.
+- Integer PRF: 8 asynchronous data-read, 6 readiness-query, 2 write, 2 allocate port
+- FP PRF: 8 asynchronous data-read, 6 readiness-query, 2 write, 2 allocate port
+- data-read 0..5는 두 issue candidate의 source 3개씩, 6..7은 dual-retire value/CSR source probe에 사용한다.
+- readiness-query 0..5는 dispatch 두 lane의 source 3개씩 ready bit를 읽는다.
 - 두 write port는 dual integer/FP load가 같은 cycle에 반환되는 경우를 지원한다.
 - FP compare/convert-to-integer 결과는 integer writeback network로 들어간다.
 
@@ -740,7 +824,7 @@ variable-latency 결과가 겹치면 실행 유닛 output skid buffer가 결과�
 
 LSU0와 LSU1은 load/store 기능이 같은 symmetric pipeline이다. 두 번째 LSU를 단순 AGU 추가로 만들지 않고 다음 경로를 모두 dual 처리한다.
 
-- MEM IQ에서 최대 두 ready memory uop select
+- unified IQ에서 최대 두 ready memory uop select
 - integer/FP PRF source read
 - 두 AGU의 virtual address 계산
 - PMP/PMA check 두 개와 향후 D-TLB hook
@@ -753,7 +837,7 @@ DTIM은 64-bit beat interleave 방식의 2-bank SRAM이다. `bank=(addr-DTIM_BAS
 
 store issue는 address/data를 SQ에 기록할 뿐 cache를 변경하지 않는다. SQ는 cycle당 두 entry update를 지원하고 commit된 store만 16-entry store buffer로 이동한다. store buffer는 최대 두 store를 enqueue하며, 서로 다른 bank이고 ordering/PMA 조건을 만족할 때 최대 두 store를 drain할 수 있다. MMIO와 fault 가능 access는 항상 하나씩 ROB head에서 처리한다.
 
-동일 cycle의 두 memory uop 사이에서도 ROB age를 보존한다. older store와 younger load의 주소가 같은 cycle에 계산되어 overlap하면 store data가 준비된 경우 pair-forwarding하고, 그렇지 않으면 younger load를 replay한다. memory exception과 replay가 동시에 발생하면 older uop의 exception이 우선이다.
+동일 cycle의 두 memory uop 사이에서도 ROB age를 보존한다. 현재 통합 `rv_lsq`는 두 AGU update를 같은 edge에 SQ/LQ에 기록하고 다음 cycle의 load candidate scan에서 새 SQ 상태를 본다. 따라서 same-cycle older-store/younger-load 조합은 store data가 준비됐으면 다음 cycle forwarding하고, 미정이면 stall하며 잘못된 memory read를 먼저 내보내지 않는다. 별도 조합 `rv_lsq_order_check`의 pair-bypass port는 저지연 후속 통합용 reference hook이다.
 
 dual LSU 때문에 LQ는 24, SQ는 16, committed store buffer는 16 entry로 확장한다. DTIM/CLINT 밖 요청은 D-Arbiter outbound queue가 AXI transaction으로 변환한다.
 
@@ -783,18 +867,18 @@ branch/jump는 INT0에서 resolve한다. actual direction, target, next PC 중 �
 
 | Queue | Entry field |
 |---|---|
-| LQ 24 | valid, ROB index/sequence, destination tag/class, virtual/physical address, address-valid, size, byte mask, signed, issued, executed, forwarded, forwarding SQ sequence, data, exception, replay reason, epoch |
-| SQ 16 | valid, ROB index/sequence, address, address-valid, size, byte mask, data, data-valid, FP/int source, committed, store-buffer allocated, exception, epoch |
-| Store buffer 16 | valid, ROB sequence, physical address, data, strobe, target type, AXI attributes, response pending |
+| LQ 24 | `valid`, killed tombstone, ROB sequence, destination-valid/physical tag, address/address-valid, size, byte mask, unsigned-load, device, issued, completed, exception/cause |
+| SQ 16 | `valid`, ROB sequence, address/address-valid, size, byte mask, data/data-valid, device, exception/cause |
+| Store buffer 16 | `valid`, sent, done, device, ROB sequence, address, data, byte mask, size; FIFO head/tail/count와 sticky machine-check |
 
-LQ/SQ age는 circular index 대소 비교가 아니라 ROB sequence 또는 wrap-aware comparison으로 판단한다. dispatch lane0/1의 ROB sequence와 LQ/SQ sequence가 동일한 order를 가져야 한다.
+LQ/SQ age는 circular index 대소 비교가 아니라 ROB sequence 또는 wrap-aware comparison으로 판단한다. dispatch lane0/1의 ROB sequence와 LQ/SQ sequence가 동일한 order를 가져야 한다. 현재 RTL은 load data, forwarding SQ index, replay reason을 LQ entry에 저장하지 않는다. load data와 forwarding은 candidate/completion 경로로 전달하고, replay response는 `issued`만 되돌려 같은 LQ entry를 재선택한다.
 
 ### 11.3 Store와 load 상태 전이
 
 Store:
 
 1. dispatch에서 SQ entry를 할당하고 ROB에 SQ index를 기록한다.
-2. base operand가 준비되면 MEM IQ가 `store-address` phase를 먼저 발행하고 AGU address/mask/PMP 결과를 SQ에 기록한다. store data가 이미 준비됐으면 같은 phase에 data도 기록한다.
+2. base operand가 준비되면 unified IQ가 `store-address` phase를 먼저 발행하고 AGU address/mask/PMP 결과를 SQ에 기록한다. store data가 이미 준비됐으면 같은 phase에 data도 기록한다.
 3. data가 늦으면 IQ entry는 `address-issued=1` 상태로 남아 있다가 data producer writeback에 wakeup되어 `store-data` phase를 다시 발행한다. 이 phase는 기존 SQ address-valid를 지우지 않는다.
 4. address와 data가 모두 valid이면 ROB store entry를 complete로 표시한다. address-only phase는 completion을 만들 수 없다.
 5. ROB head에서 정상 commit될 때만 SQ entry를 committed store buffer로 이동한다.
@@ -803,10 +887,10 @@ Store:
 Load:
 
 1. dispatch에서 LQ entry를 할당한다.
-2. source-ready가 되면 MEM IQ에서 issue candidate가 된다.
+2. source-ready가 되면 unified IQ에서 issue candidate가 된다.
 3. AGU address가 준비되면 모든 valid older SQ entry를 병렬 또는 단계적 CAM으로 검사한다.
 4. ordering/forwarding 조건을 만족한 경우에만 DTIM/AXI read 또는 SQ forwarding을 실행한다.
-5. data와 exception을 LQ/ROB에 기록하고 PRF writeback이 승인되면 ROB complete를 설정한다.
+5. LQ에는 completed/exception 상태를 기록하고, load data는 completion 경로에서 PRF로 전달한다. PRF writeback이 승인될 때 ROB complete를 설정한다.
 6. commit 또는 flush에서 LQ entry를 제거한다.
 
 ### 11.4 Store-to-load forwarding
@@ -821,7 +905,7 @@ forwarding 선택 규칙:
 6. partial overlap 또는 matching store data-invalid이면 load를 memory로 보내지 않고 stall/replay한다.
 7. 주소가 알려진 모든 older store가 non-overlap이면 memory read를 허용한다.
 
-동일 cycle에 `older store + younger load`가 LSU0/1으로 issue되고 주소가 겹치면 pair-comparator가 SQ array write보다 먼저 결과를 bypass한다. store data까지 준비되어 full-cover하면 직접 forwarding하고, 그렇지 않으면 younger load를 replay한다.
+동일 cycle에 `older store + younger load`가 LSU0/1으로 issue되면 현재 통합 경로는 두 AGU update를 먼저 register한다. 다음 cycle에 younger load를 candidate로 고를 때 newly written SQ를 포함해 검사하므로 full-cover/data-ready면 forwarding하고, data 미정 또는 partial overlap이면 stall한다. standalone `rv_lsq_order_check`는 같은 규칙을 조합 pair-bypass 입력으로도 표현하지만 현재 `rv_lsu_cluster`에는 인스턴스되지 않는다.
 
 ### 11.5 미확정 older store 정책
 
@@ -829,7 +913,8 @@ forwarding 선택 규칙:
 
 - address-valid=0인 older SQ entry가 하나라도 있으면 younger load는 LSU로 issue하지 않는다.
 - address는 valid지만 matching store의 data-valid=0이면 해당 load를 stall한다.
-- 이 stall 원인은 `unknown_store_addr`, `store_data_wait`, `partial_overlap`으로 성능 counter에 구분한다.
+- 주소가 미확정인 older LQ entry가 있거나 older device load가 있으면 younger normal load도 보수적으로 대기한다. 뒤늦게 MMIO로 판명되는 older access를 추월하지 않기 위한 현재 RTL 규칙이다.
+- `load_stall_reason_o`는 `LSQ_STALL_UNKNOWN_ADDR`, `LSQ_STALL_STORE_DATA`, `LSQ_STALL_PARTIAL_OVERLAP`, `LSQ_STALL_DEVICE_SERIALIZE`를 구분한다. 현재 값은 내부 control/debug signal이며 architectural CSR counter로 구현되지는 않았다.
 - 이 정책에서는 store address resolution 뒤 이미 실행된 younger load를 찾는 violation recovery가 정상 경로에 필요하지 않다.
 
 향후 speculative mode에서는 unknown older store를 load가 추월할 수 있다. 그 경우 store address가 resolve될 때 모든 younger executed LQ address와 비교하고, overlap violation이 있으면 가장 오래된 violating load와 그 dependent younger instruction을 squash/replay한다. store-set predictor와 selective replay는 별도 milestone이며 초기 RTL에서 enable하지 않는다.
@@ -854,8 +939,8 @@ forwarding 선택 규칙:
 
 ### 11.8 FENCE와 FENCE.I
 
-- 초기 `FENCE`는 conservative full fence로 구현한다: older load 완료, SQ의 older store commit, store buffer drain, outstanding D-AXI response 완료 후 younger memory operation을 허용한다.
-- `FENCE.I`는 위 data ordering을 만족한 뒤 IFU fetch queue와 outstanding fetch epoch를 invalidate하고 현재 다음 PC에서 refetch한다.
+- 초기 `FENCE`는 conservative full fence로 구현한다: older load 완료, SQ의 older store commit, store buffer drain, outstanding D-memory response 완료 후 completion한다.
+- `FENCE.I`는 같은 D-memory idle 조건을 만족한 뒤 ROB에서 completion하고, retire 다음 cycle architectural redirect로 다음 PC를 refetch한다. 현재 backend는 `rv_fence_controller.i_fabric_idle_i`를 `1'b1`로 묶어 별도 I-Fabric idle acknowledgement를 기다리지 않는다. redirect가 fetch epoch를 증가시키므로 이미 요청된 old-epoch response는 폐기된다.
 - 초기 TIM에는 일반 I-cache가 없지만 target/loop block buffer와 fetch queue가 instruction block을 보존하므로 `FENCE.I` architectural redirect에서 둘 다 invalidate한다.
 
 ### 11.9 초기 TIM과 향후 cache
@@ -865,12 +950,16 @@ forwarding 선택 규칙:
 ## 12. Floating point
 
 F architectural register width는 `FLEN=32`로 고정한다. integer `XLEN`과 별도이다.
+현재 `rv_fpu`는 request 시점에 bit-level arithmetic function으로 결과를 만들고
+`LATENCY=3`개의 ready/valid register를 통과시키는 unified elastic pipeline이다.
+FDIV.S/FSQRT.S도 이 baseline에서는 iterative side-unit이 아니며 같은 latency와
+throughput 계약을 사용한다.
 
-- 모든 IEEE-754 결과와 RISC-V canonical NaN 규칙을 준수한다.
+- 설계 목표는 IEEE-754 결과와 RISC-V canonical NaN 규칙 준수이며, directed test는 통과했지만 SoftFloat/Spike exhaustive differential sign-off 전에는 완전 준수를 선언하지 않는다.
 - dynamic rounding mode는 `frm`을 읽고 reserved rounding encoding은 illegal instruction으로 처리한다.
 - accrued exception flag는 execute 결과에 실어 ROB에 저장하고 commit에서 `fflags`에 OR한다.
 - FP exception은 trap을 발생시키지 않는다.
-- fused multiply-add는 단일 rounding operation이어야 한다.
+- fused multiply-add는 단일 rounding operation으로 계산하는 것이 architectural 계약이다.
 - reference model은 Berkeley SoftFloat 또는 Spike 결과를 사용한다.
 
 RV64에서 FPR이 64-bit가 되는 것은 아니다. F-only 구성은 `FLEN=32`를 유지한다. `FMV.X.W`는 RV64 규칙에 맞게 integer 결과를 sign-extend하고 `FMV.W.X`는 integer source 하위 32-bit를 사용한다.
@@ -967,7 +1056,12 @@ interrupt eligibility는 `mip & mie`, current privilege와 `mstatus.MIE` 규칙�
 
 ### 13.4 Supervisor 확장 frame
 
-`HAS_SMODE=0` 초기 구성에서는 S instruction/CSR을 illegal로 처리하고 `mideleg/medeleg`은 구현하지 않거나 WARL zero wrapper로 격리한다. 다음 hook은 처음부터 signal/type에 남긴다.
+`HAS_SMODE=0`이 유일한 현재 sign-off 구성이다. RTL에는 privilege enum의 S encoding,
+decoder의 SRET 인식, MPP WARL S 허용, PLIC S-context가 일부 존재하지만 이것만으로
+Supervisor mode가 동작하는 것은 아니다. S CSR, delegation, S trap/return completion,
+MMU가 없고 SRET은 backend head-special 분류에 연결되지 않았다. 따라서
+`HAS_SMODE=1`은 integration 실험용 hook일 뿐 제품 configuration으로 사용하면 안 된다.
+완성 단계에서는 다음 hook을 연결한다.
 
 - privilege enum의 S value와 trap target mux
 - `medeleg/mideleg`, `sstatus/sie/sip/stvec/sepc/scause/stval/sscratch/satp`
@@ -1018,7 +1112,7 @@ Main Xbar는 AXI4를 사용한다.
 | Xbar slave-side ID | 6-bit = 2-bit master prefix + 4-bit local ID |
 | Burst | INCR, 최대 16 beats |
 | Transfer size | 1/2/4/8 bytes, naturally aligned baseline |
-| Outstanding | master별 read/write ID 기준 multiple |
+| Outstanding | 현재 master별 read burst 1건 + write burst 1건; read와 write는 동시 가능 |
 | Unsupported | exclusive/locked, WRAP burst, atomics |
 | Response | OKAY/SLVERR/DECERR, EXOKAY 미사용 |
 
@@ -1059,7 +1153,7 @@ AXI slave port:
 | S4 | Reserved error slave |
 | S5 | Default/unmapped error slave |
 
-주소 채널은 slave별 round-robin arbitration을 사용하고 Host ELF loading이 진행되는 reset/boot 구간에는 core traffic이 거의 없다는 가정을 둔다. runtime QoS는 I fetch > D demand > Host를 기본으로 하되, 각 slave가 16 grant 이내에 waiting master를 한 번 수용하는 bounded fairness를 가진다.
+주소 채널은 slave별 3-master round-robin arbitration을 사용한다. 각 master는 read response의 마지막 beat 전까지 다음 AR을, B response 전까지 다음 AW를 받지 않으므로 현재 ID 폭은 routing/echo 용도이지 한 master의 multi-outstanding reorder 용도가 아니다. AW를 승인한 slave는 WLAST까지 해당 master의 W channel을 독점한다. Host ELF loading이 진행되는 boot 구간에는 core traffic이 거의 없다고 가정하며, 별도 QoS 우선순위나 16-grant bound는 현재 Xbar RTL에 없다.
 
 I/D local fabric은 같은 module 안에 `axi_m` outbound와 `axi_s` inbound를 분리한다. local requester가 자기 local window를 접근하면 outbound로 보내지 않는다. 다음 assertion을 둔다.
 
@@ -1106,7 +1200,7 @@ D-Arbiter의 local initiator는 요청대로 세 개다.
 2. LSU1 master port
 3. Main Xbar inbound AXI slave bridge
 
-local target은 DTIM bank0, DTIM bank1, CLINT다. LSU의 non-local 주소는 별도 outbound queue/AXI master bridge로 보내므로 memory slave 개수에 포함하지 않는다. Xbar inbound request는 main decoder가 이미 DTIM/CLINT만 전달했으므로 outbound로 재전송하지 않는다.
+local target은 DTIM bank0, DTIM bank1, CLINT다. LSU의 non-local 주소는 단일 outbound local channel과 AXI master bridge로 보내므로 memory slave 개수에 포함하지 않는다. Xbar inbound request는 main decoder가 이미 DTIM/CLINT만 전달했으므로 outbound로 재전송하지 않는다.
 
 DTIM bank별로 read arbiter와 write arbiter를 분리한다. 1R1W이므로 같은 bank에서 read 하나와 write 하나를 동시에 수행할 수 있다.
 
@@ -1114,7 +1208,7 @@ DTIM bank별로 read arbiter와 write arbiter를 분리한다. 1R1W이므로 같
 - LSU committed write-write conflict: store-buffer order가 older인 request 우선
 - Xbar inbound와 core conflict: round-robin + core maximum consecutive grant 8
 - CLINT conflict: 한 cycle 한 request, device-order FIFO
-- non-local LSU request: 최대 8-entry outbound queue, AXI ID로 response route
+- non-local LSU request: LSU0/1 중 ROB age가 older인 한 요청을 outbound로 전달하고 requester별 busy/response owner로 route
 
 64-bit SRAM read-modify-write가 필요한 RV32 byte/half/word store는 byte write enable을 SRAM wrapper가 직접 지원한다. 지원하지 않는 SRAM macro를 사용할 경우 wrapper 내부 RMW를 사용하고 해당 bank write port를 완료까지 lock한다.
 
@@ -1196,7 +1290,12 @@ CPU→Host 통신을 위해 Host가 master 역할만 가져서는 부족하므�
 | `0x14` | `EXIT_CODE` | core write, simulation finish request |
 | `0x18` | `CONSOLE_TX` | core write low byte |
 | `0x1C` | `CONSOLE_RX` | Host write low byte |
-| `0x20` | `STATUS` | valid/busy/exit flags |
+| `0x20` | `STATUS` | RO: bit0=1(ready), bit1=event pending, bit2=`BOOT_FLAGS[0]` |
+
+HostIF local register access는 정확히 32-bit(`req_size=2`)여야 하며 64-bit bus의
+하위/상위 lane은 address bit2와 byte strobe로 선택한다. TOHOST, EXIT_CODE,
+CONSOLE_TX write는 event payload를 한 entry에 고정하고 `event_ready` 전에는 다음
+HostIF transaction에 backpressure한다.
 
 Host는 CLINT `msip`도 반드시 AXI write로 발생시킨다. testbench가 interrupt wire를 직접 force하는 방식은 boot protocol 검증 경로로 사용하지 않는다. PLIC source injection은 별도 DPI input vector로 제공할 수 있지만 claim/complete는 항상 AXI register path를 따른다.
 
@@ -1307,25 +1406,25 @@ SoC의 기본 firmware contract를 바꾸지 않는다.
 | `rv_clint` | Implemented | single clock, sync active-low reset | base/size, clock/timebase Hz |
 | `rv_d_fabric` | Implemented | single clock, sync active-low reset | DTIM/CLINT map, ROB sequence, fairness bound |
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
-| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry atomic target refill | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
+| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry atomic target refill, 2-byte PMP parcel metadata | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
-| `rv_backend`, `rv_ooo_core` | Implemented candidate: RV32IMFC execution/recovery paths integrated, verification pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
+| `rv_backend`, `rv_ooo_core` | Integrated baseline: RV32IMFC directed/CoreMark/PMP-boundary regression PASS; ISA sign-off pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
 | `rv_i_fabric` | Implemented | single clock, sync active-low reset | Boot ROM/ITIM map, ROM image, fairness bound |
 | `rv_local_to_axi_bridge` | Implemented | single clock, sync active-low reset | local/AXI ID width, instruction attribute |
 | `rv_axi_to_local_bridge` | Implemented | single clock, sync active-low reset | target window, device attribute, max burst |
 | `rv_axi_error_slave`, `rv_axi_xbar` | Implemented | single clock, sync active-low reset | local/Xbar ID width, 전 region map |
-| `rv_bootrom_local`, `rv_plic`, `rv_hostif` | Implemented | single clock, sync active-low reset | local ROM image, register map, AXI ID/event |
-| `rv_soc_top` | Implemented candidate: core/interconnect/privileged/PMP/DPI boot boundary integrated, verification pending | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
+| `rv_bootrom_local/rv_bootrom`, `rv_plic_local/rv_plic`, `rv_hostif_local/rv_hostif` | Implemented | single clock, sync active-low reset | local leaf와 AXI wrapper, register map/event |
+| `rv_soc_top` | Integrated baseline: Host AXI ELF load/readback, Boot ROM, MSIP wake directed PASS | single clock, sync active-low reset | 전 region, AXI ID, clock/timebase, S-mode hook |
 | `rv_rename2` | Implemented standalone | core clock/reset | INT/FP physical registers, tag width, branch checkpoints |
 | `rv_rob` | Implemented standalone | core clock/reset | XLEN, 48 entries, sequence width, allocate/complete/retire width |
-| `rv_phys_regfile` | Implemented standalone | core clock/reset | data/tag width, 4R2W, allocation ports, zero-tag option |
+| `rv_phys_regfile` | Implemented standalone | core clock/reset | data/tag width, backend instance 8R+6Q+2W+2A, zero-tag option |
 | `rv_issue_queue`, `rv_issue_arbiter` | Implemented standalone | core clock/reset / 조합 | entries, wakeup/select/port/global issue width |
 | `rv_int_alu`, `rv_branch_unit`, `rv_multiplier` | Implemented standalone | 조합 / core clock-reset | XLEN, ROB sequence/tag metadata |
 | `rv_lsu_pipe` | Implemented standalone | core clock/reset | XLEN/PADDR/data/queue-index/ROB sequence 폭 |
 | `rv_store_buffer` | Implemented standalone | core clock/reset | PADDR/data/entry/ROB sequence 폭 |
 | `rv_lsq`, `rv_lsu_cluster` | Implemented and backend-integrated | core clock/reset | LQ/SQ/PADDR/data/tag/ROB sequence 폭 |
-| `rv_fpu` | Implemented candidate: unified RV32F elastic execution baseline, verification pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
+| `rv_fpu` | Implemented/verified directed: unified RV32F bit-level execute + 3-stage elastic transport; exhaustive differential pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
 | `rv_host_dpi`, `elf_loader.cpp` | Implemented; custom HostIF + server HTIF modes E2E verified | testbench clock/reset + Host AXI | 전 memory-map, ELF path, TOHOST/FROMHOST |
 | `rv_writeback_arbiter`, `rv_branch_recovery`, `rv_exec_result_buffer` | Implemented and backend-integrated | core clock/reset 또는 조합 | Section 15.28~15.33 참조 |
 | `rv_csr_file` | Implemented and backend-integrated | core clock/reset | Section 15.34 참조 |
@@ -1484,7 +1583,7 @@ top parameter override는 반드시 map-check, decoder, I/D fabric, peripheral i
 
 ### 15.17 Core shell과 LSQ checker interface
 
-`rv_ooo_core`의 외부 interface는 세 group이다.
+`rv_ooo_core`의 외부 interface는 네 group이다.
 
 | Group | 핵심 signal | 계약 |
 |---|---|---|
@@ -1506,6 +1605,8 @@ accepted load의 LQ entry가 tombstone으로 남아 response ID 재사용을 막
 바꿀 수 없다.
 
 `rv_lsq_order_check`는 load 한 건에 대해 다음 입력을 검사한다.
+
+이 module은 조합 ordering reference와 assertion 단위시험용이며 현재 `rv_lsq` datapath가 직접 인스턴스하지 않는다. `clk_i/rst_ni`는 조합 결과를 검사하는 simulation assertion에만 사용한다.
 
 | Input/output | 의미 |
 |---|---|
@@ -1536,17 +1637,22 @@ I-Fabric port는 IFU용 128-bit block channel과 Xbar inbound 64-bit channel을 
 | Module | 주요 input | 주요 output | backpressure/flush 계약 |
 |---|---|---|---|
 | `rv_decode2` | 2-wide PC/raw instruction/length/fault/prediction | 2-wide decoded uop/control/immediate | lane0 illegal도 lane1의 program order를 유지 |
-| `rv_rename2` | decoded uop, RAT/RRAT/free-list/PRF-ready | physical src/dst/stale tag, ROB/IQ allocation bundle | ROB/IQ/LSQ/checkpoint 자원 중 하나라도 부족하면 원자 stall |
-| `rv_rob` | allocate2, completion events, branch/exception metadata | head2 commit bundle, flush boundary, free count | lane1 commit은 lane0 commit 조건을 포함 |
+| `rv_rename2` | 2-wide arch source/destination와 class, commit/recovery/checkpoint control | physical src/dst/stale tag, free count/checkpoint valid | 통합 backend의 ROB/IQ/LSQ/checkpoint 자원 중 하나라도 부족하면 `dispatch_accept_i=0` |
+| `rv_rob` | allocate2, completion events, live queries, flush control | head2 retire bundle, scalar head/trap view, count/empty/full | lane1 retire fire는 lane0 fire를 포함; flush는 입력 boundary를 적용 |
 | `rv_issue_queue` | dispatch uop, writeback tag broadcast, flush sequence | oldest-ready candidate와 accept | unit accept 전 entry 제거 금지 |
-| `rv_issue_arbiter` | INT/MEM/FP candidates와 unit-ready | 최대 2 grant | 같은 entry/port 중복 grant 금지 |
-| `rv_int_prf`, `rv_fp_prf` | 4 read address, 2 write event | 4 read data | writeback grant와 wakeup 동일 cycle 일치 |
-| `rv_alu`, `rv_branch`, `rv_mul`, `rv_div` | issue payload/valid | completion valid/result/exception/branch resolve | output backpressure 시 ROB/dst/result stable |
+| `rv_issue_arbiter` | unified-IQ candidate 2개와 5-port mask/unit-ready | 최대 2 grant | 같은 entry/port 중복 grant 금지 |
+| `rv_phys_regfile`의 INT/FP instance | 8 read, 6 query, 2 write, 2 allocate | read data/ready와 query-ready | writeback grant와 wakeup 동일 cycle 일치 |
+| `rv_int_alu`, `rv_branch_unit`, `rv_multiplier`, `rv_divider` | issue payload/valid | completion valid/result/exception/branch resolve | stateful unit은 output backpressure 시 identity/result stable |
 | `rv_lsq` | dispatch2, AGU update2, store-data update2, commit2, flush | LSU issue permission, forwarding, store-buffer request | Section 11 불변조건 전체 적용 |
 | `rv_store_buffer` | committed SQ enqueue 최대2 | D-Fabric write 최대2 | enqueue sequence 단조 증가, device access serialize |
-| `rv_csr_file` | commit CSR op/trap/return, interrupt lines | CSR read, redirect/trap state | CSR side effect는 commit에서만 |
+| `rv_csr_file` | evaluate/commit CSR op, trap/MRET/WFI, interrupt/time, retire/fflags | CSR read/illegal/write-effect, trap vector, MRET PC, interrupt eligibility, privilege/PMP/FCSR state | CSR side effect는 commit에서만; redirect 선택은 trap controller가 소유 |
 
-공통 internal bundle에는 반드시 `valid`, ROB index와 8-bit sequence, PC, destination physical tag/class, exception valid/cause/tval, branch epoch가 포함된다. flush input은 `flush_valid`, `flush_sequence`, `flush_all`, `new_epoch`으로 통일하고, 각 queue는 해당 boundary보다 younger인 entry를 다음 cycle까지 invalid로 만들어야 한다.
+공통 internal payload의 architectural identity는 8-bit ROB sequence다. PC와 physical
+destination/class는 필요한 queue와 completion에만 포함하고 ROB array index는 ROB
+allocate/retire 내부 위치이므로 모든 execution bundle에 복제하지 않는다. backend
+speculative module의 flush는 `flush_valid`, `flush_all`, `flush_sequence` 세 신호를
+사용한다. fetch `epoch[3:0]`는 frontend/I-memory 응답에만 있으며 D-memory는 LQ
+tombstone과 request ID로 stale response를 막는다.
 
 ### 15.20 AXI/local bridge exact interface
 
@@ -1645,7 +1751,9 @@ baseline Xbar는 다음 규칙을 지킨다.
 
 commit은 같은 cycle rename보다 논리적으로 먼저 처리한다. 따라서 그 cycle에 반환된 stale tag를 새 instruction이 즉시 재사용할 수 있다. branch snapshot의 free bitmap에도 older commit의 stale-tag 반환을 반영해 반복적인 checkpoint restore가 physical tag를 누수시키지 않게 한다. 현재 baseline은 recovery cycle과 commit 동시 발생을 금지하며 assertion으로 검사한다. backend commit/recovery arbiter가 이 조건을 보장해야 한다.
 
-`rv_rename2_tb`는 reset free count, dual-lane RAW/WAW, dual commit stale 반환, lane0 checkpoint 뒤 lane1 제거, RRAT 전체 복구 시나리오를 기술한다. 현재 환경에서는 parse/elaboration 완료 상태이며 cycle simulator 도입 후 실행한다.
+`rv_rename2_tb`는 reset free count, dual-lane RAW/WAW, dual commit stale 반환,
+lane0 checkpoint 뒤 lane1 제거, RRAT 전체 복구 시나리오를 실행하며 현재 Verilator
+unit regression에서 PASS한다.
 
 ### 15.24 `rv_rob` exact interface와 trap handshake
 
@@ -1653,7 +1761,9 @@ commit은 같은 cycle rename보다 논리적으로 먼저 처리한다. 따라�
 |---|---|---|
 | allocate | `alloc_valid_i[1:0]`, 단일 `alloc_ready_o`, index/sequence output, PC/instruction/rename/store/branch/exception metadata | lane1은 lane0 없이 할당할 수 없고 두 entry는 원자 할당된다 |
 | complete | 기본 4개 `complete_valid/sequence`, exception, branch resolve metadata | 임의 순서로 matching sequence entry를 complete로 만든다 |
+| liveness query | `live_query_sequence_i[LIVE_QUERY_PORTS]` → `live_query_valid_o` | 현재 valid ROB generation인지 조합 검사; WB stale result 차단 |
 | retire | `retire_valid_o[1:0]`, `retire_ready_i[1:0]`, rename/store metadata | head부터 in-order이며 lane1 fire는 lane0 fire를 요구한다 |
+| head inspection | head valid/complete/sequence/PC/raw instruction/length, destination class/tag, source0 tag | CSR/system/fence를 ROB head에서 실행하기 위한 scalar view |
 | trap | `trap_valid/ready`, sequence/PC/cause/tval | complete exception이 head일 때만 valid; accept cycle에 외부 controller가 `flush_all_i=1`을 함께 주어야 한다 |
 | recovery | `flush_all_i`, `flush_younger_i`, `flush_sequence_i` | full clear 또는 boundary를 포함하고 younger sequence만 제거한다 |
 | status | count/empty/full | dispatch 자원 판정에 사용한다 |
@@ -1662,7 +1772,9 @@ retire와 allocate가 같은 cycle이면 retire로 생긴 공간을 즉시 재�
 
 ### 15.25 `rv_issue_queue`와 `rv_issue_arbiter` exact interface
 
-`rv_issue_queue`는 INT/MEM/FP split queue에 공통 사용한다.
+`rv_issue_queue`는 현재 backend에서 한 번 인스턴스화되는 unified queue다.
+`ENTRIES=INT_IQ_ENTRIES+MEM_IQ_ENTRIES+FP_IQ_ENTRIES=56`,
+`SELECT_WIDTH=2`, `EXEC_PORTS=5`, `WRITEBACK_PORTS=4`로 사용한다.
 
 | Interface group | 핵심 signal | 계약 |
 |---|---|---|
@@ -1674,11 +1786,30 @@ retire와 allocate가 같은 cycle이면 retire로 생긴 공간을 즉시 재�
 
 full queue에서도 그 cycle에 최종 accept되는 candidate slot을 dispatch가 즉시 재사용할 수 있다. 일반 uop은 사용 source가 모두 ready여야 한다. store는 `address-issued=0`이면 base(src0)만 준비돼도 address phase candidate가 되고 data(src1)가 준비되지 않았으면 accept 후에도 같은 entry를 유지한다. 이후 src1 wakeup은 address-valid=0/data-valid=1인 최종 phase를 만들며 그 accept에서만 entry를 제거한다. 두 phase 모두 동일 ROB sequence와 SQ index를 유지하고 flush는 잔류 phase도 동일한 age 규칙으로 제거한다. `rv_issue_queue_tb`는 same-cycle wakeup, oldest-ready dual select, issue2+dispatch2 치환, younger flush와 split store-address/data 재발행을 기술한다.
 
-`rv_issue_arbiter`는 INT 후보 2, MEM 후보 2, FP 후보 1의 총 5개와 실행 포트 ready/mask를 받아 전역 최대 2개를 grant한다. 가장 오래된 eligible candidate를 먼저 고정하되 그 candidate가 여러 포트를 지원하면 다른 candidate에 쓸 포트를 남기는 선택을 우선한다. 출력은 candidate별 grant/port, port별 valid/candidate, age 순 issue slot이다. 같은 candidate나 port의 중복 grant 및 2개 초과 grant는 assertion 대상이다. `rv_issue_arbiter_tb`는 port 보존형 pair 선택, sequence wrap age, unavailable port, global width 제한을 기술한다.
+`rv_issue_arbiter`의 module 기본 parameter는 `CANDIDATE_COUNT=5`지만 현재 backend
+instance는 unified IQ가 만든 후보 두 개만 연결하므로 `CANDIDATE_COUNT=2`,
+`EXEC_PORTS=5`, `ISSUE_WIDTH=2`로 override한다. `candidate_valid/sequence/port_mask`와
+`port_ready`를 받아 가장 오래된 eligible candidate를 먼저 고정하되 여러 포트가
+가능하면 다른 candidate가 사용할 포트를 남기는 배치를 우선한다. 출력은 candidate별
+grant/port, port별 valid/candidate, age 순 issue slot이다. 같은 candidate나 port의
+중복 grant 및 2개 초과 grant는 assertion 대상이다. split IQ를 도입할 때만 candidate
+수를 다시 5 이상으로 넓힌다.
 
 ### 15.26 `rv_phys_regfile` exact interface
 
-`rv_phys_regfile`은 기본 80 entries, 7-bit tag, 4 asynchronous read, 2 synchronous writeback, 2 allocation-ready-clear port를 갖는 검증용 flop-array baseline이다. INT는 `DATA_WIDTH=XLEN`, `ZERO_REGISTER=1`, FP는 `DATA_WIDTH=32`, `ZERO_REGISTER=0`으로 인스턴스화한다.
+`rv_phys_regfile`의 module 기본값은 4 read/6 query/2 write/2 allocation port지만,
+backend instance는 `READ_PORTS=8`, `QUERY_PORTS=6`, `WRITE_PORTS=2`,
+`ALLOC_PORTS=2`로 override한다. 기본 80 entries와 7-bit tag를 갖는 검증용
+flop-array다. INT는 `DATA_WIDTH=XLEN`, `ZERO_REGISTER=1`, FP는
+`DATA_WIDTH=32`, `ZERO_REGISTER=0`으로 인스턴스화한다.
+
+| Port group | exact signal | 의미 |
+|---|---|---|
+| data read | `read_addr_i[READ_PORTS][TAG_WIDTH]` → `read_data_o[READ_PORTS][DATA_WIDTH]`, `read_ready_o` | asynchronous read + same-cycle WB bypass |
+| readiness query | `query_addr_i[QUERY_PORTS][TAG_WIDTH]` → `query_ready_o` | dispatch source-ready 초기화, data는 읽지 않음 |
+| writeback | `write_valid_i`, `write_addr_i`, `write_data_i` arrays | grant된 CDB 결과만 value/ready를 갱신 |
+| allocate | `allocate_valid_i`, `allocate_addr_i` arrays | 새 producer tag의 ready를 0으로 clear |
+| debug probe | scalar `probe_addr_i` → `probe_ready_o` | assertion/debug용 ready 조회 |
 
 - read는 `read_addr_i`에 대한 data와 ready를 반환하고 같은 cycle writeback tag가 일치하면 새 data/ready를 bypass한다.
 - rename이 새 destination tag를 할당하면 `allocate_valid/addr`가 ready bit를 0으로 만든다.
@@ -1720,9 +1851,11 @@ full queue에서도 그 cycle에 최종 accept되는 candidate slot을 dispatch�
 | `SB_INDEX_WIDTH` | 4 | `$clog2(STORE_BUFFER_ENTRIES)` |
 | `EXEC_PORTS` | 5 | INT0, INT1, MEM0, MEM1, FP |
 | `FETCH_ID_WIDTH/EPOCH_WIDTH` | 4/4 | interface 확장 폭; 현재 active outstanding은 1개, epoch는 redirect generation |
-| `DMEM_ID_WIDTH` | 6 | bit5 route kind + bit[4:0] queue index |
+| `DMEM_ID_WIDTH` | 6 | `0xxxxx` load, `10xxxx` committed SB, `110000` direct device store |
 
-`decoded_uop_t`는 다음 field를 정확히 가진다.
+`rv_decode2`의 flattened `uop_*` port가 표현하는 논리 field set은 다음과 같다.
+현재 package에 `decoded_uop_t` typedef는 없으므로 재구현자는 table을 그대로 packed
+struct로 새로 선언하거나 현 RTL처럼 개별 array port로 유지할 수 있다.
 
 | Field | 폭/type | 의미 |
 |---|---|---|
@@ -1743,18 +1876,27 @@ full queue에서도 그 cycle에 최종 accept되는 candidate slot을 dispatch�
 | `is_load/store/branch/csr/fence/fence_i/serializing` | 각 1 | scheduling과 commit 제어 |
 | `exception_valid/cause/tval` | 1/6/`XLEN` | fetch/decode에서 이미 알려진 precise exception |
 
-`renamed_uop_t`는 `decoded_uop_t` 전부에 다음을 추가한다: `rob_index`, `rob_sequence`, source별 `src_phys/src_ready`, `dst_phys`, `stale_phys`, `lq_valid/lq_index`, `sq_valid/sq_index`, `checkpoint_valid/checkpoint_id`. INT x0은 `src_phys=0`, `src_ready=1`, `writes_dst=0` 규칙을 사용한다.
+rename/dispatch 단계의 논리 payload는 위 decode field에 `rob_index`,
+`rob_sequence`, source별 `src_phys/src_ready`, `dst_phys`, `stale_phys`,
+`lq_valid/lq_index`, `sq_valid/sq_index`, `checkpoint_valid/checkpoint_id`를
+추가한다. 현재 `renamed_uop_t` typedef 없이 owner module 사이 flattened net으로
+연결한다. INT x0은 `src_phys=0`, `src_ready=1`, `writes_dst=0` 규칙을 사용한다.
 
-`exec_completion_t`는 `rob_sequence`, `dst_valid`, `dst_class`, `dst_phys`, `result[XLEN-1:0]`, `exception_valid/cause/tval`, `fflags_valid/fflags[4:0]`을 가진다. FP32 결과는 result 하위 32-bit에 들어가며 상위 bit는 0이다. destination이 없는 branch/store/fence도 ROB 완료를 위해 completion event를 보낸다.
+completion의 논리 payload는 `rob_sequence`, `dst_valid`, `dst_class`,
+`dst_phys`, `result[XLEN-1:0]`, `exception_valid/cause/tval`,
+`branch_mispredict/branch_target`, `fflags[4:0]`다. 현재
+`exec_completion_t` typedef 없이 `rv_writeback_arbiter`의 source array port로
+전달한다. FP32 결과는 result 하위 32-bit에 들어가며 상위 bit는 0이다.
+destination이 없는 branch/store/fence도 ROB 완료를 위해 completion event를 보낸다.
 
-모든 speculative state module의 flush port는 다음 네 signal로 통일한다.
+backend speculative state module의 flush 의미는 다음 세 signal로 통일한다.
 
 | Port | 의미 |
 |---|---|
 | `flush_valid_i` | 해당 cycle flush 명령 유효 |
 | `flush_all_i` | RAT←RRAT 복구를 포함한 전체 speculative state 제거 |
 | `flush_sequence_i[ROB_SEQ_WIDTH-1:0]` | `flush_all_i=0`일 때 이 sequence보다 younger인 entry 제거; boundary instruction은 유지 |
-| `flush_epoch_i[EPOCH_WIDTH-1:0]` | 새 fetch/memory epoch; 이전 epoch response는 상태 갱신 금지 |
+| fetch `epoch[3:0]` | backend flush port가 아니라 frontend의 request/response generation; redirect에서 증가 |
 
 flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeback보다 우선한다. 단, boundary보다 older이며 이미 승인된 commit은 유지되고 committed store-buffer entry는 flush하지 않는다.
 
@@ -1793,7 +1935,10 @@ parameter는 `PADDR_WIDTH`, `FETCH_BYTES`, `ENTRIES`이며 `FETCH_BYTES`와 `ENT
 
 #### `rv_c_expander`
 
-조합 module이며 `compressed_i[15:0]`, `xlen64_i`를 받아 `instruction_o[31:0]`, `illegal_o`를 낸다. 입력 low bits가 `2'b11`이면 사용하지 않는다. 모든 legal RV32C를 canonical RV32 instruction으로 변환하고 RV64에서만 legal인 C opcode는 `XLEN=32`에서 illegal이다. hint/reserved 구분은 명세 버전에 따른다.
+조합 module이며 runtime `xlen64_i` port는 없다. `XLEN` parameter와
+`compressed_i[15:0]`를 받아 `instruction_o[31:0]`, `illegal_o`를 낸다. 입력 low
+bits가 `2'b11`이면 사용하지 않는다. legal RV32C를 canonical RV32 instruction으로
+변환하고 RV64에서만 legal인 C opcode는 `XLEN=32`에서 illegal이다.
 
 #### `rv_branch_predictor`
 
@@ -1812,7 +1957,9 @@ baseline storage는 256-entry 4-way BTB, 각 2048-entry 2-bit인 bimodal/global/
 | Port group | exact signal | 계약 |
 |---|---|---|
 | input | `in_valid_i[1:0]/in_ready_o[1:0]`, lane별 `pc`, raw `instruction`, `inst_len`, `prediction`, `fetch_fault` | prefix-valid/ready; C lane은 expander 두 instance 사용 |
-| output | `uop_valid_o[1:0]/uop_ready_i[1:0]`, `decoded_uop_t uop_o[1:0]` | 조합 decode, stall 동안 payload stable |
+| output handshake | `uop_valid_o[1:0]/uop_ready_i[1:0]` | 조합 decode, downstream prefix-ready를 input ready로 전달 |
+| output identity | `uop_pc_o`, raw/canonical instruction, length, prediction | raw는 trace/predictor, canonical은 execute용 |
+| output control | `uop_fu/operation/exec_port_mask`, source/destination class+arch, immediate, memory/CSR/FP/fence flags와 exception | Section 15.28의 flattened field set |
 
 decoder는 RV32IMFC, Zicsr, Zifencei와 `XLEN=64`일 때 RV64/W-op를 구분한다. unsupported opcode, privilege-independent reserved encoding, invalid rounding mode는 illegal uop로 만들며 instruction을 drop하지 않는다. lane0 illegal/fault가 있어도 lane1은 ROB에 program order로 들어갈 수 있지만 lane0 trap이 commit되면 lane1은 flush된다. CSR privilege와 read-only 위반처럼 현재 privilege/state가 필요한 검사는 `rv_csr_file`에서 head 실행 시 최종 판정한다.
 
@@ -1828,24 +1975,24 @@ effective address는 `base+immediate`이며 natural alignment를 요구한다. m
 
 | Port group | exact signal | 계약 |
 |---|---|---|
-| allocate | `dispatch_valid_i[1:0]/dispatch_ready_o`, lane별 `is_load/is_store`, `rob_index/sequence` | LQ/SQ 공간을 lane order로 원자 할당 |
+| allocate | `dispatch_valid_i[1:0]`, 공통 `dispatch_accept_i`, `dispatch_ready_o`, lane별 load/store, sequence, destination-valid/physical tag, size, unsigned, device | LQ/SQ 공간을 lane order로 원자 할당 |
 | allocation result | lane별 `lq_valid/index_o`, `sq_valid/index_o` | rename/ROB/IQ에 같은 cycle 전달 |
 | AGU update | `agu_valid_i[1:0]/agu_ready_o[1:0]`, lane별 queue index, sequence, address, mask, store data/address/data valid, exception | 두 LSU 결과를 독립 accept |
-| load schedule | `load_candidate_valid_o[1:0]/load_candidate_ready_i[1:0]`, lane별 LQ index, sequence, address/mask/size/unsigned/dst tag | ordering check를 통과한 oldest load 최대 2개 |
-| immediate forward completion | `forward_valid_o[1:0]/forward_ready_i[1:0]`, lane별 completion payload | D request 없이 youngest older store data 사용 |
-| ROB commit | `commit_valid_i[1:0]`, sequence, `is_store`, SQ index, exception-free, `commit_ready_o[1:0]` | store-buffer 공간 없으면 해당 store commit backpressure |
+| load schedule | `load_candidate_present_o`, `load_candidate_valid_o/load_candidate_ready_i`, lane별 LQ index, sequence, address/mask/size/unsigned/device/dst tag, `load_memory_read_o`, `load_forward_valid/data_o`, stall reason, device permit | 주소 준비된 oldest load 최대 2개를 고르고 ordering 결과를 memory/forward/stall로 분류 |
+| committed-SB query | dual query valid/address/mask output, full-cover/partial/data input | SQ match가 없을 때만 committed undrained store에서 forwarding |
+| load response/commit | response valid/index/replay; commit valid/ready/sequence/LQ index | response 성공은 completed, replay는 issued clear; in-order commit에서 LQ free |
+| store commit | valid/ready/error, sequence/SQ index | normal store는 SB 공간, device store는 direct response까지 ROB commit backpressure |
 | store-buffer enqueue | `sb_enq_valid_o[1:0]/sb_enq_ready_i[1:0]`, address/data/mask/size/device/sequence | execute가 아니라 normal ROB-head commit에서만 valid |
-| D-memory | backend top과 동일한 `dmem_req_*[1:0]`, `dmem_rsp_*[1:0]` | load와 committed store drain을 두 lane에 중재 |
-| completion | `completion_valid_o[1:0]/ready_i[1:0]`, `exec_completion_t` | load response/forward/fault 완료 |
+| direct device store | valid/complete/error, sequence/address/data/mask/size | ROB-head non-speculative write의 응답까지 SQ 유지 |
 | recovery/status | 공통 flush, `lq_count_o`, `sq_count_o`, `load_outstanding_o` | younger LQ/SQ 제거, committed SB는 유지 |
 
-LQ entry는 valid, ROB index/sequence, PC, destination tag/class, address/mask/size/sign valid, issued, completed, outstanding ID, epoch, forwarded, exception을 저장한다. SQ entry는 valid, ROB index/sequence, address/data/mask 각각의 valid, device, exception, committed/SB-accepted를 저장한다.
+LQ entry의 실제 저장 상태는 valid/killed, address-valid/issued/completed, exception, destination-valid/physical tag, unsigned/device, sequence, size, address, mask, exception cause다. SQ entry는 valid, address-valid/data-valid, exception/device, sequence, address, data, mask, size, exception cause를 저장한다. ROB index, PC, register class, response ID/epoch, forwarded data, replay reason, committed/SB-accepted bit은 현재 `rv_lsq` entry에 저장하지 않는다.
 
-load 주소가 준비되면 LSQ는 모든 valid older SQ를 wrap-aware sequence로 비교한다. 주소 미정 older SQ가 하나라도 있으면 stall한다. overlap store의 data가 미정이거나 load byte를 완전히 덮지 않으면 초기 baseline은 stall한다. full-cover 후보가 여러 개면 load보다 older이면서 sequence distance가 가장 작은, 즉 youngest older store를 선택한다. 같은 cycle의 lane0 older store update와 lane1 load는 registered SQ 결과를 기다리거나 pair-forward할 수 있으며 어느 쪽이든 memory read를 먼저 내보내면 안 된다.
+load 주소가 준비되면 LSQ는 모든 valid older SQ를 wrap-aware sequence로 비교한다. 주소 미정 older SQ가 하나라도 있으면 stall한다. overlap store의 data가 미정이거나 load byte를 완전히 덮지 않으면 초기 baseline은 stall한다. full-cover 후보가 여러 개면 load보다 older이면서 sequence distance가 가장 작은, 즉 youngest older store를 선택한다. 같은 cycle의 lane0 older store update와 lane1 load update는 edge 뒤 registered SQ/LQ 상태에서 검사하므로 다음 scheduler cycle까지 기다리며 memory read를 먼저 내보내지 않는다.
 
 committed store가 SQ에서 store buffer로 이동한 뒤 아직 drain되지 않았을 수 있으므로 load ordering scan은 store buffer도 조회한다. SQ의 matching store는 모든 SB entry보다 younger이므로 우선한다. SQ match가 없을 때 SB의 youngest matching entry에서 forward한다. SB partial overlap은 해당 entry가 drain될 때까지 load를 stall한다. 이 규칙 없이는 store commit 직후 younger load가 stale DTIM 값을 읽을 수 있으므로 필수다.
 
-`dmem_req_id_o` encoding은 load=`{1'b0,LQ index[4:0]}`, normal committed store-buffer drain=`{2'b10,SB index[3:0]}`, ROB-head direct device/external store=`{2'b11,SQ index[3:0]}`다. load request는 `committed=0`, 두 store 경로는 `committed=1`이다. 여기서 `committed=1`은 fabric side effect가 허가된 ROB-head non-speculative request라는 뜻이며, 오류 응답을 기다리는 direct store가 이미 architectural retire되었다는 뜻은 아니다.
+`dmem_req_id_o` encoding은 load=`{1'b0,LQ index[4:0]}`, normal committed store-buffer drain=`{2'b10,SB index[3:0]}`, ROB-head direct device/external store=`6'b11_0000`이다. direct store는 한 건만 outstanding이라 SQ index를 ID에 넣지 않고 별도 captured sequence/address state로 응답을 연계한다. load request는 `committed=0`, 두 store 경로는 `committed=1`이다. 여기서 `committed=1`은 fabric side effect가 허가된 ROB-head non-speculative request라는 뜻이며, 오류 응답을 기다리는 direct store가 이미 architectural retire되었다는 뜻은 아니다.
 
 device load candidate는 `device_load_permit_i`가 asserted된 경우에만 issue valid가 되며, 이 permit은 ROB head 일치, SB empty, 다른 outstanding load 0 조건을 Backend가 결합해 만든다. device/external store는 `direct_store_valid/address/data/mask/size/sequence_o`로 분리하고, direct controller가 write response까지 받은 뒤 `direct_store_complete_i`와 error 상태를 반환한다. 성공 completion 전에는 `store_commit_ready_o=0`이므로 SQ/ROB head를 유지하고, error completion은 store access fault trap으로 전달한다. Normal store의 commit 입력은 program-order store event를 lane0부터 pack하며 lane1 valid는 lane0 valid를 전제로 한다.
 
@@ -1883,13 +2030,25 @@ baseline은 한 operation만 보관하는 radix-2 iterative unit이며 새 reque
 
 #### `rv_writeback_arbiter`
 
-parameter는 `SOURCE_COUNT`, `INT_WRITE_PORTS=2`, `FP_WRITE_PORTS=2`, `ROB_COMPLETE_PORTS=4`다. 입력은 source별 `source_valid_i/source_ready_o`, `exec_completion_t source_payload_i`다. 출력은 `int_wb_valid/phys/data_o[1:0]`, `fp_wb_valid/phys/data_o[1:0]`, IQ에 가는 `wakeup_valid/class/phys_o[3:0]`, ROB에 가는 `complete_valid/sequence/exception/cause/tval/fflags_o[3:0]`다.
+parameter는 `SOURCE_COUNT`, `INT_WRITE_PORTS=2`, `FP_WRITE_PORTS=2`,
+`ROB_COMPLETE_PORTS=4`다. 입력은 source별 `source_valid_i/source_ready_o`,
+`source_live_i`, sequence, destination valid/class/tag, data,
+exception/cause/tval, branch mispredict/target, fflags의 flattened array다. 출력은
+`int_wb_valid/phys/data_o[1:0]`, `fp_wb_valid/phys/data_o[1:0]`, IQ에 가는
+`wakeup_valid/class/phys_o[3:0]`, ROB에 가는
+`complete_valid/sequence/exception/cause/tval/branch/fflags_o[3:0]`다.
 
 한 source는 필요한 PRF write port와 ROB completion port를 모두 받을 때만 ready다. destination 없는 completion은 ROB port만 사용한다. 같은 physical tag/class에 두 write를 허용하지 않는다. grant된 결과만 PRF write, IQ wakeup, ROB complete를 같은 edge에 발생시킨다. flush된 sequence, ROB에 없는 sequence, allocation generation이 다른 result는 모든 출력 전에 drop한다.
 
 #### `rv_branch_recovery`
 
-입력은 BRU의 `resolve_valid_i`, sequence, checkpoint ID, actual taken/target/next-PC, mispredict, exception과 ROB의 `sequence_live_i`, CSR/trap controller의 higher-priority redirect다. 출력은 `redirect_valid_o/redirect_pc_o`, 공통 flush bundle, `checkpoint_restore_valid/id_o`, predictor resolve port다.
+입력은 architectural redirect `trap_redirect_valid_i/pc_i`와 branch
+`resolve_valid_i`, `resolve_live_i`, sequence, checkpoint ID, mispredict,
+resolved next-PC다. actual taken/target/instruction/prediction metadata와 exception은
+이 module의 port가 아니며 backend가 predictor update와 completion path로 별도
+운반한다. 출력은 `redirect_valid_o/redirect_pc_o`,
+`flush_valid_o/flush_all_o/flush_sequence_o`, checkpoint restore/release와
+`resolve_drop_o`다.
 
 priority는 Section 16을 따른다. branch correct-predict는 checkpoint release만 하고 flush하지 않는다. mispredict는 branch sequence보다 younger인 ROB/IQ/LQ/SQ를 제거하고 해당 checkpoint로 RAT/free-list를 복구한 뒤 더 younger checkpoint를 clear한다. redirect/restore/flush는 같은 cycle 하나의 원자 event다.
 
@@ -1933,7 +2092,17 @@ IFU frontend exact interface는 `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_che
 
 ### 15.35 FENCE/FENCE.I controller exact interface
 
-`rv_fence_controller`는 ROB-head FENCE/FENCE.I request, predecessor/successor mask, sequence와 next PC를 받고, `lsu_memory_idle_i`와 `i_fabric_idle_i` 조건에서 destination 없는 completion을 만든다. 현재 cacheless baseline에서 LSU memory-idle은 older load 완료, SQ→store-buffer 이동, committed store drain, direct device transaction 완료를 모두 포함한다. FENCE.I completion은 frontend flush-required와 redirect PC도 생성하며, 실제 architectural redirect는 해당 instruction이 retire된 뒤 trap controller의 한-cycle redirect 경로로 발생한다. predecessor/successor mask는 향후 cache/coherent fabric의 선택적 ordering을 위해 interface에 보존하지만 초기 구현은 보수적으로 모든 memory class를 drain한다.
+`rv_fence_controller`는 ROB-head FENCE/FENCE.I request, predecessor/successor mask,
+sequence와 next PC를 받고, `lsu_memory_idle_i`와 `i_fabric_idle_i` 조건에서
+destination 없는 completion을 만든다. 현재 cacheless baseline에서 LSU memory-idle은
+older load 완료, SQ→store-buffer 이동, committed store drain, direct device transaction
+완료를 모두 포함한다. backend instance는 아직 별도 I-Fabric idle feedback port가
+없어서 `i_fabric_idle_i=1'b1`로 고정한다. FENCE.I completion의
+`frontend_flush_required_o/frontend_redirect_pc_o`도 backend에서 직접 사용하지 않고,
+해당 instruction이 retire된 뒤 `rv_trap_controller`가 한 cycle pending redirect를
+만든다. frontend redirect가 queue/target-buffer를 비우고 epoch를 바꿔 stale response를
+폐기한다. predecessor/successor mask는 향후 cache/coherent fabric의 선택적 ordering을
+위해 interface에 보존하지만 초기 구현은 보수적으로 모든 memory class를 drain한다.
 
 baseline FENCE는 모든 older load 완료와 SQ→SB 이동 및 SB drain이 끝난 후 완료한다. FENCE.I도 같은 조건을 기다리고 fetch queue/outstanding epoch와 target/loop block buffer를 폐기한 뒤 fence 다음 PC에서 refetch한다. 일반 I-cache invalidate port는 아직 없지만 target buffer는 architectural redirect로 내부 invalidate하며, 향후 `icache_invalidate_valid/ready` hook을 추가할 위치를 controller boundary로 고정한다. fence는 단일 serializing uop이며 younger memory/CSR issue를 차단한다.
 
@@ -1968,7 +2137,10 @@ commit lane0은 ROB head complete, exception 없음, CSR/fence/store side effect
 
 ### 15.38 v1.3 interface freeze와 변경 규칙
 
-v1.3에서 baseline 구현에 필요한 architecture 선택과 module boundary는 확정이다. Section 20의 항목은 미래 PPA/성능 교체 후보이며 현재 RTL 작성 중 선택을 미루라는 뜻이 아니다. 첫 동작 RTL은 다음을 사용한다: split IQ, flop-array PRF, conservative unknown-store stall, natural-aligned memory only, no cache/MMU, commit-time CSR, non-speculative device access, iterative divider/FP divsqrt.
+현재 baseline 구현은 unified IQ, flop-array PRF, conservative unknown-store stall,
+natural-aligned memory only, no cache/MMU, commit-time CSR, non-speculative device
+access, iterative integer divider와 unified 3-stage FP datapath를 사용한다. split IQ와
+iterative FP divsqrt는 현재 interface를 유지하는 PPA 확장안이다.
 
 interface freeze의 완료 조건은 다음과 같다.
 
@@ -1979,6 +2151,155 @@ interface freeze의 완료 조건은 다음과 같다.
 - 향후 internal implementation을 바꿔도 `rv_ooo_core`, `rv_soc_top`, AXI/local interface는 유지한다.
 
 이후 contract 변경은 구현 편의만으로 수행하지 않는다. assertion 또는 architectural test에서 모순이 발견되거나 PPA/benchmark 근거가 있을 때 HDD revision, package type, 연결 RTL, 관련 test를 같은 change set에서 갱신한다.
+
+### 15.39 Integration wrapper와 누락 없는 exact interface
+
+이 절은 앞 절의 leaf 설명을 실제 hierarchy로 조립하기 위한 나머지 port 계약이다.
+폭 표기에서 `N=2`, `F=FETCH_BYTES`, `S=ROB_SEQ_WIDTH`, `T=PHYS_TAG_WIDTH`,
+`DB=MEM_DATA_WIDTH/8`을 사용한다.
+
+#### `rv_ooo_core`
+
+parameter는 `XLEN`, `PADDR_WIDTH`, `MEM_DATA_WIDTH`, `HAS_C`, `HAS_F`,
+`HAS_SMODE`, `FETCH_BYTES`, `IF_TARGET_BUFFER_ENTRIES`, ROB/INT·FP PRF/
+INT·MEM·FP IQ/LQ/SQ/store-buffer/checkpoint 크기, `RESET_VECTOR`, `TRAP_VECTOR`,
+ITIM/DTIM base와 size다. top port는 다음 네 group만 가진다.
+
+| Group | exact signal과 폭 | 동작 |
+|---|---|---|
+| instruction request | `imem_req_valid_o/ready_i`, `addr[PADDR_WIDTH]`, `id[4]`, `epoch[4]` | `F`-byte aligned block 한 건 |
+| instruction response | `imem_rsp_valid_i/ready_o`, echo `id[4]/epoch[4]`, `data[F*8]`, `resp[2]` | stale epoch는 consume 후 drop |
+| data request/response | lane별 `dmem_req_valid/ready,id[6],write,addr,size,wdata,wstrb,priv[2],rob_seq[S],committed,device`; response `valid/ready,id,rdata,resp[2],replay[3]` | 두 독립 local-memory lane |
+| control/trace | software/timer/external IRQ, `mtime[64]`, debug halt request; dual commit `valid,pc,instr,rd,rd_write,rd_fp,wdata,trap,cause,tval` | trace는 retire 경계만 표시 |
+
+내부에는 `rv_frontend`, IFU용 `rv_pmp(CHECK_PORTS=F/2)`, `rv_backend`가 있다.
+frontend의 parcel address/valid와 backend의 current privilege/PMP CSR array를 core가
+IFU PMP에 연결한다. IFU PMP access는 execute, size=2-byte로 고정한다. backend
+redirect는 frontend queue/target buffer/epoch에 단일 fanout한다.
+
+#### `rv_backend`
+
+`rv_backend` parameter는 core에서 `FETCH_BYTES`와 target-buffer 크기를 제외한 backend
+resource/map parameter를 전달받는다. 외부 port는 다음과 같다.
+
+| Group | exact signal | 계약 |
+|---|---|---|
+| fetch input | `fetch_valid_i[1:0]/fetch_ready_o[1:0]`, PC, raw instruction, `inst_len_e`, `prediction_meta_t`, fetch fault | prefix handshake; successful dispatch가 ready를 결정 |
+| redirect | `redirect_valid_o`, `redirect_pc_o` | branch recovery 또는 architectural trap/return/fence/PMP refetch 중 하나 |
+| D-memory | `rv_ooo_core`와 동일한 flattened dual lane request/response | `rv_lsu_cluster`로 직접 전달 |
+| async control | software/timer/external IRQ, debug halt, `mtime[63:0]` | interrupt는 retire boundary, halt는 dispatch quiesce |
+| retire trace | dual trace group | ROB retire 결과와 PRF retire probe 값 |
+| PMP/privilege | `current_privilege_o`, `pmpcfg_o[8][8]`, `pmpaddr_o[8][PADDR_WIDTH-2]` | core IFU PMP의 authority source |
+| predictor resolve | scalar valid, PC, raw instruction, length, actual taken/target, mispredict, original meta | execution resolve에서 frontend predictor로 반환 |
+| predictor commit | dual valid, PC, raw instruction, length, actual taken | in-order committed history/RAS mirror 갱신 |
+
+내부 resource 산식은 `PHYS_TAG_WIDTH=clog2(max(INT_PHYS_REGS,FP_PHYS_REGS))`,
+`IQ_ENTRIES=INT_IQ_ENTRIES+MEM_IQ_ENTRIES+FP_IQ_ENTRIES`, `WB_SOURCES=11`,
+`WB_PORTS=4`, `EXEC_PORTS=5`다. completion source index는 fast INT0/INT1=`0/1`,
+MUL=`2`, DIV=`3`, FPU=`4`, LSU cluster 5개=`5..9`, ROB-head system=`10`이다.
+writeback arbiter는 이 11개 중 최대 4 completion을 선택하되 INT/FP write port를 각각
+2개까지만 사용한다.
+
+#### `rv_lsu_cluster`
+
+parameter는 XLEN/PADDR/data/ROB-sequence/tag 폭, LQ/SQ/SB/PMP entry 수와
+ITIM/DTIM map이다. 다음 group을 모두 연결해야 standalone LSU가 동작한다.
+
+| Group | exact signal과 폭 | 계약 |
+|---|---|---|
+| LSQ allocate | dual `dispatch_valid`, accept/ready, load/store, sequence, dst valid/class/tag, size/unsigned → LQ/SQ valid/index | ROB allocate와 같은 edge에 원자 할당 |
+| issue/AGU | dual valid/ready, sequence, load/store, address/data phase-valid, LQ/SQ identity, base/immediate/store-data/size | 두 `rv_lsu_pipe`로 address/data update 생성 |
+| protection | current effective privilege, flattened `pmpcfg[8*PMP_ENTRIES]`, `pmpaddr[(PADDR_WIDTH-2)*PMP_ENTRIES]` | dual `rv_pmp` read/write check |
+| retire | ROB head valid/sequence, dual commit valid/load/store/sequence/LQ/SQ index, `commit_ready_o[1:0]` | LQ free 또는 SQ→SB/direct device 완료와 동기화 |
+| completion | 5-source valid/ready와 sequence/dst class/tag/data/exception/cause/tval | source0/1=store 또는 AGU exception, source2/3=load0/1 forward·memory result, source4=direct device-store fault |
+| D-memory | core와 동일한 dual request/response | load, committed SB drain, direct device store를 arbitrate |
+| status | store-buffer empty, total memory idle, sticky store machine-check | fence/trap/debug 계측 |
+
+cluster 내부 owner는 `rv_lsu_pipe` 2개, `rv_lsq` 1개, `rv_store_buffer` 1개,
+LSU PMP 1개다. D-memory ID는 load=`{1'b0,LQ index[4:0]}`, committed
+SB=`{2'b10,SB index[3:0]}`, direct device store=`6'b11_0000`으로 encode해
+response를 원 owner에 route한다. request handshake 후 flush된 load는 LQ tombstone을
+유지하고 response가 돌아온 뒤에만 index를 재사용한다.
+
+#### `rv_exec_result_buffer`
+
+ALU0/ALU1 뒤에 하나씩 있는 1-entry fall-through elastic buffer다. request는
+`valid/ready`, sequence, destination valid/class/tag, data, exception/cause/tval,
+branch-mispredict/target, fflags를 받고 result side에서 같은 payload를
+`valid/ready`로 그대로 반환한다. empty이면 combinational ready이고, stalled result는
+모든 payload를 register에 고정한다. `flush_valid/all/sequence`는 killed result를
+result handshake 없이 폐기한다. 이 module은 계산하지 않고 completion identity와
+backpressure만 보존한다.
+
+#### local leaf와 AXI wrapper pair
+
+| Local leaf | Local port/sideband | AXI wrapper | wrapper 추가 parameter |
+|---|---|---|---|
+| `rv_bootrom_local` | `rv_local_mem_if.target bus` | `rv_bootrom` | `AXI_ID_WIDTH`; 내부 bridge burst 최대 16 |
+| `rv_plic_local` | bus, source vector, MEIP/SEIP | `rv_plic` | `AXI_ID_WIDTH`; device, burst 최대 1 |
+| `rv_hostif_local` | bus, boot entry/flags, event valid/ready/kind/data | `rv_hostif` | `AXI_ID_WIDTH`; device, burst 최대 1 |
+
+각 wrapper는 새 state를 소유하지 않고 `rv_axi_to_local_bridge`와 local leaf를
+직결한다. `rv_soc_top`은 Boot ROM은 I-Fabric 내부 local leaf를 사용하고 PLIC/HostIF는
+AXI wrapper를 사용한다. 따라서 같은 hierarchy에 `rv_bootrom` wrapper와
+`rv_bootrom_local`을 동시에 연결하지 않는다.
+
+#### utility/error module
+
+`rv_soc_addr_decode`는 clock/reset이 없는 조합 module로 전 region base/size parameter,
+`addr_i[31:0]`, `soc_target_e target_o`만 가진다. Boot ROM/ITIM은 I-local,
+DTIM/CLINT는 D-local로 묶고 PLIC와 HostIF를 각각 분류하며 그 밖의 주소는 error를
+반환한다. `SOC_TARGET_RESERVED` encoding과 Xbar S4 error port는 현재 address map에서
+선택되지 않는 향후 확장 자리다.
+`rv_soc_map_check`는 port가 없는 elaboration module이며 parameter가 잘못되면 time 0
+`$fatal`을 낸다.
+
+`rv_axi_error_slave`는 `ID_WIDTH`, clock/reset과 AXI slave port만 가진다. 한 transaction
+state machine으로 AW 뒤 모든 W beat를 소비하고 B=`DECERR`, AR 뒤 `ARLEN+1`개의
+zero-data R beat와 `DECERR`를 반환한다. AW와 AR이 동시에 오면 AW를 우선한다.
+`rv_sram_1r1w`, `rv_tim_2bank`, `rv_clint`, I/D Fabric의 exact native port는
+Section 15.14~15.16을 따른다.
+
+### 15.40 Module별 저장 상태와 우선순위
+
+동일 cycle event를 다르게 해석하면 port 이름이 같아도 다른 코어가 되므로 우선순위를
+다음처럼 고정한다.
+
+| Module | 주요 저장 상태 | 높은 순서의 event priority |
+|---|---|---|
+| frontend/fetch queue | request outstanding, next block, epoch, byte/data/fault queue | reset → architectural redirect → predicted redirect/target fill → response/fetch consume |
+| predictor | BTB/PHT/global/chooser, speculative+committed GHR/RAS | reset → architectural redirect restore; resolve training/recovery; prediction fire; commit mirror |
+| rename | RAT/RRAT, INT/FP free bitmap, checkpoint snapshots | reset → committed recovery → checkpoint restore → commit/release → rename fire |
+| ROB | entry array, head/tail/count, monotonic next sequence | reset → full flush → younger flush → completion/retire/allocate |
+| IQ | entry payload, per-source ready, store phase bits | reset/flush → wakeup + accepted candidate removal + dispatch replacement |
+| MUL/FPU/result buffer | elastic valid/payload stages | reset → flush killed stage → downstream advance/new request |
+| DIV | busy, iteration, quotient/remainder, result payload | reset → flush → result consume/iteration/new request |
+| LSQ | LQ/SQ arrays, allocation pointers/count, request/tombstone status | reset → flush uncommitted → response/update → commit/free/allocate |
+| store buffer | committed FIFO, issued/response state, machine-check | reset; drain response; enqueue; drain issue. branch flush는 적용하지 않음 |
+| CSR | privilege/trap CSRs, counters, PMP, pending CSR transaction | reset → trap → MRET → committed CSR write/fflags/counter update |
+| trap controller | architectural next PC, pending redirect, WFI sleep | reset; existing pending redirect blocks traps → synchronous ROB trap → ROB-empty interrupt; retire MRET/FENCE.I/WFI/PMP-write creates next-cycle pending redirect; trap/wake clears sleep |
+| AXI/local bridges | captured request/burst metadata와 response | reset → active response completion → 다음 channel/beat accept |
+| I/D Fabric | per-requester busy/response, arbitration age/fairness | reset → old response handoff → new request accept; local hit before outbound |
+
+모든 sequential state는 `posedge clk_i`와 synchronous active-low reset을 사용한다.
+ITIM/DTIM/Boot ROM content array만 reset-clear 대상이 아니고, 그 외 valid/pointer/
+payload register는 deterministic reset 값을 가져야 한다. combinational unit인 decoder,
+ALU, branch, PMP, issue arbiter, fence controller와 address decoder에는 저장 상태가 없다.
+
+### 15.41 문서만으로 재구현하는 build order
+
+1. `rv_ooo_pkg`, `rv_soc_pkg`, 두 interface와 map checker를 먼저 작성해 enum/폭/주소를 고정한다.
+2. SRAM/TIM/Boot ROM/CLINT/PLIC/HostIF local leaf와 AXI wrapper를 구현한다.
+3. I/D Fabric과 두 bridge, 3×6 Main Xbar를 연결해 Host가 모든 legal region을 read/write할 수 있게 한다.
+4. frontend queue/target-buffer/predictor/PMP parcel path를 구현해 dual raw instruction stream을 만든다.
+5. decoder→rename→PRF→unified IQ→5-port issue를 원자 dispatch 계약으로 묶는다.
+6. ALU/branch/MUL/DIV/FPU completion을 result buffer와 11-source writeback arbiter에 연결한다.
+7. dual AGU/LSQ/SB를 구현하고 store visibility, forwarding, tombstone 규칙을 먼저 assertion으로 고정한다.
+8. ROB dual retire, CSR/trap/fence/recovery와 predictor update를 연결한 뒤 core/SoC top을 완성한다.
+
+각 단계의 완료 기준은 단순 compile이 아니다. request stall payload stability, prefix
+allocate/retire, sequence liveness, flush 후 wrong-path side-effect 0, store commit visibility,
+AXI ID/response return, reset 중 request 0이 assertion으로 성립해야 다음 단계로 간다.
 
 ## 16. Flush와 recovery 우선순위
 
@@ -1995,7 +2316,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 
 ## 17. 성능·상태 계측
 
-다음 64-bit hardware event counter를 선택 가능하게 제공한다.
+현재 RTL은 아래 항목을 architectural CSR 또는 합성 가능한 hardware counter bank로 제공하지 않는다. CoreMark profiler는 retire trace와 testbench의 내부 관찰로 같은 값을 계산한다. 합성 환경에서 지속 계측이 필요하면 아래 64-bit saturating counter bank를 parameter로 선택 가능하게 추가하되 기본값은 off로 둔다.
 
 - cycles, instructions retired, IPC numerator/denominator
 - frontend empty, decode/rename/dispatch stall cycles
@@ -2048,7 +2369,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | partial byte overlap | 초기 구현 stall, 잘못된 merge 금지 |
 | LSU0/1 two loads different DTIM bank | 두 read 같은 cycle grant |
 | LSU0/1 two loads same DTIM bank | older grant, younger `req_ready=0`; decoupled 확장 시 bank-conflict replay |
-| same-cycle older store + younger load same address | pair-forward 또는 younger replay |
+| same-cycle older store + younger load same address | AGU update register 후 다음 scheduler cycle에 forward; data 미정이면 stall |
 | store execute 뒤 older exception | SQ 제거, TIM/AXI write 0회 |
 | branch mispredict with younger LQ/SQ | checkpoint 이후 entry 제거 |
 | committed store + younger exception | committed store buffer는 유지/drain |
@@ -2326,18 +2647,18 @@ orphan speculative response 생성을 방지한다.
 
 `rv_commit_trace_logger`는 ROB의 in-order retire 경계만 CSV로 기록한다. WB는 speculative이고 flush될 수 있으므로 architectural reference 비교점으로 사용하지 않는다. WB log는 microarchitecture latency나 wakeup 디버그에는 유용하지만 ISA 정답 비교에는 commit log를 사용한다. CSV 한 행은 기존 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,trap,cause,tval` 뒤에 `gpr_we,fpr_we,csr_valid,csr_we,csr_addr,csr_wdata,csr_name,mnemonic`을 추가한 20개 열을 가진다. `order`는 유효 retire마다 연속 증가하고 lane 1 record는 같은 cycle의 lane 0 다음에만 나타나야 한다. 정상 instruction은 `trap=0`이며 destination write가 없으면 `rd/wdata`는 비교 대상이 아니다. trap record는 register write가 없어야 하고 `cause/tval`을 비교한다. `csr_name`은 CSR 주소의 architectural 이름을, `mnemonic`은 사람이 마지막 실행 명령을 빠르게 찾기 위한 보조 정보를 제공하며 정답 비교는 `instruction` raw bits를 기준으로 한다. 각 verifier는 Boot ROM과 의도된 MSIP trap을 별도로 두고 ITIM payload의 program-order PC/instruction, INT/FP write 값, wrong-path 부재와 precise trap cause를 exact-match한다.
 
-서버 파형 계약(2026-09-09): HTIF Xcelium top은 `RV_FSDB`가 compile define된
-경우에만 FSDB system task를 포함한다. `run_verilog_sub.sh`는 파형 viewer를 실행하거나
-PLI를 탐색/등록하지 않고 FSDB 생성만 요청한다. 기본 출력은 서버 `DUMP` 환경변수가
-있으면 `$DUMP/binary.fsdb`, 없으면 `sim/xcelium/out/binary.fsdb`다. `issim.scr`는
-simulation xrun에 `+fsdbfile=<path>`를 전달하고 TB가 이를 `$fsdbDumpfile()`에
-사용한다. FSDB system task 등록은 서버 Xcelium 환경이 소유한다. 출력 경로, MDA dump,
-주기적 flush cycle은 각각 `FSDB_FILE`, `FSDB_DUMP_MDA`,
-`FSDB_FLUSH_CYCLES`로 조정한다. 일반 simulator와 파형 없는 regression은
-`FSDB_ENABLE=0`으로 vendor task와 PLI 의존성을 완전히 제외한다. 기본 MDA dump는
-TIM 용량 때문에 끄고, core hang 분석 시 top hierarchy의 control/data signal을
-time 0부터 기록하며 주기적으로 buffer를 flush한다. 상세 실행법과 PLI 전달 규칙은
-`sim/xcelium/README.md`를 단일 운영 가이드로 사용한다.
+서버 파형 계약(2026-09-10): `isrun.scr`는 `FSDB_ENABLE=1`일 때 `RV_FSDB`를 define하고
+서버의 Novas 환경을 source한 뒤 `-loadpli1 debpli:novas_pli_boot -pli_export`로 PLI를
+elaboration에 등록한다. `issim.scr`도 같은 환경을 source하고 `+fsdbfile`, MDA, flush
+주기를 전달한다. HTIF TB의 guarded `$fsdbDumpfile/$fsdbDumpvars/$fsdbDumpflush` block이
+이를 소비해 파형을 기록한다. PLI 없이 이 task를 호출할 때의 `E,MSSYSTF`는 ELF/RTL이
+아니라 user-defined system task 미등록 오류다.
+
+기본 파형 이름은 ELF basename을 따른다. `BINARY=/path/arch_arith.elf`이면
+`${DUMP}`가 있을 때 `${DUMP}/arch_arith.fsdb`, 없으면
+`sim/xcelium/out/arch_arith.fsdb`다. `FSDB_FILE` 명시는 이 자동 parsing보다 우선한다.
+직접 `issim.scr`를 호출하는 경우도 `-FSDB_FILE`을 생략하면 `-BINARY`에서 같은 이름을
+계산한다. Verilator는 FSDB를 직접 생성하지 않고 VCD/FST/SAIF만 지원한다.
 
 FSDB dump는 testbench 기능이므로 `mcycle`, `minstret`, CoreMark timed-region cycle과
 IPC를 바꾸지 않는다. 대신 모든 hierarchy 변화를 기록하므로 simulator wall-clock과
@@ -2400,7 +2721,7 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 ### M3 — Rename/ROB/OoO integer
 
 - INT RAT/RRAT/free-list/PRF, ROB 48, checkpoint 8
-- split IQ wakeup/select, ALU2/MUL/DIV, 2-wide commit
+- unified IQ wakeup/select(향후 split PPA hook), ALU2/MUL/DIV, 2-wide commit
 - branch predictor/recovery
 
 완료 조건: formal rename/ROB invariant와 long random Spike differential mismatch 0.
@@ -2416,7 +2737,7 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 
 ### M5 — F extension
 
-- FP rename/PRF/IQ, FMA/misc/div-sqrt
+- FP rename/PRF/IQ, 현재 unified FP datapath와 향후 FMA/misc/div-sqrt 분리
 - rounding/canonical NaN/fflags
 
 완료 조건: RV32F architectural tests와 SoftFloat/Spike differential.
@@ -2479,4 +2800,6 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 | v1.14.2 | 기본 CLINT base를 `0x0020_0000`에서 표준 `0x0200_0000`으로 이동. MSIP=`0x0200_0000`, MTIMECMP=`0x0200_4000/4004`, MTIME=`0x0200_BFF8/BFFC` 계약을 RTL package, DPI, Boot ROM, C/CoreMark startup, privilege smoke, configurator, 그림과 검증 artifact에 일괄 반영. block 12종, SoC boot 및 GCC C/FP/LSU ELF 회귀 통과 |
 | v1.14.3 | DPI ELF loader에 기본-ON Host AXI full readback을 추가. 최종 PT_LOAD file byte와 BSS zero-fill을 exact-compare하고 overlap은 last-segment-wins로 판정하며, 전체 PASS 전에는 boot mailbox와 CLINT MSIP를 쓰지 않는다. Xcelium `ELF_VERIFY` 전달·진행률·주소별 mismatch 진단을 추가 |
 | v1.14.4 | IFU의 16-byte memory transport와 architectural PMP 접근 크기를 분리. fetch fill마다 8개의 2-byte parcel을 현재 privilege/PMP로 병렬 판정하고 byte fault metadata로 보존하여 C/32-bit/cross-block instruction이 실제 사용하는 parcel만 검사한다. TOR top `0x800008fc` 경계 정상 retire, locked PMP refetch fault, unit/integration/RV32·RV64 elaboration 회귀를 추가 |
-| v1.14.5 | Xcelium runner의 FSDB PLI 설치경로 자동 탐색과 `-loadpli1` 주입을 제거. 서버 환경이 FSDB system task 등록을 소유하고, runner는 `$DUMP/binary.fsdb` 경로를 `+fsdbfile` plusarg로 HTIF TB에 전달해 dump 생성만 수행하도록 단순화 |
+| v1.14.5 | Xcelium runner의 FSDB PLI 설치경로 자동 탐색, `-loadpli1`, TB의 `$fsdbDump*` user-defined task를 제거. compile에는 FSDB define/library를 추가하지 않고 simulation xrun에 `$DUMP/binary.fsdb` 경로의 `+fsdbfile` plusarg만 전달해 회사 서버 공통 dump flow를 사용하도록 단순화 |
+| v1.15.0 | 최신 49개 SystemVerilog file/48개 module을 HDD와 재대조. 실제 backend가 56-entry unified IQ, PRF별 8R+6Q+2W+2A, unified 3-stage FP pipe임을 반영하고 목표 split 구조와 분리. ROB 실제 entry owner, EBREAK/SRET/debug/S-mode gap, FENCE.I epoch 처리, core/backend/LSU cluster/result-buffer/local-wrapper exact interface와 module별 state priority/build order를 추가. `+fsdbfile` 단독은 vanilla Xcelium에서 dump를 만들지 않으며 FSDB PLI/공통 TB가 필요함을 명시 |
+| v1.15.1 | 서버 확인본에 맞춰 Novas FSDB PLI elaboration 등록과 HTIF TB `$fsdbDump*` 경로를 복원. ELF basename 기반 자동 파일명을 추가하여 `arch_arith.elf`가 `${DUMP}` 또는 build directory의 `arch_arith.fsdb`로 생성되며 명시적 `FSDB_FILE` override는 유지 |

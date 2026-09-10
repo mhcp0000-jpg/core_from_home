@@ -17,11 +17,12 @@ chmod +x sim/xcelium/*.sh
 ./sim/xcelium/run_verilog_sub.sh
 ```
 
-이 runner는 파형 viewer나 PLI 탐색/등록을 수행하지 않고
-`${DUMP:-sim/xcelium/out}/binary.fsdb` 생성만 요청합니다. simulation xrun에는
-`+fsdbfile=...`을 전달하며 서버 환경이 FSDB system task 등록을 소유합니다.
-파형이 필요 없는 실행은 `FSDB_ENABLE=0`으로 끕니다. ITIM/DTIM memory array dump는 파일 크기 때문에 기본
-제외하며 `FSDB_DUMP_MDA=1`로 별도 활성화합니다.
+이 runner는 ELF basename을 FSDB 이름으로 자동 변환합니다. 예를 들어
+`BINARY=/server/path/arch_arith.elf`이면 기본 출력은
+`${DUMP:-sim/xcelium/out}/arch_arith.fsdb`입니다. `FSDB_FILE`을 지정하면 자동 이름보다
+우선합니다. compile 단계에서 Novas PLI를 등록하고 TB의 guarded `$fsdbDump*` block이
+simulation plusarg 경로에 파형을 기록합니다. 파형이 필요 없는 실행은
+`FSDB_ENABLE=0`으로 끕니다.
 
 기본 Xcelium 실행은 `SYNTHESIS`를 define하여 simulation-only assertion을 제외합니다.
 assertion까지 검사할 때는 `RTL_ASSERTIONS=1`로 실행합니다.

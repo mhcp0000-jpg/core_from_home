@@ -5,54 +5,50 @@
 `run_verilog_sub.sh`는 기본적으로 FSDB를 활성화하며 결과는 다음 위치에 생성된다.
 
 ```text
-sim/xcelium/out/binary.fsdb
+sim/xcelium/out/<ELF basename>.fsdb
 ```
 
-기본 파일명은 실제로 `sim/xcelium/out/binary.fsdb`이며, 서버가 `DUMP` 환경변수를
-정의하면 `$DUMP/binary.fsdb`가 된다. `FSDB_FILE`로 명시적인 위치를 덮어쓸 수 있다.
-runner는 파형 viewer를 실행하지 않고 PLI를 탐색하거나 `-loadpli1`으로 등록하지도
-않는다. 서버 Xcelium 환경이 FSDB system task 등록을 소유한다.
+ELF 파일의 마지막 `.elf` 확장자를 제거하고 `.fsdb`를 붙인다. 예를 들어
+`BINARY=/server/path/arch_arith.elf`이면 기본 파일은
+`sim/xcelium/out/arch_arith.fsdb`이고, 서버가 `DUMP=/server/scratch/dump`를 정의하면
+`/server/scratch/dump/arch_arith.fsdb`가 된다. `FSDB_FILE`을 명시하면 이 자동 이름보다
+우선한다.
+
+compile script는 `RV_FSDB`를 define하고 Novas PLI를 elaboration에 등록한다. HTIF TB의
+guarded `$fsdbDumpfile/$fsdbDumpvars/$fsdbDumpflush` block은 simulation의
+`+fsdbfile` plusarg를 읽어 실제 파일을 만든다. 기본 Novas 환경 파일이 다른 서버에서는
+`NOVAS_NC_ENV`를 해당 `novas_nc_*_linux.env` 절대경로로 지정한다.
 
 ```bash
 DUMP=/server/scratch/dump BINARY=/server/path/test.elf \
   ./sim/xcelium/run_verilog_sub.sh
 ```
 
-실행 로그에 `[FSDB] opening ...`이 나타나야 dump가 시작된 것이다. 코어가
-멈추거나 timeout에 도달해도 중간까지의 파형을 읽을 수 있도록 기본 100,000
-cycle마다 `$fsdbDumpflush`를 수행한다. 주기와 파일 경로는 바꿀 수 있다.
+runner의 `FSDB enabled:`와 simulation의 `[FSDB] time=... opening ...` 로그에서 자동
+선택된 경로를 확인할 수 있다. 파일 경로는 다음처럼 직접 바꿀 수도 있다.
 
 ```bash
-FSDB_FILE=/server/scratch/my_test.fsdb FSDB_FLUSH_CYCLES=10000 \
+FSDB_FILE=/server/scratch/my_test.fsdb \
   BINARY=/server/path/test.elf ./sim/xcelium/run_verilog_sub.sh
 ```
 
-기본 dump는 `rv_soc_htif_dpi_tb` 아래 전체 hierarchy와 일반 신호를 대상으로 한다.
-ITIM/DTIM 같은 multidimensional memory까지 필요하면 다음 옵션을 사용한다. 파일이
-매우 커질 수 있으므로 기본값은 0이다.
-
-```bash
-FSDB_DUMP_MDA=1 BINARY=/server/path/test.elf \
-  ./sim/xcelium/run_verilog_sub.sh
-```
-
-성능 회귀처럼 파형이 필요 없는 실행에서는 끌 수 있다. 이때 `RV_FSDB`가 정의되지
-않고 PLI도 load하지 않으므로 기존 환경과 동일하게 동작한다.
+성능 회귀처럼 파형이 필요 없는 실행에서는 plusarg 전달을 끌 수 있다.
 
 ```bash
 FSDB_ENABLE=0 BINARY=/server/path/test.elf \
   ./sim/xcelium/run_verilog_sub.sh
 ```
 
-직접 `verilog_sub`를 호출한다면 compile job에 `-FSDB_ENABLE=1`, simulation job에
-`-FSDB_ENABLE=1 -FSDB_FILE=$DUMP/binary.fsdb`를 넘긴다. `issim.scr`가 실제 xrun에
-`+fsdbfile=$DUMP/binary.fsdb`를 전달하고 TB가 이를 `$fsdbDumpfile()`에 사용한다.
-저장소 runner는 이 전달을 자동으로 처리한다.
+직접 `verilog_sub`를 호출해 `-FSDB_FILE`을 생략해도 `issim.scr`가 `-BINARY` basename으로
+동일한 자동 이름을 만든다. compile job에는 `-FSDB_ENABLE=1`, simulation job에는
+`-FSDB_ENABLE=1 -BINARY=/server/path/arch_arith.elf`를 전달한다. 명시 경로가 필요하면
+simulation job에 `-FSDB_FILE=$DUMP/custom.fsdb`를 추가한다.
 
-현재 Windows 로컬 검증에서는 `RV_FSDB`가 꺼진 Verilator SoC 전체 build/run이
-PASS했다. 실제 FSDB system task와 파일 생성은 해당 기능이 구성된 Linux 서버에서
-확인해야 한다. 실패하면 `simulation.log`의 `[FSDB] opening` 및 runner가 출력한
-`FSDB output` 경로를 먼저 확인한다.
+현재 Windows 로컬 Verilator SoC 전체 build/run은 PASS했지만 Verilator는 FSDB를
+직접 생성하지 않고 VCD/FST/SAIF를 사용한다. Linux 서버에서 FSDB가 없으면 compile
+로그의 `loading Novas PLI`, simulation의 `[FSDB] ... opening`, 실행 종료 후 파일
+존재/크기를 확인한다. `$fsdbDumpfile`에서 `E,MSSYSTF`가 발생하면 ELF 문제가 아니라
+PLI가 elaboration에 등록되지 않은 것이다.
 
 FSDB는 TB dump이므로 코어의 `mcycle/minstret`나 CoreMark IPC를 바꾸지는 않지만,
 simulation wall-clock과 파일 사용량은 크게 늘 수 있다. CoreMark 성능 측정은

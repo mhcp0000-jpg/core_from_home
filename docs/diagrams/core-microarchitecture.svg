@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1320" role="img" aria-labelledby="title desc">
   <title id="title">RV32IMFC two-wide out-of-order core microarchitecture</title>
-  <desc id="desc">Orthogonal block diagram from frontend through decode, rename, dispatch, split issue queues, two-wide global issue, integer, memory and floating point execution, LSQ, writeback, ROB, precise commit, recovery, and committed stores.</desc>
+  <desc id="desc">Orthogonal block diagram from frontend through decode, rename, dispatch, a 56-entry unified issue queue, two-wide global issue, integer, memory and floating point execution, LSQ, writeback, ROB, precise commit, recovery, and committed stores.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/>
@@ -67,8 +67,8 @@
   <text class="detail" x="1108" y="218">ROB + IQ + LQ/SQ allocation</text>
 
   <rect class="node schedule" x="1270" y="145" width="310" height="115"/>
-  <text class="label" x="1425" y="177">Split issue queues</text>
-  <text class="detail" x="1425" y="203">INT 24 · MEM 16 · FP 16</text>
+  <text class="label" x="1425" y="177">Unified issue queue · 56 entries</text>
+  <text class="detail" x="1425" y="203">capacity knobs 24 + 16 + 16 · not partitions</text>
   <text class="detail" x="1425" y="228">ROB-age oldest-ready candidates</text>
   <text class="detail" x="1425" y="250">CDB tag wakeup</text>
 
@@ -110,8 +110,8 @@
   <text class="detail" x="895" y="598">two 64-bit D-memory request ports</text>
   <rect class="node execute" x="1115" y="500" width="320" height="100"/>
   <text class="label" x="1275" y="532">P4 · FP cluster</text>
-  <text class="detail" x="1275" y="558">FMA / arithmetic · misc / convert</text>
-  <text class="detail" x="1275" y="582">iterative divide / square-root</text>
+  <text class="detail" x="1275" y="558">RV32F unified bit-level execute</text>
+  <text class="detail" x="1275" y="582">3-stage elastic transport · 1/cycle</text>
 
   <path class="wire" d="M205 475 V500"/>
   <path class="wire" d="M525 475 V500"/>

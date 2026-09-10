@@ -35,7 +35,8 @@ set heartbeat_cycles = "100000"
 set elf_verify = "1"
 set trace_file = "${build_dir}/commit_trace.csv"
 set fsdb_enable = "1"
-set fsdb_file = "${build_dir}/binary.fsdb"
+set fsdb_file = ""
+set fsdb_file_explicit = "0"
 set fsdb_dump_mda = "0"
 set fsdb_flush_cycles = "100000"
 
@@ -56,6 +57,7 @@ foreach arg ($argv)
     set fsdb_enable = `echo "$arg" | sed 's/-FSDB_ENABLE=//'`
   else if ("$arg" =~ "-FSDB_FILE=*") then
     set fsdb_file = `echo "$arg" | sed 's/-FSDB_FILE=//'`
+    set fsdb_file_explicit = "1"
   else if ("$arg" =~ "-FSDB_DUMP_MDA=*") then
     set fsdb_dump_mda = `echo "$arg" | sed 's/-FSDB_DUMP_MDA=//'`
   else if ("$arg" =~ "-FSDB_FLUSH_CYCLES=*") then
@@ -67,6 +69,21 @@ if ("$binary" == "" || ! -f "$binary") then
   echo "ERROR: ELF file was not found: $binary"
   echo "Pass -BINARY=/absolute/path/program.elf to verilog_sub."
   exit 2
+endif
+
+# Direct issim.scr users get the same default as run_verilog_sub.sh:
+# /path/arch_arith.elf -> ${DUMP or build_dir}/arch_arith.fsdb.
+# An explicit -FSDB_FILE always wins.
+if ("$fsdb_file_explicit" == "0") then
+  set elf_basename = `basename "$binary"`
+  set fsdb_stem = `echo "$elf_basename" | sed 's/\.[eE][lL][fF]$//'`
+  set fsdb_dir_default = "$build_dir"
+  if ($?DUMP) then
+    if ("$DUMP" != "") then
+      set fsdb_dir_default = "$DUMP"
+    endif
+  endif
+  set fsdb_file = "${fsdb_dir_default}/${fsdb_stem}.fsdb"
 endif
 if (! -f "$sv_lib") then
   echo "ERROR: DPI shared library was not found: $sv_lib"
