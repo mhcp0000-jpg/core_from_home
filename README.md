@@ -217,7 +217,12 @@ ROB retire 로그는 `order,cycle,lane,pc,instruction,rd_write,rd_fp,rd,wdata,tr
 powershell -ExecutionPolicy Bypass -File scripts/run_verification.ps1
 ```
 
-이 명령은 각 회귀의 DPI/Verilator build cache를 `<ArtifactRoot>/soc_elf_build`에 격리한다. 다른 경로를 원하면 `-ArtifactRoot`나 `-SocElfBuildRoot`를 지정하면 된다.
+이 명령은 block/backend/SoC/DPI Verilator build와 ELF·trace를 모두 기본
+`out/verification`(또는 지정한 `<ArtifactRoot>`) 아래에 격리한다. 다른 경로를 원하면 `-ArtifactRoot`나
+`-SocElfBuildRoot`를 지정하면 된다. runner는 `python`, `python3`, `py`와 표준
+Windows per-user Python 설치를 순서대로 탐색하고 현재 PowerShell 실행 파일을
+하위 스크립트에도 재사용하므로 Windows PowerShell과 Linux `pwsh`에서 동작한다. 필요한 경우
+`-PythonPath <python 실행 파일>`로 명시할 수 있다.
 
 실제 GCC가 생성한 RV32IMFC C/ASM loop를 다시 빌드하고 실행하려면 다음을 사용합니다. 결과 요약, ELF header/symbol/disassembly와 전체 ROB commit CSV는 `verification/tests/rv32_c_loop`에 보관합니다.
 
@@ -247,7 +252,8 @@ integer/branch/dual-LSU/privileged 통합 backend 회귀(Verilator + w64devkit):
 powershell -ExecutionPolicy Bypass -File scripts/run_integration_tests.ps1
 ```
 
-이 통합 회귀는 out-of-order 완료와 in-order retire, branch squash, store→load forwarding,
+이 통합 회귀는 out-of-order 완료와 in-order retire, branch squash, FP same-pair
+dependency와 `FADD.S +0,+0,RDN` retire, store→load forwarding,
 store의 commit 전 외부 비가시성, dual-LSU 독립 load와 load sign extension뿐 아니라
 CSR old-value/commit ordering, WFI wake, MSIP trap, mtvec redirect, MRET 복귀와 ECALL precise trap을 확인합니다.
 추가로 MPRV=U에서 PMP가 거부한 load/store가 precise access fault를 만들고 D-memory에는 전혀 요청되지 않는지도 확인합니다.

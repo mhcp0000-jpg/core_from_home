@@ -2407,7 +2407,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | parse/elaboration | `python scripts/check_rtl.py` | RV32/RV64/PADDR34/relocated SoC 및 TB elaboration PASS |
 | unit | `scripts/run_unit_tests.ps1` | rename/PRF/execute/decode/divider/FPU/fetch/LSU/SB/LSQ/WB/recovery/result buffer/CSR/PMP/trap controller 17종 PASS |
 | block | `scripts/run_block_tests.ps1` | ROB/IQ/issue arbiter/MUL/predictor/AXI bridge/I·D fabric/SoC peripheral/PLIC/CLINT 12종 PASS; D-Fabric handoff 포함 |
-| backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, LSU/CSR/PMP directed PASS |
+| backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, FP same-pair dependency와 FADD.S exact-zero retire, LSU/CSR/PMP directed PASS |
 | SoC directed boot | `scripts/run_soc_boot_test.ps1` | Boot ROM/Host AXI/ITIM/DTIM/HostIF/CLINT MSIP PASS |
 | DPI ELF | `scripts/run_soc_elf_test.ps1` | ELF 3종 각각 PT_LOAD→mailbox→MSIP→ITIM→HostIF exit(0) PASS |
 | RV32IMF trace | `scripts/verify_rv32_smoke_trace.ps1` | payload 24, INT writes 16, FP writes 3, dual-commit cycles 8 exact-match PASS |
@@ -2805,3 +2805,4 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 | v1.14.5 | Xcelium runner의 FSDB PLI 설치경로 자동 탐색, `-loadpli1`, TB의 `$fsdbDump*` user-defined task를 제거. compile에는 FSDB define/library를 추가하지 않고 simulation xrun에 `$DUMP/binary.fsdb` 경로의 `+fsdbfile` plusarg만 전달해 회사 서버 공통 dump flow를 사용하도록 단순화 |
 | v1.15.0 | 최신 49개 SystemVerilog file/48개 module을 HDD와 재대조. 실제 backend가 56-entry unified IQ, PRF별 8R+6Q+2W+2A, unified 3-stage FP pipe임을 반영하고 목표 split 구조와 분리. ROB 실제 entry owner, EBREAK/SRET/debug/S-mode gap, FENCE.I epoch 처리, core/backend/LSU cluster/result-buffer/local-wrapper exact interface와 module별 state priority/build order를 추가. `+fsdbfile` 단독은 vanilla Xcelium에서 dump를 만들지 않으며 FSDB PLI/공통 TB가 필요함을 명시 |
 | v1.15.1 | 서버 확인본에 맞춰 Novas FSDB PLI elaboration 등록과 HTIF TB `$fsdbDump*` 경로를 복원. ELF basename 기반 자동 파일명을 추가하여 `arch_arith.elf`가 `${DUMP}` 또는 build directory의 `arch_arith.fsdb`로 생성되며 명시적 `FSDB_FILE` override는 유지 |
+| v1.15.2 | FADD/FSUB/FMA exact-zero 부호 판정을 IEEE-754에 맞게 수정. 같은 유효 부호의 zero 항은 해당 부호를 보존하고 반대 부호 zero/exact cancellation만 RDN에서 `-0`을 생성한다. zero-sign corner unit vector와 same-pair `FMV.W.X→FADD.S` FP rename/issue/writeback/ROB-retire 통합 회귀를 추가했다. 전체 verification runner의 Python/PowerShell 탐색, 기본 artifact 경로 및 ArtifactRoot 격리를 보완한 뒤 parse/elaboration, unit 17종, block 12종, backend, SoC boot, RV32IMF/RV32C/M·U ELF architectural trace 전체를 재실행해 PASS |
