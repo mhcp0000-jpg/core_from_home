@@ -416,6 +416,20 @@ module rv_fpu #(
       result.data[31:0] = {c_sign, 8'hff, 23'h0};
       return result;
     end
+    // A finite zero product contributes no magnitude.  Do not feed its
+    // synthetic fp_lsb_exponent into the alignment network: for a large
+    // non-zero multiplicand times zero that exponent can otherwise discard
+    // most or all of a small addend.  The addend is exact in this case.
+    if (fp_is_zero(a) || fp_is_zero(b)) begin
+      if (!fp_is_zero(c)) begin
+        result.data[31:0] = {c_sign, c[30:0]};
+      end else begin
+        result.data[31:0] = '0;
+        result.data[31] = exact_sum_zero_sign(1'b1, product_sign,
+                                              1'b1, c_sign, rm);
+      end
+      return result;
+    end
 
     product = fp_mantissa(a) * fp_mantissa(b);
     mantissa_c = fp_mantissa(c);

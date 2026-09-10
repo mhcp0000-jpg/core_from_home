@@ -81,6 +81,14 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_fpu_diff_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_fpu.sv",
+      "tb/unit/backend/rv_fpu_diff_tb.sv"
+    )
+  },
+  @{
     Top = "rv_fetch_queue_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",

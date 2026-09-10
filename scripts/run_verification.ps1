@@ -66,6 +66,9 @@ function Invoke-Checked([string]$name, [scriptblock]$command) {
 Push-Location $repoRoot
 try {
   Invoke-Checked "RTL parse/elaboration" { & $python scripts/check_rtl.py }
+  Invoke-Checked "FPU exact-vector manifest" {
+    & $python scripts/gen_fpu_diff_vectors.py --check
+  }
   Invoke-Checked "Unit regression" {
     & $powerShell -ExecutionPolicy Bypass -File scripts/run_unit_tests.ps1
   }
