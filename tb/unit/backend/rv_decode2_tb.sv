@@ -37,6 +37,7 @@ module rv_decode2_tb;
   logic [1:0] uop_is_fence_i;
   logic [1:0] uop_exception_valid;
   exception_code_e [1:0] uop_exception_cause;
+  logic [1:0][31:0] uop_exception_tval;
 
   rv_c_expander #(.XLEN(32)) u_c32 (
     .compressed_i  (c32_in),
@@ -79,7 +80,8 @@ module rv_decode2_tb;
     .uop_is_csr_o                  (uop_is_csr),
     .uop_is_fence_i_o              (uop_is_fence_i),
     .uop_exception_valid_o         (uop_exception_valid),
-    .uop_exception_cause_o         (uop_exception_cause)
+    .uop_exception_cause_o         (uop_exception_cause),
+    .uop_exception_tval_o          (uop_exception_tval)
   );
 
   task automatic drive32(input logic [31:0] instruction);
@@ -186,7 +188,25 @@ module rv_decode2_tb;
         (uop_src_arch[0][0] != 2) || (uop_dst_arch[0] != 1))
       $fatal(1, "CSRRW decode failed");
 
+    drive32(32'h0010_0073); // EBREAK
+    if ((uop_fu[0] != FU_CSR) || (uop_operation[0] != 16'h0101) ||
+        !uop_exception_valid[0] ||
+        (uop_exception_cause[0] != EXC_BREAKPOINT) ||
+        (uop_exception_tval[0] != 32'h8000_0000) ||
+        uop_writes_dst[0])
+      $fatal(1, "EBREAK precise exception decode failed");
+
+    in_instruction[0] = 32'h0000_9002; // C.EBREAK raw encoding
+    in_inst_len[0] = INST_LEN_16;
+    #1;
+    if ((uop_canonical[0] != 32'h0010_0073) ||
+        !uop_exception_valid[0] ||
+        (uop_exception_cause[0] != EXC_BREAKPOINT) ||
+        (uop_exception_tval[0] != 32'h8000_0000))
+      $fatal(1, "C.EBREAK precise exception decode failed");
+
     in_instruction[0] = 32'hffff_ffff;
+    in_inst_len[0] = INST_LEN_32;
     #1;
     if (!uop_exception_valid[0] ||
         (uop_exception_cause[0] != EXC_ILLEGAL_INSTRUCTION))

@@ -19,24 +19,30 @@ $powerShell = (Get-Process -Id $PID).Path
 if ($PythonPath) {
   $python = $PythonPath
 } else {
-  $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-  if (!$pythonCommand) {
-    $pythonCommand = Get-Command python3 -ErrorAction SilentlyContinue
-  }
-  if (!$pythonCommand) {
-    $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
-  }
-  if ($pythonCommand) {
-    $python = $pythonCommand.Source
-  } elseif ($env:LOCALAPPDATA) {
+  # Windows App Execution Aliases can make Get-Command return a python.exe
+  # shim that exists but fails with Access denied.  Prefer a real per-user
+  # CPython installation before consulting PATH; Linux has no LOCALAPPDATA
+  # and continues through the normal python/python3 lookup below.
+  if ($env:LOCALAPPDATA) {
     $localPython = Join-Path $env:LOCALAPPDATA `
       "Programs\Python\Python314\python.exe"
     if (Test-Path -LiteralPath $localPython) {
       $python = $localPython
-    } else {
-      throw "Python was not found. Pass -PythonPath or add python/python3 to PATH."
     }
-  } else {
+  }
+  if (!$python) {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if (!$pythonCommand) {
+      $pythonCommand = Get-Command python3 -ErrorAction SilentlyContinue
+    }
+    if (!$pythonCommand) {
+      $pythonCommand = Get-Command py -ErrorAction SilentlyContinue
+    }
+    if ($pythonCommand) {
+      $python = $pythonCommand.Source
+    }
+  }
+  if (!$python) {
     throw "Python was not found. Pass -PythonPath or add python/python3 to PATH."
   }
 }
@@ -78,7 +84,7 @@ try {
   }
   Invoke-Checked "Backend integration" {
     & $powerShell -ExecutionPolicy Bypass -File scripts/run_integration_tests.ps1 `
-      -BuildRoot $backendBuildRoot
+      -BuildRoot $backendBuildRoot -BuildJobs $BuildJobs
   }
   Invoke-Checked "Directed SoC boot" {
     & $powerShell -ExecutionPolicy Bypass -File scripts/run_soc_boot_test.ps1 `

@@ -36,9 +36,9 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-10)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성 및 IFU PMP parcel-boundary 수정 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, EBREAK/debug 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
+현재 구현 상태(2026-09-10)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성 및 IFU PMP parcel-boundary 수정 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀와 EBREAK/C.EBREAK를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, external debug module 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
 
-이 문서의 표기 규칙은 다음과 같다. **현재 RTL**은 저장소의 합성 module이 실제로 구현하는 동작이고, **확장 목표**는 현재 port를 유지하며 교체할 예정인 구조다. 두 표현이 충돌하면 현재 RTL 설명이 구현 기준이다. `HAS_SMODE=1`, EBREAK/debug module, cache/MMU와 분리형 FP divsqrt는 확장 목표이며 기본 sign-off configuration은 `XLEN=32`, `HAS_C=1`, `HAS_F=1`, `HAS_SMODE=0`이다.
+이 문서의 표기 규칙은 다음과 같다. **현재 RTL**은 저장소의 합성 module이 실제로 구현하는 동작이고, **확장 목표**는 현재 port를 유지하며 교체할 예정인 구조다. 두 표현이 충돌하면 현재 RTL 설명이 구현 기준이다. `HAS_SMODE=1`, external debug module, cache/MMU와 분리형 FP divsqrt는 확장 목표이며 기본 sign-off configuration은 `XLEN=32`, `HAS_C=1`, `HAS_F=1`, `HAS_SMODE=0`이다.
 
 ## 1. 목적과 성능 포지션
 
@@ -576,13 +576,12 @@ decode 결과는 최소 다음 제어 정보를 가진다.
 | M | MUL/MULH/MULHSU/MULHU, DIV/DIVU/REM/REMU 및 RV64 W forms | MUL 2-stage, DIV iterative |
 | F | FLW/FSW, FADD.S/FSUB.S/FMUL.S/FDIV.S/FSQRT.S, FMADD family, sign/min/max/compare/class/convert/move | unified 3-stage transport, full differential sign-off 전 |
 | C | `rv_c_expander`가 legal RV32C를 canonical instruction으로 변환 | raw 16-bit는 predictor/trace, canonical 32-bit는 execute에 사용 |
-| Zicsr/system | 6 CSR RMW forms, ECALL, MRET, WFI | CSR/system은 ROB head에서 serialize |
+| Zicsr/system | 6 CSR RMW forms, ECALL, EBREAK/C.EBREAK, MRET, WFI | CSR/system은 ROB head에서 serialize |
 | Zifencei | FENCE, FENCE.I | conservative D-memory drain + retire redirect |
-| 예외 | fetch/access/illegal, address-misaligned, ECALL U/M | precise ROB-head trap |
+| 예외 | fetch/access/illegal, breakpoint, address-misaligned, ECALL U/M | precise ROB-head trap |
 
-현재 gap을 숨기지 않는다. EBREAK는 decoder encoding은 존재하지만 backend
-ROB-head completion/breakpoint trap 연결이 아직 없으므로 지원 완료로 간주하지 않는다.
-`HAS_SMODE=1`에서 SRET decode와 PLIC S-context는 열리지만 S-mode CSR/delegation 및
+현재 gap을 숨기지 않는다. `HAS_SMODE=1`에서 SRET decode와 PLIC S-context는
+열리지만 S-mode CSR/delegation 및
 SRET completion은 미구현이므로 기본값은 반드시 0이다. `debug_halt_req_i`는 새
 dispatch를 막는 quiesce 입력일 뿐 Debug Module/abstract command/resume 기능이 아니다.
 A/B/V/D, misaligned split access, MMU/page fault는 범위 밖이다.
@@ -1046,6 +1045,14 @@ trap entry는 ROB commit 경계에서 다음 순서로 architectural state를 �
 5. speculative RAT/ROB/IQ/LQ/SQ/frontend epoch를 flush한다.
 
 `MRET`은 ROB head의 serializing instruction으로 실행하며 `current_priv←MPP`, `MIE←MPIE`, `MPIE←1`, `MPP←U` 후 `mepc`로 redirect한다.
+
+`EBREAK`와 `C.EBREAK`는 decode에서 이미 완료된 breakpoint exception ROB entry로
+만들되, trap side effect는 해당 entry가 ROB head에 도달할 때만 발생한다. cause는 3,
+`mepc`는 breakpoint instruction PC다. 이 구현은 `mtval`에 0 대신 같은 instruction
+PC를 기록하는 informative 정책을 선택한다. breakpoint와 같은 dispatch bundle의
+younger lane은 실행 여부와 무관하게 trap recovery에서 폐기되어 architectural
+register/CSR/memory side effect를 만들 수 없다. 외부 Debug Module이 없으므로 현재
+EBREAK는 halt request가 아니라 항상 M-mode breakpoint trap이다.
 
 초기 interrupt source:
 
@@ -2401,6 +2408,9 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 
 현재 자동 회귀 완료 항목은 CSR evaluation/commit 분리와 old-value 반환, machine CSR/interrupt enable, vectored mtvec와 trap state, MRET→U 전환, U-mode machine CSR illegal, `mcounteren`, FCSR/fflags, backend WFI→MSIP→mtvec, MRET 복귀, ECALL precise trap이다. CSR interrupt 회귀는 MEIP(11)>MSIP(3)>MTIP(7) 우선순위와 fallback을 검사한다. 독립 trap-controller 회귀는 ROB가 비지 않은 동안 interrupt 진입 금지, 동기 예외와 pending interrupt가 겹칠 때 예외 우선, retired-next-PC를 사용하는 precise interrupt `mepc`, interrupt `mtval=0`, WFI wake/redirect serialization을 검사한다. 같은 조건은 RTL assertion으로도 고정한다. interrupt pending 중 younger dispatch 금지, WFI sleep 중 dispatch 금지, head exception 중 정상 retire 금지, exception payload 보존, interrupt `pc=next_pc`/`tval=0`, trap vector redirect가 매 simulation에서 감시된다. PMP 단위 회귀는 OFF/TOR/NA4/NAPOT, R/W/X, M bypass/lock, lower-index partial-match priority를 확인한다. IFU 회귀는 16-byte transport의 parcel별 fault 합성, TOR 상한 `0x800008fc` 경계의 정상 M-mode retire, target-buffer warm/cold/fenced PMP refetch 및 locked instruction access fault를 확인한다. backend 통합 회귀는 MPRV=U에서 거부된 load/store가 D-memory request 없이 precise trap이 되는 것을 확인한다. D-Fabric 회귀는 기존 read response를 반환하는 같은 edge에 다음 read를 받아도 old ID/data와 next metadata가 섞이지 않는지 검사한다. PLIC 회귀는 priority/enable/pending/tie-break/threshold/M·S context claim-complete와 오류 응답을, CLINT 회귀는 mtime progression/MSIP/mtimecmp/MTIP와 오류 응답을 확인한다. SoC directed boot 회귀는 실제 Boot ROM image가 WFI에 들어간 뒤 Host AXI로 ITIM/DTIM/HostIF를 접근하고, 마지막 CLINT MSIP write로 `0x8000_0000`의 handler가 retire되는 것을 확인한다. DPI-C ELF 자동 적재는 RV32IMF, 혼합폭 RV32C, M/U privilege self-check ELF 모두 HostIF exit(0)까지 통과했다. RV32C image는 압축 ALU/load-store/branch/jump와 cross-halfword 32-bit `FENCE/FENCE.I`를, M/U image는 PMP allow-all 설정, MRET→U, illegal machine CSR trap(cause 2), U ECALL(cause 8), handler 복귀를 포함한다.
 
+추가로 EBREAK/C.EBREAK 통합 회귀는 cause 3, informative `mtval`, faulting `mepc`,
+raw C encoding trace와 same-bundle younger write squash를 검사한다.
+
 ### 18.5 실행 결과와 commit 비교 계약
 
 | Gate | 실행 산출물 | 2026-09-10 결과 |
@@ -2408,7 +2418,7 @@ flush는 fetch epoch를 증가시키고 이전 fetch response가 decode state를
 | parse/elaboration | `python scripts/check_rtl.py` | RV32/RV64/PADDR34/relocated SoC 및 TB elaboration PASS |
 | unit | `scripts/run_unit_tests.ps1` | rename/PRF/execute/decode/divider/FPU directed+exact differential/fetch/LSU/SB/LSQ/WB/recovery/result buffer/CSR/PMP/trap controller 18종 PASS; RV32F 전체 연산군 6,470 vectors |
 | block | `scripts/run_block_tests.ps1` | ROB/IQ/issue arbiter/MUL/predictor/AXI bridge/I·D fabric/SoC peripheral/PLIC/CLINT 12종 PASS; D-Fabric handoff 포함 |
-| backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, FP same-pair dependency와 FADD.S exact-zero retire, LSU/CSR/PMP directed PASS |
+| backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, FP same-pair dependency와 FADD.S exact-zero retire, LSU/CSR/PMP, EBREAK/C.EBREAK precise trap directed PASS |
 | SoC directed boot | `scripts/run_soc_boot_test.ps1` | Boot ROM/Host AXI/ITIM/DTIM/HostIF/CLINT MSIP PASS |
 | DPI ELF | `scripts/run_soc_elf_test.ps1` | ELF 3종 각각 PT_LOAD→mailbox→MSIP→ITIM→HostIF exit(0) PASS |
 | RV32IMF trace | `scripts/verify_rv32_smoke_trace.ps1` | payload 24, INT writes 16, FP writes 3, dual-commit cycles 8 exact-match PASS |
@@ -2808,3 +2818,4 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 | v1.15.1 | 서버 확인본에 맞춰 Novas FSDB PLI elaboration 등록과 HTIF TB `$fsdbDump*` 경로를 복원. ELF basename 기반 자동 파일명을 추가하여 `arch_arith.elf`가 `${DUMP}` 또는 build directory의 `arch_arith.fsdb`로 생성되며 명시적 `FSDB_FILE` override는 유지 |
 | v1.15.2 | FADD/FSUB/FMA exact-zero 부호 판정을 IEEE-754에 맞게 수정. 같은 유효 부호의 zero 항은 해당 부호를 보존하고 반대 부호 zero/exact cancellation만 RDN에서 `-0`을 생성한다. zero-sign corner unit vector와 same-pair `FMV.W.X→FADD.S` FP rename/issue/writeback/ROB-retire 통합 회귀를 추가했다. 전체 verification runner의 Python/PowerShell 탐색, 기본 artifact 경로 및 ArtifactRoot 격리를 보완한 뒤 parse/elaboration, unit 17종, block 12종, backend, SoC boot, RV32IMF/RV32C/M·U ELF architectural trace 전체를 재실행해 PASS |
 | v1.15.3 | host FP에 의존하지 않는 exact-rational/integer-sqrt RV32F oracle과 6,470-vector differential TB를 추가. FADD/FSUB/FMUL/FDIV/FSQRT·4종 FMA뿐 아니라 sign/min/max/compare/class/convert/move까지 전체 RV32F operation, 5개 rounding mode, signed zero/normal/subnormal/infinity/qNaN/sNaN/overflow/underflow result와 fflags를 비교한다. 이 회귀가 발견한 FMA `large finite × zero + small addend`의 zero-product exponent alignment 오류를 수정하고 vector manifest 재현성 검사를 full runner에 편입 |
+| v1.15.4 | 기존 decode-time breakpoint exception 경로를 unit/backend 통합 회귀로 고정하고 HDD의 낡은 EBREAK 미구현 표기를 수정. EBREAK/C.EBREAK가 ROB head에서 cause 3, faulting `mepc`, informative `mtval`로 trap하며 raw compressed trace를 보존하고 same-bundle younger write를 squash하는지 검증. backend runner에 병렬 C++ build option을 추가하고 full runner의 `BuildJobs`를 전달 |

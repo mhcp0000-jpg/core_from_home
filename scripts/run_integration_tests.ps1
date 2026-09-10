@@ -1,7 +1,9 @@
 param(
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
-  [string]$BuildRoot = "C:\rv_build\backend_int"
+  [string]$BuildRoot = "C:\rv_build\backend_int",
+  [ValidateRange(1, 32)]
+  [int]$BuildJobs = 4
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,7 +84,8 @@ try {
   $oldPath = $env:PATH
   try {
     $env:PATH = (Join-Path $W64DevkitRoot "bin") + ";" + $oldPath
-    & $make -C $BuildRoot -f Vrv_backend_int_tb.mk CXX=g++ CC=gcc LINK=g++
+    & $make -j $BuildJobs -C $BuildRoot -f Vrv_backend_int_tb.mk `
+      CXX=g++ CC=gcc LINK=g++
     if ($LASTEXITCODE -ne 0) {
       throw "Verilator C++ build failed."
     }

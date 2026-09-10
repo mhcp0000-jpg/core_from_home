@@ -23,6 +23,8 @@ module rv_backend_int_tb;
   logic [1:0][31:0] trace_pc, trace_instr, trace_wdata;
   logic [1:0][4:0] trace_rd;
   logic [1:0] trace_rd_write, trace_rd_fp, trace_trap;
+  logic [1:0][5:0] trace_cause;
+  logic [1:0][31:0] trace_tval;
 
   int unsigned write_count;
   logic [4:0] write_rd [0:15];
@@ -75,7 +77,8 @@ module rv_backend_int_tb;
     .trace_instr_o(trace_instr), .trace_rd_o(trace_rd),
     .trace_rd_write_o(trace_rd_write), .trace_rd_wdata_o(trace_wdata),
     .trace_rd_fp_o(trace_rd_fp),
-    .trace_trap_o(trace_trap)
+    .trace_trap_o(trace_trap), .trace_cause_o(trace_cause),
+    .trace_tval_o(trace_tval)
   );
 
   task automatic clear_fetch;
@@ -101,6 +104,22 @@ module rv_backend_int_tb;
     fetch_pc[1] = pc1;
     fetch_instr[0] = instruction0;
     fetch_instr[1] = instruction1;
+    while (!fetch_ready[0]) @(negedge clk);
+    @(posedge clk);
+    @(negedge clk);
+    clear_fetch();
+  endtask
+
+  task automatic send_single_length(
+    input logic [31:0] pc,
+    input logic [31:0] instruction,
+    input inst_len_e instruction_length
+  );
+    @(negedge clk);
+    fetch_valid = 2'b01;
+    fetch_pc[0] = pc;
+    fetch_instr[0] = instruction;
+    fetch_len[0] = instruction_length;
     while (!fetch_ready[0]) @(negedge clk);
     @(posedge clk);
     @(negedge clk);
@@ -382,6 +401,66 @@ module rv_backend_int_tb;
       if (!redirect_valid || (redirect_pc != 32'h8000_0000) ||
           !trace_trap[0])
         $fatal(1, "ECALL precise trap/trace is missing");
+    end
+
+    // EBREAK is completed as a decode-time ROB exception.  It must trap only
+    // at the head, preserve the faulting PC in mepc/mtval, and squash a
+    // younger same-bundle write.  This implementation chooses the
+    // specification-permitted informative mtval policy for EBREAK/C.EBREAK.
+    begin
+      int unsigned writes_before;
+      int unsigned timeout;
+      writes_before = write_count;
+      send_pair(32'h8000_0020, 32'h0010_0073, 1'b1,
+                32'h8000_0024, 32'h04d0_0613); // ebreak; addi x12,x0,77
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h8000_0000)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || !trace_trap[0] ||
+          (trace_cause[0] != 6'd3) ||
+          (trace_tval[0] != 32'h8000_0020)) begin
+        $display("EBREAK diagnostic redirect=%0b/%08x trace=%0b cause=%0d tval=%08x mepc=%08x mcause=%08x mtval=%08x",
+                 redirect_valid, redirect_pc, trace_trap[0], trace_cause[0],
+                 trace_tval[0], u_dut.u_csr_file.mepc_q,
+                 u_dut.u_csr_file.mcause_q, u_dut.u_csr_file.mtval_q);
+        $fatal(1, "EBREAK precise trap state is wrong");
+      end
+      // The redirect and trace are combinational in the trap-accept cycle;
+      // architectural CSRs take the payload on the following active edge.
+      @(posedge clk);
+      @(negedge clk);
+      if ((u_dut.u_csr_file.mepc_q != 32'h8000_0020) ||
+          (u_dut.u_csr_file.mcause_q != 32'd3) ||
+          (u_dut.u_csr_file.mtval_q != 32'h8000_0020))
+        $fatal(1, "EBREAK trap CSR state is wrong");
+      repeat (7) @(negedge clk);
+      if (write_count != writes_before)
+        $fatal(1, "Younger same-bundle write survived EBREAK");
+    end
+
+    begin
+      int unsigned timeout;
+      send_single_length(32'h8000_0042, 32'h0000_9002, INST_LEN_16);
+      timeout = 0;
+      while ((!redirect_valid || (redirect_pc != 32'h8000_0000)) &&
+             (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || !trace_trap[0] ||
+          (trace_instr[0][15:0] != 16'h9002) ||
+          (trace_cause[0] != 6'd3) ||
+          (trace_tval[0] != 32'h8000_0042))
+        $fatal(1, "C.EBREAK precise trap state is wrong");
+      @(posedge clk);
+      @(negedge clk);
+      if ((u_dut.u_csr_file.mepc_q != 32'h8000_0042) ||
+          (u_dut.u_csr_file.mcause_q != 32'd3) ||
+          (u_dut.u_csr_file.mtval_q != 32'h8000_0042))
+        $fatal(1, "C.EBREAK trap CSR state is wrong");
     end
 
     // MPRV with MPP=U makes data accesses use U privilege. With every PMP
