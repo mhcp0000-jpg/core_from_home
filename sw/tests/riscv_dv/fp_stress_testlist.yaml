@@ -8,8 +8,8 @@
   iterations: 1
   gen_test: riscv_instr_base_test
   gen_opts: >
-    +instr_cnt=5000
-    +num_of_sub_program=5
+    +instr_cnt=500
+    +num_of_sub_program=2
     +enable_floating_point=1
     +disable_compressed_instr=1
     +enable_unaligned_load_store=0

@@ -5,6 +5,9 @@ on:
   push:
     paths:
       - ".github/workflows/riscv-dv-fp-stress.yml"
+      - "sw/tests/riscv_dv/fp_stress_testlist.yaml"
+      - "sw/tests/riscv_dv/rv32_tim.ld"
+      - "scripts/run_soc_elf_test.sh"
 
 jobs:
   rv32imfc-stress:
