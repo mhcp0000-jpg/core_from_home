@@ -5,6 +5,7 @@ module rv_soc_htif_dpi_tb;
   import rv_soc_pkg::*;
 
   localparam int unsigned IFU_PMP_PORTS = 8;
+  localparam int unsigned CORE_IQ_ENTRIES = 24 + 16 + 16;
 
   logic clk;
   logic rst_n;
@@ -41,6 +42,52 @@ module rv_soc_htif_dpi_tb;
   logic [31:0] commit_last_pc;
   logic [31:0] commit_last_instr;
   integer timeout_cycles;
+
+  task automatic print_stall_snapshot;
+    $display("[STALL][%0t] idle=%0d last_pc=%08h last_instr=%08h fe_valid=%b fe_ready=%b fq_bytes=%0d fq_valid=%b if_outstanding=%0b if_addr=%08h",
+      $time, commit_idle_cycles, commit_last_pc, commit_last_instr,
+      u_dut.u_core.fe_valid, u_dut.u_core.fe_ready,
+      u_dut.u_core.u_frontend.queue_byte_count,
+      u_dut.u_core.u_frontend.queue_valid,
+      u_dut.u_core.u_frontend.outstanding_q,
+      u_dut.u_core.u_frontend.outstanding_addr_q);
+    $display("[STALL][%0t] dec_valid=%b dec_ready=%b dispatch_ready=%0b rob_count=%0d rob_head_pc=%08h rob_head_instr=%08h rob_head_complete=%0b iq_count=%0d",
+      $time, u_dut.u_core.u_backend.dec_valid,
+      u_dut.u_core.u_backend.dec_ready,
+      u_dut.u_core.u_backend.dispatch_resources_ready,
+      u_dut.u_core.u_backend.rob_count,
+      u_dut.u_core.u_backend.rob_head_pc,
+      u_dut.u_core.u_backend.rob_head_instruction,
+      u_dut.u_core.u_backend.rob_head_complete,
+      u_dut.u_core.u_backend.iq_count);
+    $display("[STALL][%0t] lq_count=%0d sq_count=%0d sq_valid=%h sq_addr_valid=%h sq_data_valid=%h store_commit_valid=%b store_commit_ready=%b dreq_valid=%b dreq_ready=%b drsp_valid=%b drsp_ready=%b",
+      $time, u_dut.u_core.u_backend.u_lsu_cluster.lq_count,
+      u_dut.u_core.u_backend.u_lsu_cluster.sq_count,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_valid_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_address_valid_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_data_valid_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.store_commit_valid,
+      u_dut.u_core.u_backend.u_lsu_cluster.store_commit_ready,
+      u_dut.u_core.dmem_req_valid_o, u_dut.u_core.dmem_req_ready_i,
+      u_dut.u_core.dmem_rsp_valid_i, u_dut.u_core.dmem_rsp_ready_o);
+    $display("[STALL][%0t] x20_rat=p%0d x31_rat=p%0d int_prf_ready=%h",
+      $time, u_dut.u_core.u_backend.u_rename.int_rat_q[20],
+      u_dut.u_core.u_backend.u_rename.int_rat_q[31],
+      u_dut.u_core.u_backend.u_int_prf.ready_q);
+    for (int unsigned entry = 0; entry < CORE_IQ_ENTRIES; entry++) begin
+      if (u_dut.u_core.u_backend.u_iq.valid_q[entry]) begin
+        $display("[STALL][IQ%0d] pc=%08h instr=%08h seq=%0d fu=%0d src_used=%b src_ready=%b src_phys=%p store_addr_issued=%0b",
+          entry, u_dut.u_core.u_backend.u_iq.pc_q[entry],
+          u_dut.u_core.u_backend.u_iq.instruction_q[entry],
+          u_dut.u_core.u_backend.u_iq.sequence_q[entry],
+          u_dut.u_core.u_backend.u_iq.fu_q[entry],
+          u_dut.u_core.u_backend.u_iq.src_used_q[entry],
+          u_dut.u_core.u_backend.u_iq.src_ready_q[entry],
+          u_dut.u_core.u_backend.u_iq.src_phys_q[entry],
+          u_dut.u_core.u_backend.u_iq.store_address_issued_q[entry]);
+      end
+    end
+  endtask
 
 `ifdef RV_FSDB
   // FSDB is a server-debug feature.  RV_FSDB is defined only when the Xcelium
@@ -260,6 +307,19 @@ module rv_soc_htif_dpi_tb;
                  htif_exit_code, htif_exit_code);
         end
       end
+    end
+  end
+
+  // A normal commit trace intentionally stays compact. If retirement stops,
+  // emit one early microarchitectural snapshot and then one periodically so a
+  // server log alone can distinguish frontend starvation, an unready IQ
+  // operand, an incomplete ROB head, and LSQ/store-buffer backpressure.
+  always_ff @(posedge clk) begin : p_stall_snapshot
+    if (rst_n && load_done && commit_last_valid &&
+        ((commit_idle_cycles == 64'd256) ||
+         ((commit_idle_cycles > 64'd256) &&
+          (commit_idle_cycles[15:0] == 16'b0)))) begin
+      print_stall_snapshot();
     end
   end
 

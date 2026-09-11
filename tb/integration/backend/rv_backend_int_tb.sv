@@ -27,8 +27,8 @@ module rv_backend_int_tb;
   logic [1:0][31:0] trace_tval;
 
   int unsigned write_count;
-  logic [4:0] write_rd [0:15];
-  logic [31:0] write_data [0:15];
+  logic [4:0] write_rd [0:31];
+  logic [31:0] write_data [0:31];
   int unsigned fp_write_count;
   logic [4:0] fp_write_rd [0:7];
   logic [31:0] fp_write_data [0:7];
@@ -304,6 +304,48 @@ module rv_backend_int_tb;
     if (!saw_dual_load_request)
       $fatal(1, "Two ready loads did not use both LSU request ports");
 
+    // Server-stall reproduction copied from the uploaded trace. AUIPC+ADDI
+    // makes x20=0x8002_8567, so SH x31,5(x20) targets the aligned address
+    // 0x8002_856c. The store and following LBU must both make progress.
+    begin
+      int unsigned writes_before;
+      int unsigned requests_before;
+      int unsigned timeout;
+      writes_before = write_count;
+      requests_before = memory_request_count;
+      // DIVU deliberately leaves the store-data source unready while the
+      // younger memory operations enter the issue queue.
+      send_pair(32'h8000_08bc, 32'h0222_dfb3, 1'b0, '0, '0);
+      send_pair(32'h8000_08c0, 32'h0002_8a17, 1'b1,
+                32'h8000_08c4, 32'hca7a_0a13);
+      send_pair(32'h8000_08c8, 32'h005a_4c83, 1'b1,
+                32'h8000_08cc, 32'h01fa_12a3); // lbu; sh x31,5(x20)
+      send_pair(32'h8000_08d0, 32'hff6a_4e83, 1'b0, '0, '0);
+      timeout = 0;
+      while (((write_count < (writes_before + 5)) ||
+              (memory_request_count < (requests_before + 3))) &&
+             (timeout < 240)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if ((write_count != (writes_before + 5)) ||
+          (write_rd[writes_before] != 31) ||
+          (write_rd[writes_before + 1] != 20) ||
+          (write_rd[writes_before + 2] != 20) ||
+          (write_rd[writes_before + 3] != 25) ||
+          (write_rd[writes_before + 4] != 29) ||
+          (memory_request_count != (requests_before + 3))) begin
+        $display("08c8 timeout=%0d writes=%0d/%0d requests=%0d/%0d rob_pc=%08x rob_complete=%0b store_commit=%b/%b",
+                 timeout, write_count, writes_before, memory_request_count,
+                 requests_before, u_dut.rob_head_pc,
+                 u_dut.rob_head_complete,
+                 u_dut.u_lsu_cluster.store_commit_valid,
+                 u_dut.u_lsu_cluster.store_commit_ready);
+        $fatal(1, "Aligned server SH sequence failed to make forward progress");
+      end
+      $display("Server 08c8 sequence: aligned SH and following LBU PASS");
+    end
+
     // Exercise the complete FP backend path, including same-pair rename
     // dependency, FP PRF wakeup, FPU writeback and in-order ROB retirement.
     // IEEE-754 requires +0 + +0 to remain +0 even under RDN.
@@ -331,15 +373,15 @@ module rv_backend_int_tb;
     begin
       int unsigned timeout;
       timeout = 0;
-      while ((write_count < 13) && (timeout < 160)) begin
+      while ((write_count < 18) && (timeout < 160)) begin
         @(negedge clk);
         timeout++;
       end
     end
-    if ((write_count != 13) || (write_rd[10] != 9) ||
-        (write_data[10] != 32'h8000_0000) || (write_rd[11] != 7) ||
-        (write_data[11] != 0) || (write_rd[12] != 8) ||
-        (write_data[12] != 5))
+    if ((write_count != 18) || (write_rd[15] != 9) ||
+        (write_data[15] != 32'h8000_0000) || (write_rd[16] != 7) ||
+        (write_data[16] != 0) || (write_rd[17] != 8) ||
+        (write_data[17] != 5))
       $fatal(1, "Integrated CSR old-value/write ordering failed");
 
     // Enable MSIP locally and globally, then retire WFI. WFI first refetches
