@@ -1,36 +1,36 @@
-Server Xcelium commit/trap log
-================================
+800008c0 <main>:
+800008c0:       00028a17                auipc   s4,0x28
+800008c4:       ca7a0a13                addi    s4,s4,-857 # 80028567 <region_1+0x751f>
+800008c8:       005a4c83                lbu     s9,5(s4)
+800008cc:       01fa12a3                sh      t6,5(s4)
+800008d0:       ff6a4e83                lbu     t4,-10(s4)
+800008d4:       ffda0b23                sb      t4,-10(s4)
+800008d8:       ff6a0883                lb      a7,-10(s4)
+800008dc:       024af4b3                remu    s1,s5,tp
+800008e0:       8d2d                    xor     a0,a0,a1
+800008e2:       00ba4003                lbu     zero,11(s4)
+800008e6:       00fa5f83                lhu     t6,15(s4)
+800008ea:       00fa0183                lb      gp,15(s4)
+800008ee:       283d1153                fmax.s  ft2,fs10,ft3
+800008f2:       00fa1f03                lh      t5,15(s4)
+800008f6:       49138637                lui     a2,0x49138
+800008fa:       fe9a2ea7                fsw     fs1,-3(s4)
+800008fe:       fe1a2ea3                sw      ra,-3(s4)
+80000902:       ffda0783                lb      a5,-3(s4)
+80000906:       02f3f0b3                remu    ra,t2,a5
+8000090a:       ffba4c03                lbu     s8,-5(s4)
+8000090e:       ffba5b03                lhu     s6,-5(s4)
+80000912:       01072b33                slt     s6,a4,a6
+80000916:       ffba0d83                lb      s11,-5(s4)
+8000091a:       ffda0a23                sb      t4,-12(s4)
+8000091e:       ff2a0a23                sb      s2,-12(s4)
+80000922:       00020517                auipc   a0,0x20
+요거돌리다가
 
-아래 항목을 아는 범위에서 채운 뒤, "RAW LOG START" 아래에 서버 로그를
-가공하지 말고 그대로 붙여 넣어 주세요. 기존 내용을 전부 덮어써도 됩니다.
-
-BINARY (ELF absolute path):
-Run command:
-Git commit used on server:
-Observed symptom:
-
-가능하면 다음 로그를 함께 포함해 주세요.
-- [HOST-DPI] opening ELF / segment / load complete
-- [BOOT] 또는 CLINT MSIP 관련 메시지
-- 문제가 생기기 전 최소 50개 이상의 [COMMIT] 줄
-- trap=1 줄과 그 이후 출력
-- timeout 또는 Xcelium error 줄
-
----------------- RAW LOG START ----------------
-[COMMIT][389445000] order=129 cycle=38941 lane=0 pc=80000162 instr=005d2223 rd_we=0 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000
-[COMMIT][389445000] order=130 cycle=38941 lane=1 pc=80000166 instr=0000af59 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
-[COMMIT][389455000] order=131 cycle=38942 lane=0 pc=800008fc instr=00000000 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=1 cause=1 tval=800008fc
-[COMMIT][389505000] order=132 cycle=38947 lane=0 pc=80000180 instr=00001bf1 rd_we=1 rd_fp=0 rd=23 wdata=80028ce0 trap=0 cause=0 tval=00000000
-[COMMIT][389515000] order=133 cycle=38948 lane=0 pc=80000182 instr=004ba023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000
-[COMMIT][389515000] order=134 cycle=38948 lane=1 pc=80000186 instr=000b8233 rd_we=1 rd_fp=0 rd=4 wdata=80028ce0 trap=0 cause=0 tval=00000000
-
-
-800008fc <main>:
-800008fc:       80000b37                lui     s6,0x80000
-80000900:       fff00993                li      s3,-1
-80000904:       80000337                lui     t1,0x80000
-80000908:       4e01                    li      t3,0
-
-여기에 서버 출력 로그를 붙여 넣어 주세요.
-
------------------ RAW LOG END -----------------
+[COMMIT][1841375000] order=198 cycle=184134 lane=0 pc=8000025a instr=c0e10113 rd_we=1 rd_fp=0 rd=2 wdata=80035e64 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][1841375000] order=199 cycle=184134 lane=1 pc=8000025e instr=0000a58d rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.J
+[COMMIT][1841405000] order=200 cycle=184137 lane=0 pc=800008c0 instr=00028a17 rd_we=1 rd_fp=0 rd=20 wdata=800288c0 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+[COMMIT][1841415000] order=201 cycle=184138 lane=0 pc=800008c4 instr=ca7a0a13 rd_we=1 rd_fp=0 rd=20 wdata=80028567 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][1841445000] order=202 cycle=184141 lane=0 pc=800008c8 instr=005a4c83 rd_we=1 rd_fp=0 rd=25 wdata=000000c2 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LBU
+xmsim: *W,CNTRCW: Multiple control-C's detected. One more will exit simulation.
+요거에서  강제종료시킴
