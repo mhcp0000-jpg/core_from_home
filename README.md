@@ -54,6 +54,7 @@ jump합니다. 자세한 파일 구성과
   - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture) · [구조도 크게 보기](docs/diagrams/core-microarchitecture.svg)
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령
 - [HTIF DPI smoke 결과](verification/tests/htif_smoke/RESULTS.md) — direct string, proxy write, FROMHOST 응답과 TOHOST=1 종료
+- [RISC-V DV FP/MMU SoC smoke 결과](verification/tests/riscv_dv_fp_stress/RESULTS.md) — 공식 테스트명 기반 RTL/SoC 통합 실행, ELF readback, WFI→MSIP→HTIF PASS
 - [CoreMark short RTL benchmark](sw/benchmarks/coremark/README.md) — 공식 upstream pin, TIM port, 실행법과 점수 해석
 - [CoreMark 2-iteration 결과](verification/benchmarks/coremark/RESULTS.md) — CRC, cycle/IPC, 발견한 LSU recovery 결함과 수정 결과
 - [Xcelium verilog_sub export](sim/xcelium/README.md) — 회사 Linux 서버용 self-contained RTL/file list 생성과 기존 TB 연결법
