@@ -9,6 +9,10 @@ on:
       - "sw/tests/riscv_dv/rv32_tim.ld"
       - "scripts/run_soc_elf_test.sh"
 
+concurrency:
+  group: riscv-dv-fp-stress
+  cancel-in-progress: true
+
 jobs:
   rv32imfc-stress:
     runs-on: ubuntu-24.04
