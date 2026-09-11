@@ -89,6 +89,11 @@ module rv_soc_htif_dpi_tb;
     end
   endtask
 
+  initial begin : p_stall_monitor_banner
+    $display("[STALL][%0t] retirement-stall monitor compiled; first snapshot after 256 idle cycles",
+             $time);
+  end
+
 `ifdef RV_FSDB
   // FSDB is a server-debug feature.  RV_FSDB is defined only when the Xcelium
   // run enables waveform dumping, so ordinary simulators do not need to
