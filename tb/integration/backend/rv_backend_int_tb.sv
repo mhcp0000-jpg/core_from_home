@@ -55,6 +55,15 @@ module rv_backend_int_tb;
     endcase
   endfunction
 
+  function automatic logic memory_address_is_mapped(
+    input logic [31:0] address
+  );
+    // The backend integration model treats only the initial 256 KiB TIM
+    // window as implemented.  Requests outside it model the DECERR returned
+    // by the SoC main crossbar's default error slave.
+    return (address >= 32'h8000_0000) && (address < 32'h8004_0000);
+  endfunction
+
   rv_backend #(.XLEN(32), .PADDR_WIDTH(32), .MEM_DATA_WIDTH(64)) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .fetch_valid_i(fetch_valid),
     .fetch_ready_o(fetch_ready), .fetch_pc_i(fetch_pc),
@@ -183,7 +192,8 @@ module rv_backend_int_tb;
           dmem_rsp_valid[lane] <= 1'b1;
           dmem_rsp_id[lane] <= dmem_req_id[lane];
           dmem_rsp_rdata[lane] <= memory_read_data(dmem_req_addr[lane]);
-          dmem_rsp_resp[lane] <= 2'b00;
+          dmem_rsp_resp[lane] <= memory_address_is_mapped(
+            dmem_req_addr[lane]) ? 2'b00 : 2'b11;
           dmem_rsp_replay[lane] <= 3'b000;
           if (dmem_req_write[lane]) begin
             if (!dmem_req_committed[lane])
@@ -543,6 +553,106 @@ module rv_backend_int_tb;
         $fatal(1, "PMP-denied store did not create a precise trap");
       if (memory_request_count != requests_before)
         $fatal(1, "PMP-denied store escaped to D-memory");
+    end
+
+    // Restore ordinary M-mode data privilege before checking address and bus
+    // faults.  The preceding PMP tests deliberately left MPRV/MPP=U active.
+    send_pair(32'h8000_0000, 32'h3000_1073, 1'b0, '0, '0);
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while (!u_dut.rob_empty && (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!u_dut.rob_empty || (u_dut.csr_mstatus != 32'b0))
+        $fatal(1, "Failed to restore normal M-mode data privilege");
+    end
+
+    // 0xffff_ffcb is not word aligned. LW must raise cause 4 locally, with
+    // the exact effective address in mtval, and must not launch a bus request.
+    send_pair(32'h8000_0100, 32'hfcb0_0513, 1'b0, '0, '0); // addi x10,x0,-53
+    begin
+      int unsigned requests_before;
+      int unsigned timeout;
+      requests_before = memory_request_count;
+      send_pair(32'h8000_0104, 32'h0005_2583, 1'b0, '0, '0); // lw x11,0(x10)
+      timeout = 0;
+      while ((!redirect_valid || !trace_trap[0]) && (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (trace_cause[0] != 6'd4) ||
+          (trace_tval[0] != 32'hffff_ffcb))
+        $fatal(1, "Misaligned external LW trap is wrong");
+      if (memory_request_count != requests_before)
+        $fatal(1, "Misaligned external LW escaped to D-memory");
+    end
+
+    // The equivalent SW must raise cause 6 before becoming externally
+    // visible.  In particular, ROB-head commit must not turn it into a write.
+    send_pair(32'h8000_0110, 32'hfcb0_0513, 1'b0, '0, '0);
+    begin
+      int unsigned requests_before;
+      int unsigned writes_before;
+      int unsigned timeout;
+      requests_before = memory_request_count;
+      writes_before = memory_write_count;
+      send_pair(32'h8000_0114, 32'h0005_2023, 1'b0, '0, '0); // sw x0,0(x10)
+      timeout = 0;
+      while ((!redirect_valid || !trace_trap[0]) && (timeout < 120)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (trace_cause[0] != 6'd6) ||
+          (trace_tval[0] != 32'hffff_ffcb))
+        $fatal(1, "Misaligned external SW trap is wrong");
+      if ((memory_request_count != requests_before) ||
+          (memory_write_count != writes_before))
+        $fatal(1, "Misaligned external SW became externally visible");
+    end
+
+    // An aligned but unmapped load is allowed onto the device path only when
+    // it reaches the ROB head.  The modeled crossbar DECERR must retire as a
+    // precise load access fault (cause 5), never as a hang.
+    send_pair(32'h8000_0120, 32'hfc80_0513, 1'b0, '0, '0); // addi x10,x0,-56
+    begin
+      int unsigned reads_before;
+      int unsigned timeout;
+      reads_before = memory_read_count;
+      send_pair(32'h8000_0124, 32'h0005_2583, 1'b0, '0, '0);
+      timeout = 0;
+      while ((!redirect_valid || !trace_trap[0]) && (timeout < 160)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (trace_cause[0] != 6'd5) ||
+          (trace_tval[0] != 32'hffff_ffc8))
+        $fatal(1, "Unmapped aligned LW access-fault trap is wrong");
+      if (memory_read_count != (reads_before + 1))
+        $fatal(1, "Unmapped aligned LW did not issue exactly one read");
+    end
+
+    // The aligned unmapped store follows the direct-device store path: it is
+    // issued once, only at the ROB head, then DECERR becomes precise cause 7.
+    send_pair(32'h8000_0130, 32'hfc80_0513, 1'b0, '0, '0);
+    begin
+      int unsigned writes_before;
+      int unsigned timeout;
+      writes_before = memory_write_count;
+      send_pair(32'h8000_0134, 32'h0005_2023, 1'b0, '0, '0);
+      timeout = 0;
+      while ((!redirect_valid || !trace_trap[0]) && (timeout < 160)) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (!redirect_valid || (trace_cause[0] != 6'd7) ||
+          (trace_tval[0] != 32'hffff_ffc8))
+        $fatal(1, "Unmapped aligned SW access-fault trap is wrong");
+      if (memory_write_count != (writes_before + 1))
+        $fatal(1, "Unmapped aligned SW did not issue exactly one committed write");
+      if (saw_uncommitted_write)
+        $fatal(1, "An unmapped store escaped before ROB-head commit");
     end
 
     $display("rv_backend_int_tb PASS");
