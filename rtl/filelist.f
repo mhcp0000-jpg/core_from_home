@@ -1,4 +1,5 @@
 rtl/soc/rv_soc_pkg.sv
+rtl/rv_ooo_pkg.sv
 rtl/soc/rv_axi4_if.sv
 rtl/soc/rv_local_mem_if.sv
 rtl/soc/rv_local_to_axi_bridge.sv
@@ -16,7 +17,6 @@ rtl/soc/rv_plic.sv
 rtl/soc/rv_d_fabric.sv
 rtl/soc/rv_i_fabric.sv
 rtl/soc/rv_soc_top.sv
-rtl/rv_ooo_pkg.sv
 rtl/frontend/rv_c_expander.sv
 rtl/frontend/rv_fetch_queue.sv
 rtl/frontend/rv_fetch_target_buffer.sv

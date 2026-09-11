@@ -114,8 +114,11 @@ module rv_clint #(
           case (request_offset)
             CLINT_MSIP_OFFSET: begin
               if (bus.req_write)
-                msip_q <= merge_bus_word({31'b0, msip_q}, bus.req_wdata,
-                                         bus.req_wstrb, bus.req_addr[2])[0];
+                // Avoid indexing a function-call result directly.  Some
+                // supported Verilator releases reject that legal SV form.
+                msip_q <= |(merge_bus_word({31'b0, msip_q}, bus.req_wdata,
+                                           bus.req_wstrb, bus.req_addr[2]) &
+                            32'h0000_0001);
             end
             CLINT_MTIMECMP_LO_OFF: begin
               if (bus.req_write)
