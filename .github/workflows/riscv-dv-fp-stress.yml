@@ -26,10 +26,11 @@ jobs:
 
       - name: Create RV32IMFC core target
         run: |
-          cp -r /tmp/riscv-dv/pygen/pygen_src/target/rv32imafdc /tmp/rv32imfc
+          cp -r /tmp/riscv-dv/pygen/pygen_src/target/rv32imafdc \
+            /tmp/riscv-dv/pygen/pygen_src/target/rv32imfc
           python - <<'PY'
           from pathlib import Path
-          p = Path('/tmp/rv32imfc/riscv_core_setting.py')
+          p = Path('/tmp/riscv-dv/pygen/pygen_src/target/rv32imfc/riscv_core_setting.py')
           s = p.read_text()
           start = s.index('supported_isa = [')
           end = s.index(']\n', start) + 2
@@ -48,14 +49,24 @@ jobs:
           RISCV_GCC: riscv64-unknown-elf-gcc
           RISCV_OBJCOPY: riscv64-unknown-elf-objcopy
         run: |
+          set -o pipefail
           cd /tmp/riscv-dv
           python run.py --simulator pyflow \
-            --custom_target /tmp/rv32imfc \
+            --target rv32imfc \
+            --custom_target /tmp/riscv-dv/pygen/pygen_src/target/rv32imfc \
             --testlist target/rv32imafdc/testlist.yaml \
             --test riscv_floating_point_mmu_stress_test \
             --iterations 1 --seed 1 --steps gen \
             --isa rv32imfc_zicsr_zifencei --mabi ilp32 \
-            --output "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress"
+            --output "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress" \
+            2>&1 | tee "$GITHUB_WORKSPACE/out/riscv_dv_generator_console.log"
+
+      - name: Publish generator failure detail
+        if: failure()
+        run: |
+          tail -80 out/riscv_dv_generator_console.log || true
+          detail="$(tail -30 out/riscv_dv_generator_console.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
+          echo "::error title=RISC-V DV generator failed::${detail}"
 
       - name: Build TIM/HTIF ELF
         run: |
@@ -80,4 +91,6 @@ jobs:
         if: always()
         with:
           name: riscv-dv-fp-stress-seed-1
-          path: out/riscv_dv_fp_stress
+          path: |
+            out/riscv_dv_fp_stress
+            out/riscv_dv_generator_console.log
