@@ -76,6 +76,25 @@ jobs:
           done
           test "$generated" -eq 1
 
+      - name: Normalize generated HTIF symbol spacing
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          asm = Path('out/riscv_dv_fp_stress/asm_test/'
+                     'riscv_floating_point_mmu_stress_test_0.S')
+          source = asm.read_text()
+          old_tohost = '.align 6; .global tohost; tohost: .dword 0;'
+          old_fromhost = '.align 6; .global fromhost; fromhost: .dword 0;'
+          if source.count(old_tohost) != 1 or source.count(old_fromhost) != 1:
+              raise RuntimeError('Unexpected RISC-V DV HTIF declarations')
+          source = source.replace(old_tohost,
+                                  '.balign 8; .global tohost; tohost: .dword 0;')
+          source = source.replace(old_fromhost,
+                                  '.balign 8; .global fromhost; fromhost: .dword 0;')
+          asm.write_text(source)
+          PY
+
       - name: Publish generator failure detail
         if: failure() && steps.generate.outcome == 'failure'
         run: |
