@@ -82,10 +82,19 @@ jobs:
 
       - name: Run full SoC
         run: |
+          set -o pipefail
           bash scripts/run_soc_elf_test.sh --htif \
             --elf out/riscv_dv_fp_stress/test.elf \
             --trace out/riscv_dv_fp_stress/commit_trace.csv \
-            --timeout-cycles 10000000 --jobs 4
+            --timeout-cycles 10000000 --jobs 4 \
+            2>&1 | tee out/riscv_dv_soc_console.log
+
+      - name: Publish SoC failure detail
+        if: failure()
+        run: |
+          tail -100 out/riscv_dv_soc_console.log || true
+          detail="$(tail -40 out/riscv_dv_soc_console.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
+          echo "::error title=RISC-V DV SoC run failed::${detail}"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -94,3 +103,4 @@ jobs:
           path: |
             out/riscv_dv_fp_stress
             out/riscv_dv_generator_console.log
+            out/riscv_dv_soc_console.log
