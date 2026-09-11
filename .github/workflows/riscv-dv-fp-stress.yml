@@ -57,7 +57,7 @@ jobs:
               riscv_instr_name_t.C_ADDI16SP.name,
               riscv_instr_name_t.C_LWSP.name,
               riscv_instr_name_t.C_LDSP.name])
-'''
+          '''
           if needle not in s:
               raise RuntimeError('Cannot locate pyflow exclusion list')
           p.write_text(s.replace(needle, replacement, 1))
