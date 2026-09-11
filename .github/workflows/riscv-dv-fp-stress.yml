@@ -42,6 +42,20 @@ jobs:
           s = s.replace('support_unaligned_load_store = 1',
                         'support_unaligned_load_store = 0')
           p.write_text(s)
+
+          # Pyflow has a long-standing constraint conflict in directed memory
+          # streams: C.ADDI16SP fixes rd=SP while the stream reserves SP and
+          # simultaneously constrains rd!=SP (chipsalliance/riscv-dv#869).
+          # Exclude only that instruction from the generic mixed-instruction
+          # picker; compressed load/store and the rest of RV32C stay enabled.
+          p = Path('/tmp/riscv-dv/pygen/pygen_src/riscv_instr_stream.py')
+          s = p.read_text()
+          needle = '        exclude_instr = []\n'
+          replacement = needle + \
+              '        exclude_instr.append(riscv_instr_name_t.C_ADDI16SP.name)\n'
+          if needle not in s:
+              raise RuntimeError('Cannot locate pyflow exclusion list')
+          p.write_text(s.replace(needle, replacement, 1))
           PY
 
       - name: Generate official named test
