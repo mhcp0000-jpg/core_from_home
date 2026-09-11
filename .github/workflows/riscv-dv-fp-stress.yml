@@ -1,0 +1,83 @@
+name: RISC-V DV FP load-store stress
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/riscv-dv-fp-stress.yml"
+
+jobs:
+  rv32imfc-stress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install generator and RTL dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-unknown-elf verilator
+          git clone --depth 1 https://github.com/chipsalliance/riscv-dv.git /tmp/riscv-dv
+          python -m pip install -r /tmp/riscv-dv/requirements.txt
+
+      - name: Create RV32IMFC core target
+        run: |
+          cp -r /tmp/riscv-dv/pygen/pygen_src/target/rv32imafdc /tmp/rv32imfc
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/rv32imfc/riscv_core_setting.py')
+          s = p.read_text()
+          start = s.index('supported_isa = [')
+          end = s.index(']\n', start) + 2
+          s = s[:start] + '''supported_isa = [riscv_instr_group_t.RV32I,
+                           riscv_instr_group_t.RV32M,
+                           riscv_instr_group_t.RV32C,
+                           riscv_instr_group_t.RV32F,
+                           riscv_instr_group_t.RV32FC]\n''' + s[end:]
+          s = s.replace('support_unaligned_load_store = 1',
+                        'support_unaligned_load_store = 0')
+          p.write_text(s)
+          PY
+
+      - name: Generate official named test
+        env:
+          RISCV_GCC: riscv64-unknown-elf-gcc
+          RISCV_OBJCOPY: riscv64-unknown-elf-objcopy
+        run: |
+          cd /tmp/riscv-dv
+          python run.py --simulator pyflow \
+            --custom_target /tmp/rv32imfc \
+            --testlist target/rv32imafdc/testlist.yaml \
+            --test riscv_floating_point_mmu_stress_test \
+            --iterations 1 --seed 1 --steps gen \
+            --isa rv32imfc_zicsr_zifencei --mabi ilp32 \
+            --output "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress"
+
+      - name: Build TIM/HTIF ELF
+        run: |
+          riscv64-unknown-elf-gcc -march=rv32imfc_zicsr_zifencei -mabi=ilp32 \
+            -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles \
+            -I/tmp/riscv-dv/user_extension \
+            -T sw/tests/riscv_dv/rv32_tim.ld \
+            out/riscv_dv_fp_stress/asm_test/riscv_floating_point_mmu_stress_test_0.S \
+            -o out/riscv_dv_fp_stress/test.elf
+          riscv64-unknown-elf-objdump -d out/riscv_dv_fp_stress/test.elf \
+            > out/riscv_dv_fp_stress/test.disasm
+          riscv64-unknown-elf-size out/riscv_dv_fp_stress/test.elf
+
+      - name: Run full SoC
+        run: |
+          bash scripts/run_soc_elf_test.sh --htif \
+            --elf out/riscv_dv_fp_stress/test.elf \
+            --trace out/riscv_dv_fp_stress/commit_trace.csv \
+            --timeout-cycles 10000000 --jobs 4
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: riscv-dv-fp-stress-seed-1
+          path: out/riscv_dv_fp_stress

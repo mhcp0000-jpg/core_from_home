@@ -12,6 +12,7 @@ Options:
   --jobs N               Parallel build jobs (default: host CPU count)
   --timeout-cycles N     Simulation timeout (default: 2000000)
   --verilator COMMAND    Verilator command (default: verilator)
+  --htif                 Use TOHOST/FROMHOST server testbench
 EOF
 }
 
@@ -25,6 +26,7 @@ perf_path=""
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '4')"
 timeout_cycles=2000000
 verilator_cmd="${VERILATOR:-verilator}"
+htif=0
 
 while (($#)); do
   case "$1" in
@@ -35,6 +37,7 @@ while (($#)); do
     --jobs) jobs="$2"; shift 2 ;;
     --timeout-cycles) timeout_cycles="$2"; shift 2 ;;
     --verilator) verilator_cmd="$2"; shift 2 ;;
+    --htif) htif=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -66,14 +69,19 @@ sources+=(
   "${repo_root}/tb/e2e/dpi/rv_host_dpi.sv"
   "${repo_root}/tb/e2e/dpi/rv_commit_trace_logger.sv"
   "${repo_root}/tb/e2e/dpi/rv_perf_profiler.sv"
-  "${repo_root}/tb/e2e/dpi/rv_soc_dpi_tb.sv"
   "${repo_root}/tb/e2e/dpi/elf_loader.cpp"
 )
+if ((htif)); then
+  top_module="rv_soc_htif_dpi_tb"
+else
+  top_module="rv_soc_dpi_tb"
+fi
+sources+=("${repo_root}/tb/e2e/dpi/${top_module}.sv")
 
 "$verilator_cmd" --cc --exe --timing --main -DSYNTHESIS -Wno-fatal \
-  -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module rv_soc_dpi_tb \
+  -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module "$top_module" \
   --Mdir "$build_root" "${sources[@]}"
-make -j "$jobs" -C "$build_root" -f Vrv_soc_dpi_tb.mk
+make -j "$jobs" -C "$build_root" -f "V${top_module}.mk"
 
 simulation_args=("+elf=${staged_elf}" "+timeout_cycles=${timeout_cycles}")
 if [[ -n "$trace_path" ]]; then
@@ -86,4 +94,4 @@ if [[ -n "$perf_path" ]]; then
   perf_path="$(cd -- "$(dirname -- "$perf_path")" && pwd)/$(basename -- "$perf_path")"
   simulation_args+=("+perf_file=${perf_path}")
 fi
-"${build_root}/Vrv_soc_dpi_tb" "${simulation_args[@]}"
+"${build_root}/V${top_module}" "${simulation_args[@]}"
