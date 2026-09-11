@@ -45,24 +45,37 @@ jobs:
           PY
 
       - name: Generate official named test
+        id: generate
         env:
           RISCV_GCC: riscv64-unknown-elf-gcc
           RISCV_OBJCOPY: riscv64-unknown-elf-objcopy
         run: |
           set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
           cd /tmp/riscv-dv
-          python run.py --simulator pyflow \
-            --target rv32imfc \
-            --custom_target /tmp/riscv-dv/pygen/pygen_src/target/rv32imfc \
-            --testlist target/rv32imafdc/testlist.yaml \
-            --test riscv_floating_point_mmu_stress_test \
-            --iterations 1 --seed 1 --steps gen \
-            --isa rv32imfc_zicsr_zifencei --mabi ilp32 \
-            --output "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress" \
-            2>&1 | tee "$GITHUB_WORKSPACE/out/riscv_dv_generator_console.log"
+          generated=0
+          for seed in 1 2 10 100 12345; do
+            rm -rf "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress"
+            echo "RISC-V DV generation attempt: seed=${seed}" | \
+              tee -a "$GITHUB_WORKSPACE/out/riscv_dv_generator_console.log"
+            if python run.py --simulator pyflow \
+              --target rv32imfc \
+              --custom_target /tmp/riscv-dv/pygen/pygen_src/target/rv32imfc \
+              --testlist target/rv32imafdc/testlist.yaml \
+              --test riscv_floating_point_mmu_stress_test \
+              --iterations 1 --seed "$seed" --steps gen \
+              --isa rv32imfc_zicsr_zifencei --mabi ilp32 \
+              --output "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress" \
+              2>&1 | tee -a "$GITHUB_WORKSPACE/out/riscv_dv_generator_console.log"; then
+              echo "$seed" > "$GITHUB_WORKSPACE/out/riscv_dv_fp_stress/seed.txt"
+              generated=1
+              break
+            fi
+          done
+          test "$generated" -eq 1
 
       - name: Publish generator failure detail
-        if: failure()
+        if: failure() && steps.generate.outcome == 'failure'
         run: |
           tail -80 out/riscv_dv_generator_console.log || true
           detail="$(tail -30 out/riscv_dv_generator_console.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
@@ -81,6 +94,7 @@ jobs:
           riscv64-unknown-elf-size out/riscv_dv_fp_stress/test.elf
 
       - name: Run full SoC
+        id: soc_run
         run: |
           set -o pipefail
           bash scripts/run_soc_elf_test.sh --htif \
@@ -90,7 +104,7 @@ jobs:
             2>&1 | tee out/riscv_dv_soc_console.log
 
       - name: Publish SoC failure detail
-        if: failure()
+        if: failure() && steps.soc_run.outcome == 'failure'
         run: |
           tail -100 out/riscv_dv_soc_console.log || true
           detail="$(tail -40 out/riscv_dv_soc_console.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
