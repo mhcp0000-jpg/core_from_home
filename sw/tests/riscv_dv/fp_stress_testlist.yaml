@@ -2,8 +2,9 @@
   description: >
     RV32IMFC-compatible profile of the official RISC-V DV floating-point
     load/store stress test. Address translation remains BARE for this target.
-    Generic compressed instruction generation is disabled to avoid the known
-    Pyflow SP-reservation constraint conflict; dedicated C tests cover RV32C.
+    The generator exposes the RV32IMF subset to avoid the known Pyflow
+    compressed SP-reservation constraint conflict; the ELF still targets and
+    runs on the RV32IMFC core, while dedicated C tests cover RV32C.
   iterations: 1
   gen_test: riscv_instr_base_test
   gen_opts: >

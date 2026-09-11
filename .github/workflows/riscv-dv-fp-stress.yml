@@ -36,9 +36,7 @@ jobs:
           end = s.index(']\n', start) + 2
           s = s[:start] + '''supported_isa = [riscv_instr_group_t.RV32I,
                            riscv_instr_group_t.RV32M,
-                           riscv_instr_group_t.RV32C,
-                           riscv_instr_group_t.RV32F,
-                           riscv_instr_group_t.RV32FC]\n''' + s[end:]
+                           riscv_instr_group_t.RV32F]\n''' + s[end:]
           s = s.replace('support_unaligned_load_store = 1',
                         'support_unaligned_load_store = 0')
           p.write_text(s)
