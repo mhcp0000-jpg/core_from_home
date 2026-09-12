@@ -7,6 +7,10 @@ package rv_soc_pkg;
   parameter int unsigned SOC_DATA_WIDTH = 64;
   parameter int unsigned AXI_LOCAL_ID_WIDTH = 4;
   parameter int unsigned AXI_XBAR_ID_WIDTH  = AXI_LOCAL_ID_WIDTH + 2;
+  // A local-to-AXI request must not hold a core ROB entry forever when an
+  // integration slave accepts a transaction but loses its response.  Zero
+  // disables the watchdog; the baseline keeps a generous bounded timeout.
+  parameter int unsigned AXI_PROGRESS_TIMEOUT_CYCLES = 4096;
 
   parameter logic [SOC_ADDR_WIDTH-1:0] BOOTROM_BASE_ADDR = 32'h0000_1000;
   parameter int unsigned               BOOTROM_SIZE_KB   = 4;

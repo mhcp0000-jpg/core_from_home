@@ -145,6 +145,12 @@ controller register offset, DTIM `TOHOST_ADDR`/`FROMHOST_ADDR`를 이 package에
 수 있으며, `rv_soc_map_check`가 정렬·영역 중첩·주소 overflow를 elaboration에서
 검사합니다.
 
+외부 AXI slave가 요청을 accept하지 않거나 accept 후 응답을 잃어도 core ROB가
+영구 대기하지 않도록 `AXI_PROGRESS_TIMEOUT_CYCLES` watchdog을 사용합니다. 기본값은
+4096 cycles이며 0으로 설정하면 비활성화됩니다. timeout은 core에 `SLVERR`로 전달되어
+instruction/load/store access fault가 되고, 이미 accept된 transaction의 늦은 응답은
+bridge가 drain하여 다음 request ID와 섞이지 않게 합니다.
+
 구조 parse/elaboration 확인:
 
 ```powershell

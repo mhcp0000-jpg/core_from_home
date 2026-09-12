@@ -4,6 +4,8 @@ module rv_soc_top #(
   parameter int unsigned TIMEBASE_HZ        = rv_soc_pkg::TIMEBASE_HZ,
   parameter int unsigned AXI_LOCAL_ID_WIDTH = rv_soc_pkg::AXI_LOCAL_ID_WIDTH,
   parameter int unsigned AXI_XBAR_ID_WIDTH  = rv_soc_pkg::AXI_XBAR_ID_WIDTH,
+  parameter int unsigned AXI_PROGRESS_TIMEOUT_CYCLES =
+    rv_soc_pkg::AXI_PROGRESS_TIMEOUT_CYCLES,
   parameter bit          HAS_C              = 1'b1,
   parameter bit          HAS_F              = 1'b1,
   parameter bit          HAS_SMODE           = 1'b0,
@@ -300,6 +302,7 @@ module rv_soc_top #(
     .LOCAL_ID_WIDTH (LOCAL_MEM_ID_WIDTH),
     .AXI_ID_WIDTH   (AXI_LOCAL_ID_WIDTH),
     .ROB_SEQ_WIDTH  (ROB_SEQ_WIDTH),
+    .AXI_PROGRESS_TIMEOUT_CYCLES (AXI_PROGRESS_TIMEOUT_CYCLES),
     .IS_INSTRUCTION (1'b1)
   ) u_i_outbound_bridge (
     .clk_i,
@@ -312,6 +315,7 @@ module rv_soc_top #(
     .LOCAL_ID_WIDTH (LOCAL_MEM_ID_WIDTH),
     .AXI_ID_WIDTH   (AXI_LOCAL_ID_WIDTH),
     .ROB_SEQ_WIDTH  (ROB_SEQ_WIDTH),
+    .AXI_PROGRESS_TIMEOUT_CYCLES (AXI_PROGRESS_TIMEOUT_CYCLES),
     .IS_INSTRUCTION (1'b0)
   ) u_d_outbound_bridge (
     .clk_i,

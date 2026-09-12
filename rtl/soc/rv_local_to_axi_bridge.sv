@@ -4,6 +4,8 @@ module rv_local_to_axi_bridge #(
   parameter int unsigned LOCAL_ID_WIDTH   = 6,
   parameter int unsigned AXI_ID_WIDTH     = 4,
   parameter int unsigned ROB_SEQ_WIDTH    = rv_ooo_pkg::ROB_SEQ_WIDTH,
+  parameter int unsigned AXI_PROGRESS_TIMEOUT_CYCLES =
+    rv_soc_pkg::AXI_PROGRESS_TIMEOUT_CYCLES,
   parameter bit          IS_INSTRUCTION   = 1'b0
 ) (
   input  logic                   clk_i,
@@ -20,8 +22,17 @@ module rv_local_to_axi_bridge #(
     BR_WRITE_RESP,
     BR_READ_ADDR,
     BR_READ_DATA,
-    BR_LOCAL_RESP
+    BR_DRAIN_WRITE_SEND,
+    BR_DRAIN_WRITE_RESP,
+    BR_DRAIN_READ_DATA
   } bridge_state_e;
+
+  localparam int unsigned TIMEOUT_COUNTER_WIDTH =
+    (AXI_PROGRESS_TIMEOUT_CYCLES <= 1) ? 1 :
+    $clog2(AXI_PROGRESS_TIMEOUT_CYCLES + 1);
+  localparam int unsigned TIMEOUT_LIMIT =
+    (AXI_PROGRESS_TIMEOUT_CYCLES == 0) ? 0 :
+    AXI_PROGRESS_TIMEOUT_CYCLES - 1;
 
   bridge_state_e state_q;
   logic [LOCAL_ID_WIDTH-1:0] local_id_q;
@@ -39,6 +50,11 @@ module rv_local_to_axi_bridge #(
   logic [AXI_ID_WIDTH-1:0] axi_id_q;
   logic [DATA_WIDTH-1:0] response_data_q;
   axi_resp_e response_code_q;
+  logic local_response_valid_q;
+  logic [TIMEOUT_COUNTER_WIDTH-1:0] timeout_count_q;
+  logic timeout_expired;
+  logic aw_complete;
+  logic w_complete;
 
   function automatic logic request_is_aligned(
     input logic [ADDR_WIDTH-1:0] request_address,
@@ -51,8 +67,9 @@ module rv_local_to_axi_bridge #(
     return (request_address & byte_mask) == 0;
   endfunction
 
-  assign local_bus.req_ready  = (state_q == BR_IDLE);
-  assign local_bus.rsp_valid  = (state_q == BR_LOCAL_RESP);
+  assign local_bus.req_ready  = (state_q == BR_IDLE) &&
+                                !local_response_valid_q;
+  assign local_bus.rsp_valid  = local_response_valid_q;
   assign local_bus.rsp_id     = local_id_q;
   assign local_bus.rsp_rdata  = response_data_q;
   assign local_bus.rsp_resp   = response_code_q;
@@ -60,6 +77,10 @@ module rv_local_to_axi_bridge #(
 
   assign aw_fire = axi_m.aw_valid && axi_m.aw_ready;
   assign w_fire  = axi_m.w_valid && axi_m.w_ready;
+  assign aw_complete = aw_sent_q || aw_fire;
+  assign w_complete  = w_sent_q || w_fire;
+  assign timeout_expired = (AXI_PROGRESS_TIMEOUT_CYCLES != 0) &&
+    (timeout_count_q >= TIMEOUT_COUNTER_WIDTH'(TIMEOUT_LIMIT));
 
   always_comb begin
     axi_m.aw_id    = axi_id_q;
@@ -71,13 +92,16 @@ module rv_local_to_axi_bridge #(
                       (privilege_q != PRIV_U)};
     axi_m.aw_cache = device_q ? 4'b0000 : 4'b0011;
     axi_m.aw_qos   = '0;
-    axi_m.aw_valid = (state_q == BR_WRITE_SEND) && !aw_sent_q;
+    axi_m.aw_valid = ((state_q == BR_WRITE_SEND) ||
+                      (state_q == BR_DRAIN_WRITE_SEND)) && !aw_sent_q;
 
     axi_m.w_data   = write_data_q;
     axi_m.w_strb   = write_strb_q;
     axi_m.w_last   = 1'b1;
-    axi_m.w_valid  = (state_q == BR_WRITE_SEND) && !w_sent_q;
-    axi_m.b_ready  = (state_q == BR_WRITE_RESP);
+    axi_m.w_valid  = ((state_q == BR_WRITE_SEND) ||
+                      (state_q == BR_DRAIN_WRITE_SEND)) && !w_sent_q;
+    axi_m.b_ready  = (state_q == BR_WRITE_RESP) ||
+                     (state_q == BR_DRAIN_WRITE_RESP);
 
     axi_m.ar_id    = axi_id_q;
     axi_m.ar_addr  = address_q;
@@ -89,7 +113,8 @@ module rv_local_to_axi_bridge #(
     axi_m.ar_cache = device_q ? 4'b0000 : 4'b0011;
     axi_m.ar_qos   = '0;
     axi_m.ar_valid = (state_q == BR_READ_ADDR);
-    axi_m.r_ready  = (state_q == BR_READ_DATA);
+    axi_m.r_ready  = (state_q == BR_READ_DATA) ||
+                     (state_q == BR_DRAIN_READ_DATA);
   end
 
   always_ff @(posedge clk_i) begin
@@ -108,9 +133,15 @@ module rv_local_to_axi_bridge #(
       axi_id_q        <= '0;
       response_data_q <= '0;
       response_code_q <= AXI_RESP_OKAY;
+      local_response_valid_q <= 1'b0;
+      timeout_count_q <= '0;
     end else begin
+      if (local_response_valid_q && local_bus.rsp_ready)
+        local_response_valid_q <= 1'b0;
+
       case (state_q)
         BR_IDLE: begin
+          timeout_count_q <= '0;
           if (local_bus.req_valid && local_bus.req_ready) begin
             local_id_q   <= local_bus.req_id;
             address_q    <= local_bus.req_addr;
@@ -127,7 +158,8 @@ module rv_local_to_axi_bridge #(
                                     local_bus.req_size)) begin
               response_data_q <= '0;
               response_code_q <= AXI_RESP_SLVERR;
-              state_q         <= BR_LOCAL_RESP;
+              local_response_valid_q <= 1'b1;
+              state_q         <= BR_IDLE;
             end else if (local_bus.req_write) begin
               state_q <= BR_WRITE_SEND;
             end else begin
@@ -141,8 +173,24 @@ module rv_local_to_axi_bridge #(
             aw_sent_q <= 1'b1;
           if (w_fire)
             w_sent_q <= 1'b1;
-          if ((aw_sent_q || aw_fire) && (w_sent_q || w_fire))
+          if (aw_complete && w_complete) begin
             state_q <= BR_WRITE_RESP;
+            timeout_count_q <= '0;
+          end else if (timeout_expired) begin
+            response_data_q <= '0;
+            response_code_q <= AXI_RESP_SLVERR;
+            local_response_valid_q <= 1'b1;
+            timeout_count_q <= '0;
+            // Neither channel handshook, so cancellation is still AXI-safe.
+            // If one channel was accepted, finish and drain the orphaned
+            // transaction without associating its late response with a new ID.
+            state_q <= (aw_complete || w_complete) ?
+                       BR_DRAIN_WRITE_SEND : BR_IDLE;
+          end else if (aw_fire || w_fire) begin
+            timeout_count_q <= '0;
+          end else begin
+            timeout_count_q <= timeout_count_q + 1'b1;
+          end
         end
 
         BR_WRITE_RESP: begin
@@ -150,13 +198,34 @@ module rv_local_to_axi_bridge #(
             response_data_q <= '0;
             response_code_q <= (axi_m.b_id == axi_id_q) ?
                                axi_resp_e'(axi_m.b_resp) : AXI_RESP_SLVERR;
-            state_q <= BR_LOCAL_RESP;
+            local_response_valid_q <= 1'b1;
+            state_q <= BR_IDLE;
+            timeout_count_q <= '0;
+          end else if (timeout_expired) begin
+            response_data_q <= '0;
+            response_code_q <= AXI_RESP_SLVERR;
+            local_response_valid_q <= 1'b1;
+            state_q <= BR_DRAIN_WRITE_RESP;
+            timeout_count_q <= '0;
+          end else begin
+            timeout_count_q <= timeout_count_q + 1'b1;
           end
         end
 
         BR_READ_ADDR: begin
-          if (axi_m.ar_valid && axi_m.ar_ready)
+          if (axi_m.ar_valid && axi_m.ar_ready) begin
             state_q <= BR_READ_DATA;
+            timeout_count_q <= '0;
+          end else if (timeout_expired) begin
+            // AR was never accepted, so the request can be cancelled locally.
+            response_data_q <= '0;
+            response_code_q <= AXI_RESP_SLVERR;
+            local_response_valid_q <= 1'b1;
+            state_q <= BR_IDLE;
+            timeout_count_q <= '0;
+          end else begin
+            timeout_count_q <= timeout_count_q + 1'b1;
+          end
         end
 
         BR_READ_DATA: begin
@@ -166,12 +235,36 @@ module rv_local_to_axi_bridge #(
               response_code_q <= AXI_RESP_SLVERR;
             else
               response_code_q <= axi_resp_e'(axi_m.r_resp);
-            state_q <= BR_LOCAL_RESP;
+            local_response_valid_q <= 1'b1;
+            state_q <= BR_IDLE;
+            timeout_count_q <= '0;
+          end else if (timeout_expired) begin
+            response_data_q <= '0;
+            response_code_q <= AXI_RESP_SLVERR;
+            local_response_valid_q <= 1'b1;
+            state_q <= BR_DRAIN_READ_DATA;
+            timeout_count_q <= '0;
+          end else begin
+            timeout_count_q <= timeout_count_q + 1'b1;
           end
         end
 
-        BR_LOCAL_RESP: begin
-          if (local_bus.rsp_valid && local_bus.rsp_ready)
+        BR_DRAIN_WRITE_SEND: begin
+          if (aw_fire)
+            aw_sent_q <= 1'b1;
+          if (w_fire)
+            w_sent_q <= 1'b1;
+          if (aw_complete && w_complete)
+            state_q <= BR_DRAIN_WRITE_RESP;
+        end
+
+        BR_DRAIN_WRITE_RESP: begin
+          if (axi_m.b_valid && axi_m.b_ready)
+            state_q <= BR_IDLE;
+        end
+
+        BR_DRAIN_READ_DATA: begin
+          if (axi_m.r_valid && axi_m.r_ready)
             state_q <= BR_IDLE;
         end
 

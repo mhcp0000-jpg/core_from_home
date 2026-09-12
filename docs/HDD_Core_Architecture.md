@@ -269,6 +269,7 @@ parameter logic [31:0] TOHOST_ADDR      = 32'h8002_0000;
 parameter logic [31:0] FROMHOST_ADDR    = 32'h8002_0008;
 parameter logic [31:0] HOSTIF_BASE_ADDR = 32'h1000_0000;
 parameter int unsigned HOSTIF_SIZE_KB   = 4;
+parameter int unsigned AXI_PROGRESS_TIMEOUT_CYCLES = 4096;
 ```
 
 동일 방식으로 Boot ROM, CLINT, PLIC, HostIF를 정의한다. CLINT/PLIC/HostIF 내부 register offset도 package constant만 사용한다. address hit는 `base <= addr < base + size_bytes`인 half-open range로 비교한다.
@@ -1672,7 +1673,11 @@ tombstone과 request ID로 stale response를 막는다.
 | `axi_m` | `rv_axi4_if.master` | Main Xbar master port 구동 |
 | `clk_i`, `rst_ni` | input | single clock/reset |
 
-Parameter는 `ADDR_WIDTH=32`, `DATA_WIDTH=64`, `LOCAL_ID_WIDTH=6`, `AXI_ID_WIDTH=4`, `ROB_SEQ_WIDTH=8`, `IS_INSTRUCTION`이다. 한 local request만 outstanding으로 유지하고 원래 local ID를 response까지 보관한다. read는 AR 한 건과 RLAST 한 beat, write는 AW와 W를 서로 독립 handshake한 뒤 B를 기다린다. AW와 W 중 한 channel만 먼저 accept되어도 다른 channel의 payload와 valid를 유지한다. local request가 misaligned이거나 8-byte보다 크면 AXI side effect 없이 local SLVERR를 반환한다. write request는 captured `req_committed=1`일 때만 AW/W를 만들 수 있다.
+Parameter는 `ADDR_WIDTH=32`, `DATA_WIDTH=64`, `LOCAL_ID_WIDTH=6`, `AXI_ID_WIDTH=4`, `ROB_SEQ_WIDTH=8`, `AXI_PROGRESS_TIMEOUT_CYCLES=4096`, `IS_INSTRUCTION`이다. 한 local request만 outstanding으로 유지하고 원래 local ID를 response까지 보관한다. read는 AR 한 건과 RLAST 한 beat, write는 AW와 W를 서로 독립 handshake한 뒤 B를 기다린다. AW와 W 중 한 channel만 먼저 accept되어도 다른 channel의 payload와 valid를 유지한다. local request가 misaligned이거나 8-byte보다 크면 AXI side effect 없이 local SLVERR를 반환한다. write request는 captured `req_committed=1`일 때만 AW/W를 만들 수 있다.
+
+AXI channel에서 `ARREADY`, 남은 `AWREADY/WREADY`, `RVALID` 또는 `BVALID`의 forward progress가 `AXI_PROGRESS_TIMEOUT_CYCLES` 동안 없으면 bridge는 기다리는 local request에 zero data와 `SLVERR`를 반환한다. I path는 instruction access fault, D path는 load/store access fault로 변환되므로 faulting ROB entry가 영구 미완료 상태로 남지 않는다. 값 0은 watchdog 비활성화다. 기본 4096 cycles는 내부 TIM/MMIO/error-slave의 정상 지연보다 충분히 크며 외부 IP latency 요구에 맞춰 package 또는 `rv_soc_top` instance에서 override한다.
+
+timeout 전에 AR/AW/W가 전혀 accept되지 않았다면 transaction을 안전하게 취소한다. 이미 AXI channel 일부 또는 전부가 accept된 경우에는 AXI transaction을 취소할 수 없으므로 core에는 먼저 오류를 보고한 뒤 bridge가 전용 drain state에서 늦은 R/B를 소비한다. drain 동안 새 outbound transaction은 받지 않으며, 이 규칙이 timeout된 ID의 늦은 response가 재사용된 local ID에 연결되는 것을 막는다. 영구 고장 slave라면 해당 bridge는 drain에 남지만 trap handler가 ITIM/DTIM과 정상 local device만 사용하는 한 core의 faulting instruction과 ROB는 계속 진행할 수 있다. 특히 AW/W가 이미 accept된 write timeout은 외부 side effect 여부를 되돌려 확인할 수 없는 platform-fatal 상태이므로 software가 해당 store를 재시도해서는 안 된다. 정상적인 unmapped 주소는 이 watchdog까지 가지 않고 default error slave의 DECERR로 side effect 없이 종료된다.
 
 현재 bridge는 local 요청 하나를 AXI `LEN=0`, `BURST=INCR` transaction으로 변환한다. Main Xbar의 master별 multiple-outstanding 성능 목표는 이후 ID queue 확장에서 구현하지만, interface와 response ID 계약은 바꾸지 않는다.
 
@@ -1693,7 +1698,7 @@ Parameter는 `ADDR_WIDTH=32`, `DATA_WIDTH=64`, `LOCAL_ID_WIDTH=6`, `AXI_ID_WIDTH
 - read는 local response 하나를 R beat 하나로 보낸 뒤 다음 address를 요청한다. `RLAST`는 `beat_index==ARLEN`에서만 1이다.
 - Host/DPI write는 local `req_committed=1`로 변환하며 target device parameter를 `req_device`에 전달한다.
 
-`rv_axi_bridge_tb`는 local→AXI→local write/read 왕복, ID 보존, misaligned 차단을 기술한다. `rv_axi_to_local_burst_tb`는 4-beat write/read, RLAST, window-crossing burst의 partial-side-effect 금지를 기술한다. 현재 환경에서는 이 testbench까지 parse/elaboration했으며 cycle simulation은 simulator 도입 시 실행한다.
+`rv_axi_bridge_tb`는 local→AXI→local write/read 왕복, ID 보존, misaligned 차단에 더해 AR accept 이후 R response 및 AW/W accept 이후 B response를 각각 차단한다. 두 경우 모두 8-cycle watchdog의 SLVERR 완료, late-response drain, 다음 ID의 정상 readback을 검사한다. `rv_axi_to_local_burst_tb`는 4-beat write/read, RLAST, window-crossing burst의 partial-side-effect 금지를 기술한다.
 
 ### 15.21 Main AXI Xbar exact interface와 baseline 동작
 
@@ -2891,3 +2896,4 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 | v1.15.2 | FADD/FSUB/FMA exact-zero 부호 판정을 IEEE-754에 맞게 수정. 같은 유효 부호의 zero 항은 해당 부호를 보존하고 반대 부호 zero/exact cancellation만 RDN에서 `-0`을 생성한다. zero-sign corner unit vector와 same-pair `FMV.W.X→FADD.S` FP rename/issue/writeback/ROB-retire 통합 회귀를 추가했다. 전체 verification runner의 Python/PowerShell 탐색, 기본 artifact 경로 및 ArtifactRoot 격리를 보완한 뒤 parse/elaboration, unit 17종, block 12종, backend, SoC boot, RV32IMF/RV32C/M·U ELF architectural trace 전체를 재실행해 PASS |
 | v1.15.3 | host FP에 의존하지 않는 exact-rational/integer-sqrt RV32F oracle과 6,470-vector differential TB를 추가. FADD/FSUB/FMUL/FDIV/FSQRT·4종 FMA뿐 아니라 sign/min/max/compare/class/convert/move까지 전체 RV32F operation, 5개 rounding mode, signed zero/normal/subnormal/infinity/qNaN/sNaN/overflow/underflow result와 fflags를 비교한다. 이 회귀가 발견한 FMA `large finite × zero + small addend`의 zero-product exponent alignment 오류를 수정하고 vector manifest 재현성 검사를 full runner에 편입 |
 | v1.15.4 | 기존 decode-time breakpoint exception 경로를 unit/backend 통합 회귀로 고정하고 HDD의 낡은 EBREAK 미구현 표기를 수정. EBREAK/C.EBREAK가 ROB head에서 cause 3, faulting `mepc`, informative `mtval`로 trap하며 raw compressed trace를 보존하고 same-bundle younger write를 squash하는지 검증. backend runner에 병렬 C++ build option을 추가하고 full runner의 `BuildJobs`를 전달 |
+| v1.15.5 | local→AXI bridge에 parameterized forward-progress watchdog을 추가. 기본 4096 cycles 동안 AR/AW/W/R/B 진행이 없으면 core에 SLVERR를 반환해 instruction/load/store access fault로 ROB를 완료하고, 이미 accept된 AXI transaction의 늦은 응답은 drain state에서 폐기해 ID 재사용 오염을 방지. 무응답 read/write와 late-response recovery를 bridge 회귀로 고정 |

@@ -16,6 +16,7 @@ module rv_axi_bridge_tb;
   logic [63:0] target_rsp_data_q;
   logic [63:0] memory [0:15];
   int unsigned target_request_count;
+  logic target_enabled;
 
   rv_local_mem_if source_bus (.clk_i(clk), .rst_ni(rst_n));
   rv_axi4_if #(.ID_WIDTH(4)) axi_link (.clk_i(clk), .rst_ni(rst_n));
@@ -50,7 +51,8 @@ module rv_axi_bridge_tb;
     source_bus.req_device    = 1'b0;
     source_bus.rsp_ready     = 1'b1;
 
-    target_bus.req_ready  = !target_rsp_valid_q || target_bus.rsp_ready;
+    target_bus.req_ready  = target_enabled &&
+                            (!target_rsp_valid_q || target_bus.rsp_ready);
     target_bus.rsp_valid  = target_rsp_valid_q;
     target_bus.rsp_id     = target_rsp_id_q;
     target_bus.rsp_rdata  = target_rsp_data_q;
@@ -84,7 +86,9 @@ module rv_axi_bridge_tb;
     end
   end
 
-  rv_local_to_axi_bridge u_outbound (
+  rv_local_to_axi_bridge #(
+    .AXI_PROGRESS_TIMEOUT_CYCLES (8)
+  ) u_outbound (
     .clk_i     (clk),
     .rst_ni    (rst_n),
     .local_bus (source_bus),
@@ -112,6 +116,7 @@ module rv_axi_bridge_tb;
     output logic [63:0] response_data,
     output logic [1:0] response_code
   );
+    int unsigned wait_cycles;
     @(negedge clk);
     src_req_valid = 1'b1;
     src_req_id    = id;
@@ -120,10 +125,22 @@ module rv_axi_bridge_tb;
     src_req_size  = 3'd3;
     src_req_wdata = write_data;
     src_req_wstrb = write_strobe;
-    do @(posedge clk); while (!source_bus.req_ready);
+    wait_cycles = 0;
+    do begin
+      @(posedge clk);
+      wait_cycles++;
+      if (wait_cycles > 100)
+        $fatal(1, "local request accept timeout");
+    end while (!source_bus.req_ready);
     @(negedge clk);
     src_req_valid = 1'b0;
-    while (!source_bus.rsp_valid) @(negedge clk);
+    wait_cycles = 0;
+    while (!source_bus.rsp_valid) begin
+      @(negedge clk);
+      wait_cycles++;
+      if (wait_cycles > 100)
+        $fatal(1, "local response timeout");
+    end
     response_data = source_bus.rsp_rdata;
     response_code = source_bus.rsp_resp;
     if (source_bus.rsp_id != id)
@@ -144,6 +161,7 @@ module rv_axi_bridge_tb;
     src_req_size   = 3'd3;
     src_req_wdata  = '0;
     src_req_wstrb  = '0;
+    target_enabled = 1'b1;
 
     repeat (3) @(posedge clk);
     @(negedge clk);
@@ -175,6 +193,43 @@ module rv_axi_bridge_tb;
     if ((source_bus.rsp_resp == AXI_RESP_OKAY) ||
         (target_request_count != request_count_before))
       $fatal(1, "misaligned local request reached AXI target");
+
+    // Once AR is accepted, deliberately prevent the local target from ever
+    // completing it.  The outbound watchdog must release the core-side
+    // request with SLVERR instead of leaving its ROB entry waiting forever.
+    target_enabled = 1'b0;
+    local_transfer(6'h18, DTIM_BASE_ADDR + 32'h28, 1'b0,
+                   '0, '0, response_data, response_code);
+    if ((response_code != AXI_RESP_SLVERR) || (response_data != '0))
+      $fatal(1, "unresponsive AXI read did not time out as SLVERR");
+
+    // The accepted AXI request may still respond late. Re-enable the target,
+    // let the bridge drain that response, then prove the next ID is not
+    // confused with the timed-out transaction.
+    target_enabled = 1'b1;
+    repeat (8) @(posedge clk);
+    local_transfer(6'h19, DTIM_BASE_ADDR + 32'h20, 1'b0,
+                   '0, '0, response_data, response_code);
+    if ((response_code != AXI_RESP_OKAY) ||
+        (response_data != 64'h0123_4567_89ab_cdef))
+      $fatal(1, "bridge did not recover after draining late AXI response");
+
+    // Repeat the same liveness check for a write whose AW/W are accepted but
+    // whose B response is blocked behind the local target. The core-facing
+    // committed store must receive an error completion instead of hanging.
+    target_enabled = 1'b0;
+    local_transfer(6'h1a, DTIM_BASE_ADDR + 32'h30, 1'b1,
+                   64'hfeed_face_cafe_beef, 8'hff,
+                   response_data, response_code);
+    if (response_code != AXI_RESP_SLVERR)
+      $fatal(1, "unresponsive AXI write did not time out as SLVERR");
+    target_enabled = 1'b1;
+    repeat (8) @(posedge clk);
+    local_transfer(6'h1b, DTIM_BASE_ADDR + 32'h20, 1'b0,
+                   '0, '0, response_data, response_code);
+    if ((response_code != AXI_RESP_OKAY) ||
+        (response_data != 64'h0123_4567_89ab_cdef))
+      $fatal(1, "bridge did not recover after draining late AXI B response");
 
     $display("rv_axi_bridge_tb PASS");
     $finish;
