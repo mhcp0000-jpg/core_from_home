@@ -2,10 +2,16 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# 기본 ELF는 서버의 riscv-dv arithmetic test입니다.
-# 다른 ELF가 필요할 때만 환경변수 BINARY로 덮어씁니다.
+# ELF 선택 우선순위: 1번째 인자 > 환경변수 BINARY > 기본 ELF
 # ---------------------------------------------------------------------------
-BINARY="${BINARY:-/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf}"
+DEFAULT_BINARY="/user/rocket/user/jeemin/project/TEST/DM_base/riscv_arithmetic_basic_test_0.elf"
+
+if [[ $# -ge 1 && -n "${1}" ]]; then
+  BINARY="$1"
+  shift
+else
+  BINARY="${BINARY:-${DEFAULT_BINARY}}"
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup_env.sh
@@ -16,7 +22,6 @@ BUILD_DIR="${HTIF_BUILD_DIR:-${CORE_ROOT}/sim/xcelium/out}"
 TIMEOUT_CYCLES="${TIMEOUT_CYCLES:-2000000}"
 HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES:-100000}"
 ELF_VERIFY="${ELF_VERIFY:-1}"
-LSU_TRACE="${LSU_TRACE:-1}"
 RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
 TRACE_FILE="${TRACE_FILE:-${BUILD_DIR}/commit_trace.csv}"
 SPIKE_TRACE_FILE="${SPIKE_TRACE_FILE:-${BUILD_DIR}/trace_log.out}"
@@ -93,7 +98,6 @@ printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"
   -TIMEOUT_CYCLES="${TIMEOUT_CYCLES}" \
   -HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES}" \
   -ELF_VERIFY="${ELF_VERIFY}" \
-  -LSU_TRACE="${LSU_TRACE}" \
   -TRACE_FILE="${TRACE_FILE}" \
   -SPIKE_TRACE_FILE="${SPIKE_TRACE_FILE}" \
   -FSDB_ENABLE="${FSDB_ENABLE}" \
