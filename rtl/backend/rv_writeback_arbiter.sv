@@ -55,13 +55,6 @@ module rv_writeback_arbiter #(
   import rv_ooo_pkg::*;
 
   localparam int unsigned SOURCE_INDEX_WIDTH = $clog2(SOURCE_COUNT);
-  logic [SOURCE_COUNT-1:0] eligible;
-  logic [SOURCE_COUNT-1:0] selected;
-  logic [ROB_COMPLETE_PORTS-1:0] select_found;
-  logic [ROB_COMPLETE_PORTS-1:0][SOURCE_INDEX_WIDTH-1:0] select_index;
-  integer unsigned int_ports_used;
-  integer unsigned fp_ports_used;
-
   function automatic logic sequence_before(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
     input logic [ROB_SEQ_WIDTH-1:0] rhs
@@ -80,9 +73,17 @@ module rv_writeback_arbiter #(
     return distance > 0;
   endfunction
 
-  always @(*) begin
+  always_comb begin
+    logic [SOURCE_COUNT-1:0] eligible_work;
+    logic [SOURCE_COUNT-1:0] selected_work;
+    logic [ROB_COMPLETE_PORTS-1:0] select_found_work;
+    logic [ROB_COMPLETE_PORTS-1:0][SOURCE_INDEX_WIDTH-1:0]
+      select_index_work;
+    integer unsigned int_ports_used_work;
+    integer unsigned fp_ports_used_work;
+
     source_ready_o = '0;
-    eligible = '0;
+    eligible_work = '0;
     for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
       if (source_valid_i[source] &&
           (!source_live_i[source] ||
@@ -91,15 +92,16 @@ module rv_writeback_arbiter #(
                                            flush_sequence_i))))) begin
         source_ready_o[source] = 1'b1;
       end else begin
-        eligible[source] = source_valid_i[source] && source_live_i[source];
+        eligible_work[source] =
+          source_valid_i[source] && source_live_i[source];
       end
     end
 
-    selected = '0;
-    select_found = '0;
-    select_index = '0;
-    int_ports_used = 0;
-    fp_ports_used = 0;
+    selected_work = '0;
+    select_found_work = '0;
+    select_index_work = '0;
+    int_ports_used_work = 0;
+    fp_ports_used_work = 0;
 
     for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
       for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
@@ -113,26 +115,28 @@ module rv_writeback_arbiter #(
                         !source_exception_valid_i[source] &&
                         (source_destination_class_i[source] == REG_FP);
         resource_available =
-          (!needs_int_port || (int_ports_used < INT_WRITE_PORTS)) &&
-          (!needs_fp_port || (fp_ports_used < FP_WRITE_PORTS));
+          (!needs_int_port ||
+           (int_ports_used_work < INT_WRITE_PORTS)) &&
+          (!needs_fp_port || (fp_ports_used_work < FP_WRITE_PORTS));
 
-        if (eligible[source] && !selected[source] && resource_available &&
-            (!select_found[slot] ||
+        if (eligible_work[source] && !selected_work[source] &&
+            resource_available &&
+            (!select_found_work[slot] ||
              sequence_before(source_sequence_i[source],
-                             source_sequence_i[select_index[slot]]))) begin
-          select_found[slot] = 1'b1;
-          select_index[slot] = SOURCE_INDEX_WIDTH'(source);
+                             source_sequence_i[select_index_work[slot]]))) begin
+          select_found_work[slot] = 1'b1;
+          select_index_work[slot] = SOURCE_INDEX_WIDTH'(source);
         end
       end
 
-      if (select_found[slot]) begin
-        selected[select_index[slot]] = 1'b1;
-        if (source_destination_valid_i[select_index[slot]] &&
-            !source_exception_valid_i[select_index[slot]]) begin
-          if (source_destination_class_i[select_index[slot]] == REG_INT)
-            int_ports_used = int_ports_used + 1;
-          else if (source_destination_class_i[select_index[slot]] == REG_FP)
-            fp_ports_used = fp_ports_used + 1;
+      if (select_found_work[slot]) begin
+        selected_work[select_index_work[slot]] = 1'b1;
+        if (source_destination_valid_i[select_index_work[slot]] &&
+            !source_exception_valid_i[select_index_work[slot]]) begin
+          if (source_destination_class_i[select_index_work[slot]] == REG_INT)
+            int_ports_used_work = int_ports_used_work + 1;
+          else if (source_destination_class_i[select_index_work[slot]] == REG_FP)
+            fp_ports_used_work = fp_ports_used_work + 1;
         end
       end
     end
@@ -152,8 +156,8 @@ module rv_writeback_arbiter #(
     complete_branch_mispredict_o = '0;
     complete_branch_target_o = '0;
     complete_fflags_o = '0;
-    int_ports_used = 0;
-    fp_ports_used = 0;
+    int_ports_used_work = 0;
+    fp_ports_used_work = 0;
     for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
       wakeup_class_o[slot] = REG_NONE;
       complete_exception_cause_o[slot] = EXC_ILLEGAL_INSTRUCTION;
@@ -162,8 +166,8 @@ module rv_writeback_arbiter #(
     for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
       logic [SOURCE_INDEX_WIDTH-1:0] source;
       source = '0;
-      if (select_found[slot]) begin
-        source = select_index[slot];
+      if (select_found_work[slot]) begin
+        source = select_index_work[slot];
         source_ready_o[source] = 1'b1;
         complete_valid_o[slot] = 1'b1;
         complete_sequence_o[slot] = source_sequence_i[source];
@@ -184,17 +188,17 @@ module rv_writeback_arbiter #(
           wakeup_class_o[slot] = source_destination_class_i[source];
           wakeup_phys_o[slot] = source_destination_phys_i[source];
           if (source_destination_class_i[source] == REG_INT) begin
-            int_wb_valid_o[int_ports_used] = 1'b1;
-            int_wb_phys_o[int_ports_used] =
+            int_wb_valid_o[int_ports_used_work] = 1'b1;
+            int_wb_phys_o[int_ports_used_work] =
               source_destination_phys_i[source];
-            int_wb_data_o[int_ports_used] = source_data_i[source];
-            int_ports_used = int_ports_used + 1;
+            int_wb_data_o[int_ports_used_work] = source_data_i[source];
+            int_ports_used_work = int_ports_used_work + 1;
           end else if (source_destination_class_i[source] == REG_FP) begin
-            fp_wb_valid_o[fp_ports_used] = 1'b1;
-            fp_wb_phys_o[fp_ports_used] =
+            fp_wb_valid_o[fp_ports_used_work] = 1'b1;
+            fp_wb_phys_o[fp_ports_used_work] =
               source_destination_phys_i[source];
-            fp_wb_data_o[fp_ports_used] = 32'(source_data_i[source]);
-            fp_ports_used = fp_ports_used + 1;
+            fp_wb_data_o[fp_ports_used_work] = 32'(source_data_i[source]);
+            fp_ports_used_work = fp_ports_used_work + 1;
           end
         end
       end

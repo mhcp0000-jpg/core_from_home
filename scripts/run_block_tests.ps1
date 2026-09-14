@@ -45,6 +45,28 @@ $tests = @(
               "tb/unit/backend/rv_issue_arbiter_tb.sv")
   },
   @{
+    Top = "rv_decode2_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/frontend/rv_c_expander.sv",
+              "rtl/backend/rv_decode2.sv",
+              "tb/unit/backend/rv_decode2_tb.sv")
+  },
+  @{
+    Top = "rv_store_buffer_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_store_buffer.sv",
+              "tb/unit/backend/rv_store_buffer_tb.sv")
+  },
+  @{
+    Top = "rv_lsq_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_lsq.sv",
+              "tb/unit/backend/rv_lsq_tb.sv")
+  },
+  @{
+    Top = "rv_writeback_arbiter_tb"
+    Files = @("rtl/rv_ooo_pkg.sv",
+              "rtl/backend/rv_writeback_arbiter.sv",
+              "tb/unit/backend/rv_writeback_arbiter_tb.sv")
+  },
+  @{
     Top = "rv_multiplier_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_multiplier.sv",
               "tb/unit/backend/rv_multiplier_tb.sv")

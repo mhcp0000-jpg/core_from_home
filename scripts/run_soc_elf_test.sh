@@ -79,6 +79,7 @@ fi
 sources+=("${repo_root}/tb/e2e/dpi/${top_module}.sv")
 
 "$verilator_cmd" --cc --exe --timing --main -DSYNTHESIS -Wno-fatal \
+  -Werror-UNOPTFLAT \
   -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module "$top_module" \
   --Mdir "$build_root" "${sources[@]}"
 make -j "$jobs" -C "$build_root" -f "V${top_module}.mk"

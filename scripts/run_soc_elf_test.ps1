@@ -63,7 +63,8 @@ try {
     $env:VERILATOR_ROOT = $VerilatorRoot
     $verilatorArgs = @("--cc", "--exe", "--timing", "--main")
     $verilatorArgs += if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
-    $verilatorArgs += @("-Wno-fatal", "-Wno-WIDTHEXPAND", "-Wno-WIDTHTRUNC",
+    $verilatorArgs += @("-Wno-fatal", "-Werror-UNOPTFLAT",
+                        "-Wno-WIDTHEXPAND", "-Wno-WIDTHTRUNC",
                         "--top-module", $topModule, "--Mdir", $BuildRoot)
     $verilatorArgs += $mappedSources
     & $verilator @verilatorArgs

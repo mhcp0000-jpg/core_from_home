@@ -164,6 +164,47 @@ module rv_store_buffer_tb;
       $fatal(1, "Youngest partial overlap must stall a load");
     query_valid = '0;
 
+    // Reproduce the server-side stop condition: a committed store response
+    // arrives while a same-beat younger store is enqueued and a load query is
+    // active.  The CAM result must settle to the youngest surviving store,
+    // and removing the completed head on the next edge must not disturb it.
+    reset_dut();
+    enqueue_one(8'd20, 32'h8003_5e10, 64'h0000_0000_1111_1111,
+                8'h0f, 1'b0);
+    saved_index0 = drain_index[0];
+    query_valid[0] = 1'b1;
+    query_address[0] = 32'h8003_5e10;
+    query_mask[0] = 8'h0f;
+    drain_ready = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    drain_ready = '0;
+    drain_rsp_index[0] = saved_index0;
+    drain_rsp_resp[0] = 2'b00;
+    drain_rsp_valid = 2'b01;
+    enq_sequence[0] = 8'd21;
+    enq_address[0] = 32'h8003_5e10;
+    enq_data[0] = 64'h0000_0000_2222_2222;
+    enq_mask[0] = 8'h0f;
+    enq_size[0] = 3'd2;
+    enq_device[0] = 1'b0;
+    enq_valid = 2'b01;
+    @(posedge clk);
+    @(negedge clk);
+    drain_rsp_valid = '0;
+    enq_valid = '0;
+    #1;
+    if (!query_full_cover[0] || query_partial[0] ||
+        (query_data[0] != 64'h0000_0000_2222_2222) || (count != 2))
+      $fatal(1, "Response/enqueue forwarding did not select youngest store");
+    @(posedge clk);
+    @(negedge clk);
+    #1;
+    if (!query_full_cover[0] || query_partial[0] ||
+        (query_data[0] != 64'h0000_0000_2222_2222) || (count != 1))
+      $fatal(1, "Head pop disturbed surviving store forwarding");
+    query_valid = '0;
+
     reset_dut();
     enqueue_two(1'b0);
     #1;

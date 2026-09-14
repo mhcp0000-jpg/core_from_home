@@ -250,51 +250,47 @@ module rv_lsq #(
     end
   end
 
-  always @(*) begin
-    candidate_found = '0;
-    candidate_index = '0;
-    candidate_sequence = '0;
+  always_comb begin
+    logic [1:0] found_work;
+    logic [1:0][LQ_INDEX_WIDTH-1:0] index_work;
+    logic [1:0][SEQ_WIDTH-1:0] sequence_work;
+
+    found_work = '0;
+    index_work = '0;
+    sequence_work = '0;
     for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
       if (lq_valid_q[entry] && !lq_killed_q[entry] &&
           lq_address_valid_q[entry] && !lq_issued_q[entry] &&
           !lq_completed_q[entry] && !lq_exception_q[entry]) begin
-        if (!candidate_found[0] ||
-            sequence_after(candidate_sequence[0], lq_sequence_q[entry])) begin
-          candidate_found[1] = candidate_found[0];
-          candidate_index[1] = candidate_index[0];
-          candidate_sequence[1] = candidate_sequence[0];
-          candidate_found[0] = 1'b1;
-          candidate_index[0] = LQ_INDEX_WIDTH'(entry);
-          candidate_sequence[0] = lq_sequence_q[entry];
-        end else if (!candidate_found[1] ||
-                     sequence_after(candidate_sequence[1],
+        if (!found_work[0] ||
+            sequence_after(sequence_work[0], lq_sequence_q[entry])) begin
+          found_work[1] = found_work[0];
+          index_work[1] = index_work[0];
+          sequence_work[1] = sequence_work[0];
+          found_work[0] = 1'b1;
+          index_work[0] = LQ_INDEX_WIDTH'(entry);
+          sequence_work[0] = lq_sequence_q[entry];
+        end else if (!found_work[1] ||
+                     sequence_after(sequence_work[1],
                                     lq_sequence_q[entry])) begin
-          candidate_found[1] = 1'b1;
-          candidate_index[1] = LQ_INDEX_WIDTH'(entry);
-          candidate_sequence[1] = lq_sequence_q[entry];
+          found_work[1] = 1'b1;
+          index_work[1] = LQ_INDEX_WIDTH'(entry);
+          sequence_work[1] = lq_sequence_q[entry];
         end
       end
     end
+
+    candidate_found = found_work;
+    candidate_index = index_work;
+    candidate_sequence = sequence_work;
   end
 
   for (genvar lane = 0; lane < 2; lane++) begin : g_order_check
-    always @(*) begin
-      logic unknown_address;
-      logic older_device_memory;
-      logic partial_overlap;
-      logic sq_match;
-      logic sq_match_data_valid;
-      logic [SEQ_WIDTH-1:0] youngest_distance;
-      logic [DATA_WIDTH-1:0] sq_forward_data;
-
-      unknown_address = 1'b0;
-      older_device_memory = 1'b0;
-      partial_overlap = 1'b0;
-      sq_match = 1'b0;
-      sq_match_data_valid = 1'b0;
-      youngest_distance = '1;
-      sq_forward_data = '0;
-
+    // Candidate identity/metadata is independent of device serialization.
+    // Keep it in a separate cone so LSU-cluster's device_load_permit (which
+    // compares this sequence against the ROB head) cannot feed back through
+    // the same procedural block that produces the sequence.
+    always_comb begin
       load_candidate_present_o[lane] = candidate_found[lane];
       load_candidate_index_o[lane] = candidate_index[lane];
       load_candidate_sequence_o[lane] = candidate_sequence[lane];
@@ -320,13 +316,60 @@ module rv_lsq #(
         load_destination_phys_o[lane] =
           lq_destination_phys_q[candidate_index[lane]];
       end
+    end
+
+    always_comb begin
+      logic unknown_address;
+      logic older_device_memory;
+      logic partial_overlap;
+      logic sq_match;
+      logic sq_match_data_valid;
+      logic [SEQ_WIDTH-1:0] youngest_distance;
+      logic [DATA_WIDTH-1:0] sq_forward_data;
+      logic candidate_present;
+      logic candidate_valid;
+      logic [LQ_INDEX_WIDTH-1:0] selected_index;
+      logic [SEQ_WIDTH-1:0] selected_sequence;
+      logic [PADDR_WIDTH-1:0] selected_address;
+      logic [DATA_BYTES-1:0] selected_mask;
+      logic selected_device;
+      logic memory_read;
+      logic forward_valid;
+      logic [DATA_WIDTH-1:0] forward_data;
+      lsq_stall_reason_e stall_reason;
+
+      unknown_address = 1'b0;
+      older_device_memory = 1'b0;
+      partial_overlap = 1'b0;
+      sq_match = 1'b0;
+      sq_match_data_valid = 1'b0;
+      youngest_distance = '1;
+      sq_forward_data = '0;
+
+      candidate_present = candidate_found[lane];
+      candidate_valid = 1'b0;
+      selected_index = candidate_index[lane];
+      selected_sequence = candidate_sequence[lane];
+      selected_address = '0;
+      selected_mask = '0;
+      selected_device = 1'b0;
+      memory_read = 1'b0;
+      forward_valid = 1'b0;
+      forward_data = '0;
+      stall_reason = LSQ_STALL_NONE;
+
+      if (candidate_present) begin
+        selected_address = lq_address_q[selected_index];
+        selected_mask = lq_mask_q[selected_index];
+        selected_device = lq_device_q[selected_index];
+      end
 
       for (int unsigned store = 0; store < SQ_ENTRIES; store++) begin
         logic [SEQ_WIDTH-1:0] distance;
         logic [DATA_BYTES-1:0] overlap;
-        distance = candidate_sequence[lane] - sq_sequence_q[store];
-        overlap = sq_mask_q[store] & load_candidate_mask_o[lane];
-        if (candidate_found[lane] && sq_valid_q[store] &&
+        distance = selected_sequence - sq_sequence_q[store];
+        overlap = sq_mask_q[store] & selected_mask;
+        if (candidate_present && sq_valid_q[store] &&
             (distance != 0) && !distance[SEQ_WIDTH-1]) begin
           if (sq_device_q[store]) begin
             older_device_memory = 1'b1;
@@ -334,15 +377,15 @@ module rv_lsq #(
             unknown_address = 1'b1;
           end else if ((sq_address_q[store]
                         [PADDR_WIDTH-1:BYTE_OFFSET_WIDTH] ==
-                        load_candidate_address_o[lane]
+                        selected_address
                         [PADDR_WIDTH-1:BYTE_OFFSET_WIDTH]) &&
                        (overlap != '0)) begin
-            if ((overlap != load_candidate_mask_o[lane]) &&
+            if ((overlap != selected_mask) &&
                 (!sq_match || (distance < youngest_distance))) begin
               partial_overlap = 1'b1;
               sq_match = 1'b0;
               youngest_distance = distance;
-            end else if ((overlap == load_candidate_mask_o[lane]) &&
+            end else if ((overlap == selected_mask) &&
                          (distance < youngest_distance)) begin
               partial_overlap = 1'b0;
               sq_match = 1'b1;
@@ -361,9 +404,9 @@ module rv_lsq #(
       for (int unsigned older_load = 0; older_load < LQ_ENTRIES;
            older_load++) begin
         logic [SEQ_WIDTH-1:0] load_distance;
-        load_distance = candidate_sequence[lane] -
+        load_distance = selected_sequence -
                         lq_sequence_q[older_load];
-        if (candidate_found[lane] && lq_valid_q[older_load] &&
+        if (candidate_present && lq_valid_q[older_load] &&
             (load_distance != 0) && !load_distance[SEQ_WIDTH-1]) begin
           if (!lq_address_valid_q[older_load])
             unknown_address = 1'b1;
@@ -372,39 +415,42 @@ module rv_lsq #(
         end
       end
 
-      load_candidate_valid_o[lane] = 1'b0;
-      load_memory_read_o[lane] = 1'b0;
-      load_forward_valid_o[lane] = 1'b0;
-      load_forward_data_o[lane] = '0;
-      load_stall_reason_o[lane] = LSQ_STALL_NONE;
-
-      if (candidate_found[lane]) begin
+      if (candidate_present) begin
         if (older_device_memory) begin
-          load_stall_reason_o[lane] = LSQ_STALL_DEVICE_SERIALIZE;
-        end else if (load_candidate_device_o[lane] &&
+          stall_reason = LSQ_STALL_DEVICE_SERIALIZE;
+        end else if (selected_device &&
             !device_load_permit_i[lane]) begin
-          load_stall_reason_o[lane] = LSQ_STALL_DEVICE_SERIALIZE;
+          stall_reason = LSQ_STALL_DEVICE_SERIALIZE;
         end else if (unknown_address) begin
-          load_stall_reason_o[lane] = LSQ_STALL_UNKNOWN_ADDR;
+          stall_reason = LSQ_STALL_UNKNOWN_ADDR;
         end else if (partial_overlap) begin
-          load_stall_reason_o[lane] = LSQ_STALL_PARTIAL_OVERLAP;
+          stall_reason = LSQ_STALL_PARTIAL_OVERLAP;
         end else if (sq_match && !sq_match_data_valid) begin
-          load_stall_reason_o[lane] = LSQ_STALL_STORE_DATA;
+          stall_reason = LSQ_STALL_STORE_DATA;
         end else if (sq_match) begin
-          load_candidate_valid_o[lane] = 1'b1;
-          load_forward_valid_o[lane] = 1'b1;
-          load_forward_data_o[lane] = sq_forward_data;
+          candidate_valid = 1'b1;
+          forward_valid = 1'b1;
+          forward_data = sq_forward_data;
         end else if (sb_query_partial_i[lane]) begin
-          load_stall_reason_o[lane] = LSQ_STALL_PARTIAL_OVERLAP;
+          stall_reason = LSQ_STALL_PARTIAL_OVERLAP;
         end else if (sb_query_full_cover_i[lane]) begin
-          load_candidate_valid_o[lane] = 1'b1;
-          load_forward_valid_o[lane] = 1'b1;
-          load_forward_data_o[lane] = sb_query_data_i[lane];
+          candidate_valid = 1'b1;
+          forward_valid = 1'b1;
+          forward_data = sb_query_data_i[lane];
         end else begin
-          load_candidate_valid_o[lane] = 1'b1;
-          load_memory_read_o[lane] = 1'b1;
+          candidate_valid = 1'b1;
+          memory_read = 1'b1;
         end
       end
+
+      // This block only produces permit-dependent issue/forward controls.
+      // Candidate identity and metadata are generated above, outside the
+      // device_load_permit feedback cone.
+      load_candidate_valid_o[lane] = candidate_valid;
+      load_memory_read_o[lane] = memory_read;
+      load_forward_valid_o[lane] = forward_valid;
+      load_forward_data_o[lane] = forward_data;
+      load_stall_reason_o[lane] = stall_reason;
     end
   end
 

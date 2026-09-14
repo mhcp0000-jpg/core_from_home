@@ -145,8 +145,6 @@ module rv_issue_queue #(
   logic store_address_issued_q [0:ENTRIES-1];
   logic [2:0] source_ready_now [0:ENTRIES-1];
   logic [ENTRIES-1:0] ready_now;
-  logic [ENTRIES-1:0] selected_mask;
-  logic [SELECT_WIDTH-1:0] select_found;
   logic [ENTRIES-1:0] available_slots;
   logic [ENTRIES-1:0] allocation_slots_work;
   logic [1:0] allocation_found;
@@ -211,6 +209,10 @@ module rv_issue_queue #(
   end
 
   always_comb begin
+    logic [ENTRIES-1:0] selected_mask_work;
+    logic [SELECT_WIDTH-1:0] select_found_work;
+    logic [SELECT_WIDTH-1:0][INDEX_WIDTH-1:0] selected_index_work;
+
     candidate_valid_o             = '0;
     candidate_index_o             = '0;
     candidate_sequence_o          = '0;
@@ -240,82 +242,84 @@ module rv_issue_queue #(
     candidate_store_address_valid_o = '0;
     candidate_store_data_valid_o  = '0;
     candidate_final_phase         = '0;
-    selected_mask                 = '0;
-    select_found                  = '0;
+    selected_mask_work            = '0;
+    select_found_work             = '0;
+    selected_index_work           = '0;
 
     if (!flush_all_i && !flush_younger_i) begin
       for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
         for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-          if (ready_now[entry] && !selected_mask[entry] &&
-              (!select_found[slot] ||
+          if (ready_now[entry] && !selected_mask_work[entry] &&
+              (!select_found_work[slot] ||
                sequence_before(sequence_q[entry],
-                               sequence_q[candidate_index_o[slot]]))) begin
-            candidate_index_o[slot] = INDEX_WIDTH'(entry);
-            select_found[slot]      = 1'b1;
+                               sequence_q[selected_index_work[slot]]))) begin
+            selected_index_work[slot] = INDEX_WIDTH'(entry);
+            select_found_work[slot] = 1'b1;
           end
         end
-        if (select_found[slot]) begin
-          selected_mask[candidate_index_o[slot]] = 1'b1;
+        if (select_found_work[slot]) begin
+          candidate_index_o[slot] = selected_index_work[slot];
+          selected_mask_work[selected_index_work[slot]] = 1'b1;
           candidate_valid_o[slot] = 1'b1;
           candidate_sequence_o[slot] =
-            sequence_q[candidate_index_o[slot]];
-          candidate_fu_o[slot] = fu_q[candidate_index_o[slot]];
+            sequence_q[selected_index_work[slot]];
+          candidate_fu_o[slot] = fu_q[selected_index_work[slot]];
           candidate_port_mask_o[slot] =
-            port_mask_q[candidate_index_o[slot]];
+            port_mask_q[selected_index_work[slot]];
           candidate_src_phys_o[slot] =
-            src_phys_q[candidate_index_o[slot]];
+            src_phys_q[selected_index_work[slot]];
           candidate_src_class_o[slot][0] =
-            src0_class_q[candidate_index_o[slot]];
+            src0_class_q[selected_index_work[slot]];
           candidate_src_class_o[slot][1] =
-            src1_class_q[candidate_index_o[slot]];
+            src1_class_q[selected_index_work[slot]];
           candidate_src_class_o[slot][2] =
-            src2_class_q[candidate_index_o[slot]];
+            src2_class_q[selected_index_work[slot]];
           candidate_destination_valid_o[slot] =
-            destination_valid_q[candidate_index_o[slot]];
+            destination_valid_q[selected_index_work[slot]];
           candidate_destination_class_o[slot] =
-            destination_class_q[candidate_index_o[slot]];
+            destination_class_q[selected_index_work[slot]];
           candidate_destination_phys_o[slot] =
-            destination_phys_q[candidate_index_o[slot]];
-          candidate_pc_o[slot] = pc_q[candidate_index_o[slot]];
+            destination_phys_q[selected_index_work[slot]];
+          candidate_pc_o[slot] = pc_q[selected_index_work[slot]];
           candidate_instruction_o[slot] =
-            instruction_q[candidate_index_o[slot]];
+            instruction_q[selected_index_work[slot]];
           candidate_inst_len_o[slot] =
-            inst_len_q[candidate_index_o[slot]];
+            inst_len_q[selected_index_work[slot]];
           candidate_prediction_o[slot] =
-            prediction_q[candidate_index_o[slot]];
+            prediction_q[selected_index_work[slot]];
           candidate_immediate_o[slot] =
-            immediate_q[candidate_index_o[slot]];
+            immediate_q[selected_index_work[slot]];
           candidate_operation_o[slot] =
-            operation_q[candidate_index_o[slot]];
+            operation_q[selected_index_work[slot]];
           candidate_use_pc_o[slot] =
-            use_pc_q[candidate_index_o[slot]];
+            use_pc_q[selected_index_work[slot]];
           candidate_use_immediate_o[slot] =
-            use_immediate_q[candidate_index_o[slot]];
+            use_immediate_q[selected_index_work[slot]];
           candidate_word_operation_o[slot] =
-            word_operation_q[candidate_index_o[slot]];
+            word_operation_q[selected_index_work[slot]];
           candidate_mem_size_o[slot] =
-            mem_size_q[candidate_index_o[slot]];
+            mem_size_q[selected_index_work[slot]];
           candidate_mem_unsigned_o[slot] =
-            mem_unsigned_q[candidate_index_o[slot]];
+            mem_unsigned_q[selected_index_work[slot]];
           candidate_rounding_mode_o[slot] =
-            rounding_mode_q[candidate_index_o[slot]];
+            rounding_mode_q[selected_index_work[slot]];
           candidate_checkpoint_valid_o[slot] =
-            checkpoint_valid_q[candidate_index_o[slot]];
+            checkpoint_valid_q[selected_index_work[slot]];
           candidate_checkpoint_id_o[slot] =
-            checkpoint_id_q[candidate_index_o[slot]];
+            checkpoint_id_q[selected_index_work[slot]];
           candidate_lq_index_o[slot] =
-            lq_index_q[candidate_index_o[slot]];
+            lq_index_q[selected_index_work[slot]];
           candidate_sq_index_o[slot] =
-            sq_index_q[candidate_index_o[slot]];
+            sq_index_q[selected_index_work[slot]];
           candidate_store_address_valid_o[slot] =
-            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
-            !store_address_issued_q[candidate_index_o[slot]];
+            (fu_q[selected_index_work[slot]] == FU_STORE) &&
+            !store_address_issued_q[selected_index_work[slot]];
           candidate_store_data_valid_o[slot] =
-            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
-            source_ready_now[candidate_index_o[slot]][1];
+            (fu_q[selected_index_work[slot]] == FU_STORE) &&
+            source_ready_now[selected_index_work[slot]][1];
           candidate_final_phase[slot] =
-            (fu_q[candidate_index_o[slot]] != FU_STORE) ||
-            source_ready_now[candidate_index_o[slot]][1];
+            (fu_q[selected_index_work[slot]] != FU_STORE) ||
+            source_ready_now[selected_index_work[slot]][1];
         end
       end
     end

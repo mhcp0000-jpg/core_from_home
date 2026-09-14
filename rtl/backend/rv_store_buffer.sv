@@ -164,18 +164,22 @@ module rv_store_buffer #(
   end
 
   for (genvar lane = 0; lane < 2; lane++) begin : g_query
-    always @(*) begin
+    always_comb begin
       logic found;
       logic [SEQ_WIDTH-1:0] selected_sequence;
       logic [DATA_BYTES-1:0] selected_overlap;
+      logic full_cover;
+      logic partial_cover;
+      logic [DATA_WIDTH-1:0] selected_data;
+      logic [INDEX_WIDTH-1:0] selected_index;
 
       found = 1'b0;
       selected_sequence = '0;
       selected_overlap = '0;
-      query_full_cover_o[lane] = 1'b0;
-      query_partial_o[lane] = 1'b0;
-      query_data_o[lane] = '0;
-      query_index_o[lane] = '0;
+      full_cover = 1'b0;
+      partial_cover = 1'b0;
+      selected_data = '0;
+      selected_index = '0;
 
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
         if (query_valid_i[lane] && valid_q[entry] &&
@@ -187,17 +191,26 @@ module rv_store_buffer #(
           found = 1'b1;
           selected_sequence = sequence_q[entry];
           selected_overlap = mask_q[entry] & query_mask_i[lane];
-          query_data_o[lane] = data_q[entry];
-          query_index_o[lane] = INDEX_WIDTH'(entry);
+          selected_data = data_q[entry];
+          selected_index = INDEX_WIDTH'(entry);
         end
       end
 
       if (found) begin
-        query_full_cover_o[lane] =
+        full_cover =
           (query_mask_i[lane] != '0) &&
           (selected_overlap == query_mask_i[lane]);
-        query_partial_o[lane] = !query_full_cover_o[lane];
+        partial_cover = !full_cover;
       end
+
+      // Assign each externally visible result exactly once.  In particular,
+      // do not read query_full_cover_o after writing it: event-driven
+      // simulators may otherwise repeatedly schedule this block when a
+      // forwarding hit changes the output within one time step.
+      query_full_cover_o[lane] = full_cover;
+      query_partial_o[lane] = partial_cover;
+      query_data_o[lane] = selected_data;
+      query_index_o[lane] = selected_index;
     end
   end
 

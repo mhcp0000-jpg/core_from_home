@@ -116,6 +116,51 @@ loop warning과 정지 지점을 남긴다. 이 옵션은 `-access +rwc`와 함�
 
 이 진단도 RTL/TB 변경이므로 반드시 compile/elaborate job부터 다시 수행한다.
 
+### 2026-09-15: LSQ device-permit 조합 고리 제거
+
+전체 SoC top을 Verilator `--report-unoptflat`로 다시 검사하면서 다음 구조적
+조합 고리를 확인했다.
+
+```text
+device_load_permit
+  -> rv_lsq.g_order_check (permit 기반 load 발행 판정)
+  -> load_candidate_sequence
+  -> rv_lsu_cluster (ROB-head sequence 비교)
+  -> device_load_permit
+```
+
+기능식상 `load_candidate_sequence`는 permit과 무관하지만, 기존 RTL은 후보의
+identity/metadata 출력과 permit 기반 valid/stall 판정을 하나의 procedural block에서
+함께 만들었다. 이 때문에 simulator dependency graph에는 실제 순환 cone이 생겼다.
+Store Buffer response와 같은 edge에서 ROB head 또는 memory-idle 상태가 바뀌면
+`device_load_permit`도 바뀌므로, Xcelium의 event scheduling에서 같은 timestep이
+수렴하지 않는 서버 증상과 일치한다. 이 순환 구조가 존재했다는 사실은 확인했지만,
+원본 riscv-dv ELF의 Xcelium 정지가 이 고리 하나로 완전히 해소됐는지는 서버의 새
+snapshot 실행으로 마지막 확인이 필요하다.
+
+수정 후에는 LSQ를 다음 두 개의 단방향 cone으로 분리했다.
+
+1. `candidate_found/index/sequence`에서 candidate identity와 address/mask/size를 생성한다.
+2. 그 결과와 `device_load_permit`를 받아 valid/forward/memory-read/stall만 판정한다.
+
+Store Buffer CAM, Issue Queue oldest-first 선택, Writeback 중재도 출력값 또는 module
+temporary를 같은 combinational block에서 다시 읽지 않도록 local work 변수와
+single-point output assignment로 정리했다. 향후 같은 문제가 재유입되지 않도록
+Verilator ELF runner는 `UNOPTFLAT`을 error로 취급한다.
+
+로컬 확인 결과:
+
+- source parse/elaboration 통과
+- Icarus 4-state unit regression 18개 통과
+- Verilator block regression 17개 통과
+- assertion-enabled HTIF SoC directed ELF 통과
+- full SoC top `--report-unoptflat` 결과 순환 경고 0개
+- Store Buffer response + same-beat younger enqueue + active forwarding query 전용 회귀 통과
+
+서버에서는 이 변경 commit을 받은 뒤 기존 snapshot을 재사용하지 말고 compile/elaborate부터
+한 번만 다시 수행한다. 정상이라면 마지막 `[LSU-RSP]` 뒤에 `[SB-RSP-POST]`와 다음
+clock의 commit/heartbeat가 이어져야 한다.
+
 ### 서버에서 xcelium 폴더를 교체하는 경우
 
 회사 전용 tool/queue/license 설정은 유지해도 된다. 아래 항목은 최신 소스와 일치시킨다.
