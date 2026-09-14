@@ -97,6 +97,7 @@ exec xrun \
   -licqueue \
   -sv \
   -access +rwc \
+  -gateloopwarn \
   +xmtimescale+1ns/1ps \
   $define_opts \
   $loadpli_opts \

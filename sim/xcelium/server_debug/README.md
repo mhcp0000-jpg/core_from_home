@@ -92,6 +92,30 @@ Xcelium 실행이 매우 느려진 상태에서 수동 중단한 것으로 해�
 load-pair SoC run을 통과했다. 서버에서는 새 snapshot으로 다시 compile하고 같은 ELF를
 중단하지 않은 채 `[STALL]`, timeout 또는 HTIF 종료 중 하나가 나올 때까지 실행한다.
 
+### 2026-09-14 세 번째 서버 로그: Store Buffer 응답 edge에서 time 정지
+
+issue-arbiter assertion을 수정한 새 snapshot에서도 이전 실행과 정확히 같은
+`1845235 NS`에서 로그가 끝났다. 마지막 transaction의 `id=0x21`은 load ID가 아니라
+상위 비트 `10`인 Store Buffer entry 1의 write response다. 마지막 commit은
+`0x800072e4: c9710113 (ADDI)`이며, 그 뒤 256 idle-cycle snapshot도 나오지 않았다.
+따라서 이번 로그는 이전의 동일-bank LHU/LBU 가설과 무관하고, 정상적인 장기 ROB stall보다
+Store Buffer response의 `done_q` NBA update 직후 simulation delta가 수렴하지 않는 경우를
+우선 조사해야 한다.
+
+TB는 이제 Store Buffer response마다 다음 두 줄을 출력한다.
+
+- `[SB-RSP-PRE]`: response posedge의 NBA 적용 전 FIFO head/tail/count 및 valid/sent/done.
+- `[SB-RSP-POST]`: 같은 timestep의 postponed region, 즉 NBA와 조합 논리가 수렴한 뒤 상태.
+
+같은 시각에 PRE만 있고 POST가 없으면 clock-based deadlock이 아니라 해당 edge의
+zero-delay convergence failure가 확정된다. POST까지 있고 다음 clock이 없다면 TB/DPI 또는
+simulator 실행 제어를 별도로 확인한다. compile script에는 Cadence의
+`-gateloopwarn`도 추가했으므로 zero-delay loop를 검출하면 Xcelium이 무한 실행 대신
+loop warning과 정지 지점을 남긴다. 이 옵션은 `-access +rwc`와 함께 사용되며,
+정지된 interactive prompt에서는 `drivers -active`로 활성 driver 목록을 확인할 수 있다.
+
+이 진단도 RTL/TB 변경이므로 반드시 compile/elaborate job부터 다시 수행한다.
+
 ### 서버에서 xcelium 폴더를 교체하는 경우
 
 회사 전용 tool/queue/license 설정은 유지해도 된다. 아래 항목은 최신 소스와 일치시킨다.

@@ -485,16 +485,27 @@ module rv_branch_predictor #(
   end
 
 `ifndef SYNTHESIS
-  always_comb begin
-    // Four-state simulators evaluate immediate assertions once at time zero,
-    // before the reset edge has initialized the speculative/committed state.
-    // Only check architectural invariants after reset is known deasserted.
-    if (rst_ni === 1'b1) begin
-      assert (!(prediction_taken_o[0] && prediction_fire_i[1]));
-      assert (speculative_ras_count_q <= RAS_DEPTH);
-      assert (committed_ras_count_q <= RAS_DEPTH);
-    end
-  end
+  // Sample cross-block handshakes at the clock boundary.  A separate
+  // immediate-assertion always_comb can otherwise compare a newly changed
+  // prediction_fire_i against the previous delta's prediction_taken_o in a
+  // four-state event simulator and report a false failure.
+  property p_lane1_never_fires_after_lane0_taken;
+    @(posedge clk_i) disable iff (!rst_ni)
+      prediction_taken_o[0] |-> !prediction_fire_i[1];
+  endproperty
+  assert property (p_lane1_never_fires_after_lane0_taken);
+
+  property p_speculative_ras_count_in_range;
+    @(posedge clk_i) disable iff (!rst_ni)
+      speculative_ras_count_q <= RAS_DEPTH;
+  endproperty
+  assert property (p_speculative_ras_count_in_range);
+
+  property p_committed_ras_count_in_range;
+    @(posedge clk_i) disable iff (!rst_ni)
+      committed_ras_count_q <= RAS_DEPTH;
+  endproperty
+  assert property (p_committed_ras_count_in_range);
 `endif
 
   initial begin

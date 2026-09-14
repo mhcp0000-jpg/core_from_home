@@ -78,6 +78,47 @@ module rv_soc_htif_dpi_tb;
     end
   end
 
+  // A Store Buffer response changes done_q in the NBA region.  If Xcelium
+  // enters a zero-delay loop while the resulting combinational state settles,
+  // the PRE line is printed but the postponed POST line is not.  Printing the
+  // complete FIFO bitmap also distinguishes a lone completed head from the
+  // case where acknowledging the head exposes another queued drain request.
+  for (genvar lane = 0; lane < 2; lane++) begin : g_store_buffer_response_trace
+    always @(posedge clk) begin : p_store_buffer_response_trace
+      if (rst_n && lsu_trace_enabled &&
+          u_dut.u_core.dmem_rsp_valid_i[lane] &&
+          u_dut.u_core.dmem_rsp_ready_o[lane] &&
+          (u_dut.u_core.dmem_rsp_id_i[lane][5:4] == 2'b10)) begin
+          $display("[SB-RSP-PRE][%0t] lane=%0d index=%0d head=%0d tail=%0d count=%0d valid=%h sent=%h done=%h pop=%0d enq_valid=%b enq_ready=%b drain_valid=%b drain_ready=%b",
+            $time, lane, u_dut.u_core.dmem_rsp_id_i[lane][3:0],
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.head_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.tail_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.count_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.valid_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.sent_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.done_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.pop_count,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_enq_valid,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_enq_ready,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_drain_valid,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_drain_ready);
+          $strobe("[SB-RSP-POST][%0t] lane=%0d index=%0d head=%0d tail=%0d count=%0d valid=%h sent=%h done=%h pop=%0d enq_valid=%b enq_ready=%b drain_valid=%b drain_ready=%b",
+            $time, lane, u_dut.u_core.dmem_rsp_id_i[lane][3:0],
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.head_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.tail_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.count_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.valid_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.sent_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.done_q,
+            u_dut.u_core.u_backend.u_lsu_cluster.u_store_buffer.pop_count,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_enq_valid,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_enq_ready,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_drain_valid,
+            u_dut.u_core.u_backend.u_lsu_cluster.sb_drain_ready);
+      end
+    end
+  end
+
   task automatic print_stall_snapshot;
     $display("[STALL][LQ] valid=%h addr_valid=%h issued=%h complete=%h killed=%h exception=%h device=%h",
       u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_valid_q,
