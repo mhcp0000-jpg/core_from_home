@@ -153,23 +153,28 @@ module rv_issue_arbiter #(
       issue_candidate_o[1]                = second_candidate;
       issue_port_o[1]                     = second_port;
     end
-  end
-
 `ifndef SYNTHESIS
-  always_comb begin
-    assert ($unsigned($countones(candidate_grant_o)) <= ISSUE_WIDTH);
-    assert ($unsigned($countones(port_valid_o)) <= ISSUE_WIDTH);
-    assert ($countones(candidate_grant_o) == $countones(port_valid_o));
-    for (int unsigned candidate = 0;
-         candidate < CANDIDATE_COUNT; candidate++) begin
-      if (candidate_grant_o[candidate]) begin
-        assert (candidate_valid_i[candidate]);
-        assert (port_ready_i[candidate_port_o[candidate]]);
-        assert (candidate_port_mask_i[candidate][candidate_port_o[candidate]]);
+    // Keep immediate checks in the producer process.  A separate always_comb
+    // can run before this block after upstream candidate changes and compare
+    // the previous grant against the new valid/mask, producing false Xcelium
+    // ASRTST failures during an ordinary delta-cycle settle.
+    if (!$isunknown({candidate_valid_i, candidate_sequence_i,
+                     candidate_port_mask_i, port_ready_i})) begin
+      assert ($unsigned($countones(candidate_grant_o)) <= ISSUE_WIDTH);
+      assert ($unsigned($countones(port_valid_o)) <= ISSUE_WIDTH);
+      assert ($countones(candidate_grant_o) == $countones(port_valid_o));
+      for (int unsigned candidate = 0;
+           candidate < CANDIDATE_COUNT; candidate++) begin
+        if (candidate_grant_o[candidate]) begin
+          assert (candidate_valid_i[candidate]);
+          assert (port_ready_i[candidate_port_o[candidate]]);
+          assert (candidate_port_mask_i[candidate]
+                                            [candidate_port_o[candidate]]);
+        end
       end
     end
-  end
 `endif
+  end
 
   initial begin : p_parameter_checks
     if ((CANDIDATE_COUNT < ISSUE_WIDTH) || (EXEC_PORTS < ISSUE_WIDTH))

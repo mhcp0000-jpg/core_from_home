@@ -72,6 +72,26 @@ backend `ready`를 올리고, fabric `ready=0`이면 ID/address/size/sequence를
 Claude 문서에 기록된 replay predicate, invalid LQ response ID guard, direct-store gating은
 별도 방어성 검토 항목이지만 이번 DTIM load pair에서 해당 조건이 발생했다는 증거는 없다.
 
+### 2026-09-14 두 번째 서버 로그: issue-arbiter ASRTST
+
+새 로그의 `rv_issue_arbiter.sv` line 166/168은 각각 “grant된 candidate가 valid”와
+“grant port가 candidate mask에 포함” assertion이었다. backend 연결에서
+`port_ready_i='1`이므로 ready assertion(line 167)이 실패하지 않은 것은 예상과 일치한다.
+
+기존 assertion은 grant를 만드는 `always_comb`와 **별도** `always_comb`에 있었다.
+upstream candidate가 바뀐 delta에서 검사 블록이 먼저 실행되면 이전 grant를 새
+valid/mask와 비교하여 166/168만 거짓 실패할 수 있다. 검사를 grant producer block의
+마지막으로 이동하고 unknown input을 제외했다. issue 선택 기능식은 바꾸지 않았다.
+
+이 로그는 마지막 commit cycle 184520, 정상 LSU response time 1845235 NS 직후
+`Multiple control-C's detected`로 끝난다. 256 idle-cycle `[STALL]` snapshot이나 timeout이
+없으므로 이 조각만으로 functional deadlock을 입증하지 않는다. assertion flood로
+Xcelium 실행이 매우 느려진 상태에서 수동 중단한 것으로 해석한다.
+
+수정 후 source parse/elaboration, 13개 block regression, assertion-enabled 동일-bank
+load-pair SoC run을 통과했다. 서버에서는 새 snapshot으로 다시 compile하고 같은 ELF를
+중단하지 않은 채 `[STALL]`, timeout 또는 HTIF 종료 중 하나가 나올 때까지 실행한다.
+
 ### 서버에서 xcelium 폴더를 교체하는 경우
 
 회사 전용 tool/queue/license 설정은 유지해도 된다. 아래 항목은 최신 소스와 일치시킨다.

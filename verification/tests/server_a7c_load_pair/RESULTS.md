@@ -32,3 +32,9 @@ It observed LHU at 80000a7c and LBU at 80000a80 retiring normally.
 transactions without sampling. A separate `+lsu_trace=0` run also passes and
 emits zero LSU-REQ/LSU-RSP lines. Xcelium execution and company wrapper behavior
 have not been tested locally. No RTL functional fix is claimed.
+
+After a server log exposed false delta-cycle checks in `rv_issue_arbiter`, its
+immediate assertions were moved into the combinational producer process. The
+functional arbitration equations were unchanged. The updated tree passes RTL
+parse/elaboration and the 13-test block regression; the same assertion-enabled
+SoC reconstruction also reaches HTIF PASS without an assertion failure.
