@@ -49,7 +49,7 @@ jump합니다. 자세한 파일 구성과
 
 ## 문서
 
-- [통합 Hardware Design Description](docs/HDD_Core_Architecture.md) — core/SoC/interface/memory map/boot/검증/구현 계획의 단일 기준 문서
+- [통합 Hardware Design Description](docs/HDD_Core_Architecture.md) — core/SoC/interface/memory map/boot/검증/구현 계획의 단일 기준 문서. 48개 합성 module별 block diagram, step-by-step 동작과 timing/corner-case atlas 포함
   - [전체 SoC architecture](docs/HDD_Core_Architecture.md#31-전체-soc-architecture) · [구조도 크게 보기](docs/diagrams/soc-architecture.svg)
   - [코어 내부 microarchitecture](docs/HDD_Core_Architecture.md#32-코어-내부-microarchitecture) · [구조도 크게 보기](docs/diagrams/core-microarchitecture.svg)
 - [GCC C/ASM loop 검증 결과](verification/tests/rv32_c_loop/RESULTS.md) — 사용 소스, 예상값, 실제 HostIF/commit 결과와 재현 명령

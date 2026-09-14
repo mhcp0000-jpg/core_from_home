@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized integration baseline v1.16.0 (2026-09-13) |
+| 상태 | RTL-synchronized beginner-readable baseline v1.17.0 (2026-09-14) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -39,6 +39,15 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 현재 구현 상태(2026-09-13)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성, IFU PMP parcel-boundary 수정 및 SoC bus corner audit 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. Main Xbar는 unmapped/unsupported/region-crossing/4-KiB-crossing burst를 target side effect 없이 error slave로 보내고, core outbound bridge는 무응답 target을 기본 4096-cycle watchdog으로 access fault 완료한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀와 EBREAK/C.EBREAK를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, external SRAM controller, RISC-V Debug Module 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
 
 이 문서의 표기 규칙은 다음과 같다. **현재 RTL**은 저장소의 합성 module이 실제로 구현하는 동작이고, **확장 목표**는 현재 port를 유지하며 교체할 예정인 구조다. 두 표현이 충돌하면 현재 RTL 설명이 구현 기준이다. `HAS_SMODE=1`, external debug module, cache/MMU와 분리형 FP divsqrt는 확장 목표이며 기본 sign-off configuration은 `XLEN=32`, `HAS_C=1`, `HAS_F=1`, `HAS_SMODE=0`이다.
+
+### 0.1 처음 읽는 사람을 위한 순서
+
+처음부터 모든 port 표를 읽지 않는다. 먼저 Section 3.1의 SoC 전체 경로와 Section
+3.2의 Core 전체 경로를 본 뒤, Section 15.43의 cycle 그림에서 명령어 한 개가
+`Fetch→Rename/ROB→Issue→Execute→WB→Commit`으로 이동하는 과정을 따라간다. 그 다음
+Section 8의 rename, Section 9의 ROB, Section 11의 LSQ와 Section 13의 trap을 읽으면
+OoO correctness의 뼈대를 이해할 수 있다. 마지막으로 실제 구현이나 waveform을 볼 때
+Section 15의 exact interface와 module card를 찾아 signal 이름과 timing을 대조한다.
 
 ## 1. 목적과 성능 포지션
 
@@ -480,6 +489,8 @@ lane 0만 유효하거나 lane 1이 decode 단계에서 제거된 경우에는 �
 
 ## 6. Frontend
 
+![rv_frontend block diagram](diagrams/modules/rv_frontend.svg)
+
 ### 6.1 fetch와 정렬
 
 - fetch PC는 2-byte aligned여야 한다.
@@ -582,6 +593,10 @@ A/B/V/D, misaligned split access, MMU/page fault는 범위 밖이다.
 
 rename은 architectural register 이름의 false dependency인 WAR/WAW를 제거한다. 실제 RAW dependency만 physical tag로 남기므로 younger independent instruction이 older long-latency instruction을 추월해 실행할 수 있다. RRAT은 commit된 architectural mapping, RAT은 speculative mapping을 나타낸다.
 
+![rv_rename2 block diagram](diagrams/modules/rv_rename2.svg)
+
+![동일 bundle RAW/WAW rename timing](diagrams/modules/rename-pair-timing.svg)
+
 ### 8.2 보관 상태
 
 | 상태 | 크기 | 내용 |
@@ -630,6 +645,15 @@ dispatch에 필요한 ROB/IQ/LSQ/checkpoint 중 하나라도 부족하면 두 la
 ### 9.1 ROB가 필요한 이유
 
 실행은 순서가 바뀌지만 software가 보는 register, memory, CSR, exception 순서는 program order여야 한다. ROB는 speculative instruction의 program order를 보존하고 완료 여부와 side effect를 모아 in-order commit을 수행한다. 따라서 younger load가 먼저 끝나도 older exception이 있으면 younger 결과는 architectural state가 되지 않는다. 단, memory에서 잘못 읽은 load 값으로 younger instruction이 실행되는 문제는 ROB만으로 해결되지 않으므로 LSQ ordering과 forwarding이 별도로 필요하다.
+
+![rv_rob block diagram](diagrams/modules/rv_rob.svg)
+
+![ROB OoO 완료와 in-order dual commit timing](diagrams/modules/rob-div-add-timing.svg)
+
+위 예시에서 `ADD seq41`은 `DIV seq40`보다 먼저 WB되어 ROB의 complete bit가 먼저
+1이 된다. 그러나 head가 아직 incomplete DIV이므로 ADD는 architectural register를
+바꾸지 못한다. DIV까지 완료된 다음 cycle에 lane0은 DIV, lane1은 ADD를 순서대로
+동시 commit한다. 이것이 OoO execute와 in-order retire를 동시에 만족시키는 핵심이다.
 
 ### 9.2 ROB entry
 
@@ -844,6 +868,12 @@ branch/jump는 INT0에서 resolve한다. actual direction, target, next PC 중 �
 
 두 LSU는 서로 다른 cycle과 latency로 완료되므로 ROB의 in-order commit만으로 memory dependency를 보장할 수 없다. 예를 들어 older store가 아직 주소를 계산하지 못한 동안 younger load가 같은 주소의 DTIM 값을 읽으면 잘못된 값이 PRF와 dependent chain에 전파된다. LSQ는 ROB age와 memory 주소를 함께 추적해 이 문제를 막는다.
 
+![rv_lsq block diagram](diagrams/modules/rv_lsq.svg)
+
+![Store-to-load forwarding timing](diagrams/modules/lsq-forwarding-timing.svg)
+
+![Dual LSU와 2-bank TIM timing](diagrams/modules/dual-bank-timing.svg)
+
 핵심 불변조건:
 
 - load는 모든 older store의 address 상태를 검사하기 전 memory request를 보낼 수 없다.
@@ -1026,6 +1056,8 @@ read는 side effect가 없어 block 전체를 물리적으로 읽은 뒤 permiss
 
 ### 13.3 trap과 interrupt
 
+![Precise exception과 interrupt timing](diagrams/modules/trap-interrupt-timing.svg)
+
 trap entry는 ROB commit 경계에서 다음 순서로 architectural state를 갱신한다.
 
 1. `mepc`에 faulting PC 또는 interrupt 다음 PC를 기록한다.
@@ -1137,6 +1169,10 @@ AXI invariant:
 Main Xbar가 이 SoC의 **최종 system bus**다. Xbar 뒤에 다시 하나의 공용 bus가 있는
 구조가 아니라, Xbar의 각 downstream AXI port가 선택된 slave로 이어진다. 현재 AXI
 master port는 정확히 세 개다.
+
+![rv_axi_xbar block diagram](diagrams/modules/rv_axi_xbar.svg)
+
+![AXI inbound burst timing](diagrams/modules/axi-burst-timing.svg)
 
 | Master index | Initiator | 용도 |
 |---:|---|---|
@@ -2460,6 +2496,1071 @@ beat와 정확한 RLAST를 검사한다. 기존 window-crossing no-partial-side-
 unmapped DECERR, outbound timeout/late-drain test와 합쳐 address decode 및 liveness
 corner의 directed baseline을 이룬다.
 
+<!-- BEGIN GENERATED MODULE WALKTHROUGHS -->
+
+### 15.43 초보자용 module walkthrough와 timing atlas
+
+이 절은 signal 목록을 읽기 전에 실제 동작을 순서대로 이해하기 위한 입문 경로다.
+모든 latency는 `valid && ready`가 성립한 clock edge를 accept 기준으로 센다.
+`조합`은 별도 state edge가 없다는 뜻이고, `1 registered stage`는 accept 다음
+cycle에 output valid가 보인다는 뜻이다. `가변` latency는 기능이 불명확하다는
+뜻이 아니라 downstream ready, memory response 또는 iteration 수가 완료 시점을
+결정한다는 뜻이다. 각 SVG는 좌→우 data flow, 위→아래 control/state, 5-pixel
+직교 화살표를 공통 규칙으로 사용한다.
+
+#### 15.43.1 명령어 한 개를 끝까지 따라가기
+
+![한 ALU 명령의 기본 lifecycle](diagrams/modules/instruction-lifecycle.svg)
+
+위 그림의 C0~C5는 stall이 없는 교육용 예시다. 실제 Core에서 fetch memory wait,
+IQ dependency, WB port conflict 또는 ROB-head wait가 생기면 해당 stage의 valid와
+payload가 유지되면서 뒤 cycle로 늘어난다. OoO의 핵심은 Execute/WB 순서는 바뀔
+수 있지만 Commit은 ROB head의 program order를 절대 넘지 않는다는 점이다.
+
+#### 15.43.2 반드시 먼저 볼 cycle 예시
+
+##### ROB OoO 완료와 in-order dual commit
+
+![ROB OoO 완료와 in-order dual commit](diagrams/modules/rob-div-add-timing.svg)
+
+younger ADD가 먼저 완료돼도 older DIV가 끝나기 전에는 commit하지 못한다.
+
+##### 동일 bundle RAW/WAW rename
+
+![동일 bundle RAW/WAW rename](diagrams/modules/rename-pair-timing.svg)
+
+lane1은 lane0이 만든 working RAT을 보므로 같은 cycle dependency도 physical tag로 정확히 연결된다.
+
+##### Branch mispredict selective recovery
+
+![Branch mispredict selective recovery](diagrams/modules/branch-recovery-timing.svg)
+
+resolving branch와 older state는 살리고 younger state와 이전 fetch epoch만 제거한다.
+
+##### Store-to-load forwarding
+
+![Store-to-load forwarding](diagrams/modules/lsq-forwarding-timing.svg)
+
+load는 모든 older store 주소를 확인하고 youngest full-cover store data만 사용한다.
+
+##### Precise exception과 interrupt 경계
+
+![Precise exception과 interrupt 경계](diagrams/modules/trap-interrupt-timing.svg)
+
+동기 exception은 ROB head에서 우선하고 interrupt는 ROB가 비어 architectural boundary가 된 뒤 수락한다.
+
+##### AXI inbound burst와 오류 선검사
+
+![AXI inbound burst와 오류 선검사](diagrams/modules/axi-burst-timing.svg)
+
+target/window/4-KiB 검사는 첫 local beat 전에 끝나므로 invalid burst는 partial write를 만들지 않는다.
+
+##### Dual LSU와 2-bank 1R1W TIM
+
+![Dual LSU와 2-bank 1R1W TIM](diagrams/modules/dual-bank-timing.svg)
+
+서로 다른 bank 요청은 병렬이고 같은 bank 요청은 older one만 grant되어 younger가 payload를 유지한다.
+
+#### 15.43.3 전체 합성 module card
+
+#### A. Top-level integration
+
+먼저 hierarchy를 연결하는 top module을 본다. 이 모듈들은 leaf 연산보다 ownership과 경로 이해가 핵심이다.
+
+##### `rv_soc_top`
+
+[SVG 크게 보기](diagrams/modules/rv_soc_top.svg)
+
+![rv_soc_top block diagram](diagrams/modules/rv_soc_top.svg)
+
+**목적.** Core, local TIM/peripheral fabric, AXI bridges와 Main Xbar를 하나의 합성 SoC로 연결한다.
+
+**Step-by-step.**
+
+1. reset과 address-map parameter를 모든 child에 동일하게 전달한다.
+2. Core local hit는 fabric에서 처리하고 miss는 bridge를 거쳐 Main Xbar로 보낸다.
+3. target response와 IRQ를 원래 Core/Host port로 되돌린다.
+
+**타이밍.** 고정 단일 latency가 없는 wiring top이다. 각 child의 handshake latency가 합산된다. 처리율은 Core는 최대 I 1건과 D 2건/cycle을 제안하고, Host는 AXI burst를 제안할 수 있다. Backpressure/flush 규칙은 reset 동안 Core request를 차단하며 child backpressure를 그대로 전달한다.
+
+**코너케이스.** 잘못된 map은 elaboration fatal, unmapped access는 DECERR다. Debug halt는 현재 0에 고정된다.
+
+**RTL 위치.** [`rtl/soc/rv_soc_top.sv`](../rtl/soc/rv_soc_top.sv)
+
+##### `rv_ooo_core`
+
+[SVG 크게 보기](diagrams/modules/rv_ooo_core.svg)
+
+![rv_ooo_core block diagram](diagrams/modules/rv_ooo_core.svg)
+
+**목적.** Frontend와 OoO backend를 묶고 IFU PMP 및 외부 I/D memory 경계를 제공한다.
+
+**Step-by-step.**
+
+1. Frontend가 16-byte block을 받아 최대 두 instruction을 만든다.
+2. PMP fault metadata와 instruction을 backend에 prefix handshake로 전달한다.
+3. backend redirect/retire 결과를 frontend와 외부 trace에 연결한다.
+
+**타이밍.** 명령 latency는 memory와 execution unit에 따라 가변이며 retire는 최대 2개/cycle이다. 처리율은 fetch/decode/dispatch/issue/commit baseline이 모두 2-wide다. Backpressure/flush 규칙은 redirect는 fetch epoch를 바꾸고, D response는 LSQ identity/tombstone으로 보호한다.
+
+**코너케이스.** stale fetch/load response, exception과 interrupt의 precise boundary가 핵심이다.
+
+**RTL 위치.** [`rtl/rv_ooo_core.sv`](../rtl/rv_ooo_core.sv)
+
+##### `rv_backend`
+
+[SVG 크게 보기](diagrams/modules/rv_backend.svg)
+
+![rv_backend block diagram](diagrams/modules/rv_backend.svg)
+
+**목적.** decode부터 rename, OoO scheduling, execute, WB, ROB commit과 trap까지 소유한다.
+
+**Step-by-step.**
+
+1. decode 결과가 모든 resource ready일 때 원자적으로 rename/allocate된다.
+2. IQ가 oldest-ready 두 uop을 실행 port에 보내고 결과를 WB arbitration한다.
+3. ROB head만 commit하며 exception/interrupt/branch가 recovery를 요청한다.
+
+**타이밍.** ALU 명령도 여러 pipeline edge를 거쳐 retire하며 DIV/memory/flush에 따라 가변이다. 처리율은 global issue 최대 2 uop/cycle, completion 최대 4, retire 최대 2 instruction/cycle이다. Backpressure/flush 규칙은 어느 resource라도 부족하면 dispatch bundle 전체를 hold한다.
+
+**코너케이스.** same-bundle RAW/WAW, selective flush, serializing CSR/FENCE와 device memory가 교차한다.
+
+**RTL 위치.** [`rtl/backend/rv_backend.sv`](../rtl/backend/rv_backend.sv)
+
+##### `rv_lsu_cluster`
+
+[SVG 크게 보기](diagrams/modules/rv_lsu_cluster.svg)
+
+![rv_lsu_cluster block diagram](diagrams/modules/rv_lsu_cluster.svg)
+
+**목적.** 두 AGU, LSQ, committed store buffer와 D-memory arbitration을 하나의 memory execution cluster로 묶는다.
+
+**Step-by-step.**
+
+1. dispatch 때 LQ/SQ entry를 ROB와 동시에 예약한다.
+2. AGU가 주소/data를 만들고 LSQ가 older store를 검사한다.
+3. load result 또는 committed store response를 해당 ROB sequence로 완료한다.
+
+**타이밍.** AGU update는 1 registered stage, load는 forwarding 또는 memory latency, store는 commit 뒤 response까지 가변이다. 처리율은 최대 두 AGU update/cycle과 두 D request/cycle이나 bank/device 제약이 적용된다. Backpressure/flush 규칙은 lane별 fall-through request buffer가 valid&&!ready payload를 고정한다.
+
+**코너케이스.** unknown older store, same-bank conflict, flushed load tombstone, device-store fault를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_lsu_cluster.sv`](../rtl/backend/rv_lsu_cluster.sv)
+
+#### B. Frontend
+
+PC 선택부터 instruction 두 개가 backend에 전달될 때까지 따라간다.
+
+##### `rv_frontend`
+
+[SVG 크게 보기](diagrams/modules/rv_frontend.svg)
+
+![rv_frontend block diagram](diagrams/modules/rv_frontend.svg)
+
+**목적.** 예측 PC에서 fetch block을 요청하고 C/32-bit 경계를 정렬해 backend에 공급한다.
+
+**Step-by-step.**
+
+1. 현재 PC로 predictor와 target buffer를 조회한다.
+2. 필요한 16-byte block을 요청하거나 target-buffer data를 queue에 넣는다.
+3. C 길이를 판정해 taken lane 뒤 younger lane을 막고 backend로 보낸다.
+
+**타이밍.** target-buffer hit는 memory wait 없이 queue fill 가능하고, miss는 I-memory latency에 따른다. 처리율은 backend가 소비하면 최대 두 instruction/cycle을 낸다. memory outstanding은 1 block이다. Backpressure/flush 규칙은 queue full 또는 outstanding request가 있으면 request를 hold하며 redirect가 최우선이다.
+
+**코너케이스.** cross-block 32-bit instruction, stale epoch response, redirect-cycle target fill이 핵심이다.
+
+**RTL 위치.** [`rtl/frontend/rv_frontend.sv`](../rtl/frontend/rv_frontend.sv)
+
+##### `rv_fetch_queue`
+
+[SVG 크게 보기](diagrams/modules/rv_fetch_queue.svg)
+
+![rv_fetch_queue block diagram](diagrams/modules/rv_fetch_queue.svg)
+
+**목적.** 16-byte fetch block들을 byte queue로 보관하고 C/32-bit instruction 두 개를 정렬한다.
+
+**Step-by-step.**
+
+1. block 주소와 queue tail 사이의 byte offset을 계산한다.
+2. 유효 byte와 parcel fault bit를 FIFO에 기록한다.
+3. head에서 길이를 읽고 소비된 byte만 pointer/count에서 제거한다.
+
+**타이밍.** fill edge 뒤 저장 byte가 보이며 consume과 compatible fill은 같은 edge에 처리된다. 처리율은 공간과 instruction boundary가 허용하면 최대 2 instruction/cycle이다. Backpressure/flush 규칙은 공간 부족 시 fill을 거부하고 backend stall 시 head/data를 유지한다.
+
+**코너케이스.** queue wrap, halfword 끝의 32-bit instruction, redirect flush를 검사해야 한다.
+
+**RTL 위치.** [`rtl/frontend/rv_fetch_queue.sv`](../rtl/frontend/rv_fetch_queue.sv)
+
+##### `rv_fetch_target_buffer`
+
+[SVG 크게 보기](diagrams/modules/rv_fetch_target_buffer.svg)
+
+![rv_fetch_target_buffer block diagram](diagrams/modules/rv_fetch_target_buffer.svg)
+
+**목적.** 최근 predicted-taken target의 16-byte block을 보관해 redirect 재요청 latency를 없앤다.
+
+**Step-by-step.**
+
+1. target block 주소로 index/tag를 만든다.
+2. valid tag가 맞으면 저장 block을 frontend에 즉시 반환한다.
+3. memory response 또는 replay block을 해당 entry에 채운다.
+
+**타이밍.** lookup은 조합, fill/invalidate는 clock edge에서 반영된다. 처리율은 매 cycle 한 lookup, 한 fill을 처리한다. Backpressure/flush 규칙은 FENCE.I/PMP redirect invalidate가 fill보다 우선한다.
+
+**코너케이스.** alias tag, 같은 cycle invalidate/fill, wrong-path block 재사용을 막아야 한다.
+
+**RTL 위치.** [`rtl/frontend/rv_fetch_target_buffer.sv`](../rtl/frontend/rv_fetch_target_buffer.sv)
+
+##### `rv_branch_predictor`
+
+[SVG 크게 보기](diagrams/modules/rv_branch_predictor.svg)
+
+![rv_branch_predictor block diagram](diagrams/modules/rv_branch_predictor.svg)
+
+**목적.** BTB, tournament direction predictor와 RAS로 두 fetch lane의 next PC를 예측한다.
+
+**Step-by-step.**
+
+1. PC로 BTB와 세 PHT를 병렬 조회한다.
+2. instruction 종류와 RAS를 결합해 taken/target을 결정한다.
+3. resolve에서 학습하고 mispredict면 저장 metadata로 speculative history를 복구한다.
+
+**타이밍.** query는 조합이며 prediction fire/resolve/commit update는 edge에서 반영된다. 처리율은 두 lane query/cycle, resolve 한 건, commit 최대 두 건/cycle이다. Backpressure/flush 규칙은 reset/architectural redirect가 speculative history를 복구하며 update payload를 보존한다.
+
+**코너케이스.** compressed raw encoding, 두 lane history 순서, RAS under/overflow가 중요하다.
+
+**RTL 위치.** [`rtl/frontend/rv_branch_predictor.sv`](../rtl/frontend/rv_branch_predictor.sv)
+
+##### `rv_c_expander`
+
+[SVG 크게 보기](diagrams/modules/rv_c_expander.svg)
+
+![rv_c_expander block diagram](diagrams/modules/rv_c_expander.svg)
+
+**목적.** 16-bit C instruction을 backend가 사용하는 canonical 32-bit instruction으로 확장한다.
+
+**Step-by-step.**
+
+1. quadrant와 funct field로 instruction class를 찾는다.
+2. compressed register와 immediate를 RV I/F encoding으로 재배치한다.
+3. reserved encoding이면 illegal을 함께 출력한다.
+
+**타이밍.** 순수 조합 경로로 cycle state가 없다. 처리율은 입력이 바뀔 때마다 한 결과를 만든다. Backpressure/flush 규칙은 backpressure는 상위 decode가 소유한다.
+
+**코너케이스.** RV32/RV64 shared encoding 차이와 zero/reserved immediate를 확인한다.
+
+**RTL 위치.** [`rtl/frontend/rv_c_expander.sv`](../rtl/frontend/rv_c_expander.sv)
+
+#### C. Rename and scheduling
+
+architectural instruction이 physical identity와 ROB sequence를 얻고 실행을 기다리는 과정이다.
+
+##### `rv_decode2`
+
+[SVG 크게 보기](diagrams/modules/rv_decode2.svg)
+
+![rv_decode2 block diagram](diagrams/modules/rv_decode2.svg)
+
+**목적.** 두 raw instruction을 실행 가능한 uop control과 immediate로 해석한다.
+
+**Step-by-step.**
+
+1. 16-bit이면 canonical instruction으로 확장한다.
+2. operand class, immediate, FU와 memory/CSR 속성을 만든다.
+3. unsupported/reserved encoding을 drop하지 않고 exception uop로 표시한다.
+
+**타이밍.** 순수 조합 decode이며 등록은 rename/ROB accept edge에서 일어난다. 처리율은 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 downstream resource stall이면 입력 bundle이 상위에서 유지된다.
+
+**코너케이스.** lane0 illegal이어도 lane1 순서는 유지되고 trap 때 younger가 제거된다.
+
+**RTL 위치.** [`rtl/backend/rv_decode2.sv`](../rtl/backend/rv_decode2.sv)
+
+##### `rv_rename2`
+
+[SVG 크게 보기](diagrams/modules/rv_rename2.svg)
+
+![rv_rename2 block diagram](diagrams/modules/rv_rename2.svg)
+
+**목적.** architectural INT/FP register를 physical tag로 바꾸고 WAR/WAW false dependency를 제거한다.
+
+**Step-by-step.**
+
+1. 두 lane source의 현재 RAT mapping을 읽는다.
+2. lane 순서로 새 destination tag를 예약하고 RAW/WAW bypass를 적용한다.
+3. dispatch edge에서 RAT/free-list/checkpoint를 원자적으로 갱신한다.
+
+**타이밍.** rename 결과는 조합으로 계산되고 dispatch fire edge에서 RAT/free-list가 갱신된다. 처리율은 자원이 충분하면 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 한 lane이라도 필요한 tag/checkpoint가 부족하면 bundle 전체를 수락하지 않는다.
+
+**코너케이스.** lane1 RAW/WAW, x0 no-allocation, commit과 recovery 동시 우선순위가 핵심이다.
+
+**RTL 위치.** [`rtl/backend/rv_rename2.sv`](../rtl/backend/rv_rename2.sv)
+
+##### `rv_phys_regfile`
+
+[SVG 크게 보기](diagrams/modules/rv_phys_regfile.svg)
+
+![rv_phys_regfile block diagram](diagrams/modules/rv_phys_regfile.svg)
+
+**목적.** renamed INT 또는 FP operand 값과 ready 상태를 저장한다.
+
+**Step-by-step.**
+
+1. rename이 새 tag를 allocate해 ready bit를 내린다.
+2. IQ가 tag로 data/ready를 조회한다.
+3. WB edge에서 data와 ready를 기록하고 dependent IQ를 깨운다.
+
+**타이밍.** read는 조합, allocate/write는 edge에서 반영되며 write bypass는 같은 cycle wakeup을 돕는다. 처리율은 instance마다 최대 8 read, 6 ready query, 2 write, 2 allocate/cycle이다. Backpressure/flush 규칙은 writeback이 막히면 producer가 payload를 유지하고 allocate tag는 not-ready가 된다.
+
+**코너케이스.** x0 hardwire, 같은 tag allocate/write, dual write collision을 금지한다.
+
+**RTL 위치.** [`rtl/backend/rv_phys_regfile.sv`](../rtl/backend/rv_phys_regfile.sv)
+
+##### `rv_rob`
+
+[SVG 크게 보기](diagrams/modules/rv_rob.svg)
+
+![rv_rob block diagram](diagrams/modules/rv_rob.svg)
+
+**목적.** OoO 완료 결과를 program order로 정렬해 precise dual commit을 만드는 48-entry circular buffer다.
+
+**Step-by-step.**
+
+1. dispatch가 tail부터 lane0, lane1 entry와 sequence를 예약한다.
+2. WB가 sequence로 entry를 찾아 complete/exception/branch metadata를 기록한다.
+3. head부터 정상 complete prefix만 commit하고 stale mapping을 반환한다.
+
+**타이밍.** allocate/complete는 edge에서 기록되고 다음 조합 phase에 retire 가능해진다. 처리율은 최대 2 allocate, 4 completion update, 2 in-order retire/cycle이다. Backpressure/flush 규칙은 head incomplete/exception/side-effect not-ready면 younger complete entry도 기다린다.
+
+**코너케이스.** wrap age, completion+flush, lane0 exception+lane1 complete, dual store commit을 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_rob.sv`](../rtl/backend/rv_rob.sv)
+
+##### `rv_issue_queue`
+
+[SVG 크게 보기](diagrams/modules/rv_issue_queue.svg)
+
+![rv_issue_queue block diagram](diagrams/modules/rv_issue_queue.svg)
+
+**목적.** renamed uop과 source-ready 상태를 보관하고 oldest-ready 실행 후보를 찾는다.
+
+**Step-by-step.**
+
+1. dispatch uop과 physical source tags를 빈 entry에 쓴다.
+2. WB tag가 일치하면 source ready를 세운다.
+3. 모든 source와 target FU가 ready인 oldest entry를 candidate로 낸다.
+
+**타이밍.** dispatch edge 뒤 candidate가 보이고 WB broadcast는 dependent ready를 edge에서 갱신한다. 처리율은 최대 두 dispatch와 두 accepted issue/cycle이다. Backpressure/flush 규칙은 candidate는 실행 port가 accept하기 전 제거되지 않는다.
+
+**코너케이스.** store address/data split phase, same-cycle wakeup/select, selective flush를 처리한다.
+
+**RTL 위치.** [`rtl/backend/rv_issue_queue.sv`](../rtl/backend/rv_issue_queue.sv)
+
+##### `rv_issue_arbiter`
+
+[SVG 크게 보기](diagrams/modules/rv_issue_arbiter.svg)
+
+![rv_issue_arbiter block diagram](diagrams/modules/rv_issue_arbiter.svg)
+
+**목적.** IQ 후보와 실행 port mask를 비교해 global 최대 두 grant를 만든다.
+
+**Step-by-step.**
+
+1. 각 candidate가 사용할 수 있는 ready port mask를 만든다.
+2. oldest 요청에 첫 port를 주고 해당 entry/port를 제외한다.
+3. 남은 후보 중 oldest compatible 요청에 두 번째 port를 준다.
+
+**타이밍.** 순수 조합 경로이며 grant는 같은 edge의 issue handshake에 사용된다. 처리율은 전체 실행 cluster 합산 최대 두 uop/cycle이다. Backpressure/flush 규칙은 port ready가 아니면 candidate를 accept하지 않는다.
+
+**코너케이스.** 같은 entry/port 이중 grant와 younger가 older를 부당하게 추월하는 경우를 금지한다.
+
+**RTL 위치.** [`rtl/backend/rv_issue_arbiter.sv`](../rtl/backend/rv_issue_arbiter.sv)
+
+#### D. Execute and writeback
+
+issue된 uop이 계산되고 결과가 PRF/ROB에 돌아오는 경로다.
+
+##### `rv_int_alu`
+
+[SVG 크게 보기](diagrams/modules/rv_int_alu.svg)
+
+![rv_int_alu block diagram](diagrams/modules/rv_int_alu.svg)
+
+**목적.** RV32/RV64 integer arithmetic, logical, shift와 compare 결과를 계산한다.
+
+**Step-by-step.**
+
+1. operation으로 필요한 arithmetic/logic 결과를 병렬 계산한다.
+2. shift amount와 signed/unsigned compare를 XLEN 규칙으로 선택한다.
+3. RV64 W-op이면 32-bit 결과를 sign-extend한다.
+
+**타이밍.** 순수 조합 실행이며 뒤의 result buffer가 1 registered stage를 제공한다. 처리율은 ALU instance당 한 operation/cycle이다. Backpressure/flush 규칙은 stall identity는 뒤 result buffer가 보존한다.
+
+**코너케이스.** shift width, signed compare, overflow를 trap으로 오해하지 않는 것이 중요하다.
+
+**RTL 위치.** [`rtl/backend/rv_int_alu.sv`](../rtl/backend/rv_int_alu.sv)
+
+##### `rv_branch_unit`
+
+[SVG 크게 보기](diagrams/modules/rv_branch_unit.svg)
+
+![rv_branch_unit block diagram](diagrams/modules/rv_branch_unit.svg)
+
+**목적.** branch/JAL/JALR의 실제 taken과 target을 계산하고 prediction과 비교한다.
+
+**Step-by-step.**
+
+1. branch 종류에 맞게 operands를 비교한다.
+2. PC-relative 또는 JALR target을 계산하고 IALIGN을 확인한다.
+3. 예측 taken/target과 달라지면 recovery request를 만든다.
+
+**타이밍.** 순수 조합 실행 후 fast result buffer에서 등록된다. 처리율은 한 branch operation/cycle이다. Backpressure/flush 규칙은 downstream stall 시 result buffer가 resolve identity를 유지한다.
+
+**코너케이스.** C raw encoding, JALR bit0 clear, target misalignment와 wrong-path training을 확인한다.
+
+**RTL 위치.** [`rtl/backend/rv_branch_unit.sv`](../rtl/backend/rv_branch_unit.sv)
+
+##### `rv_multiplier`
+
+[SVG 크게 보기](diagrams/modules/rv_multiplier.svg)
+
+![rv_multiplier block diagram](diagrams/modules/rv_multiplier.svg)
+
+**목적.** MUL/MULH 계열과 RV64 W 결과를 2-stage elastic pipeline으로 계산한다.
+
+**Step-by-step.**
+
+1. signedness 조합에 맞게 full product를 계산해 stage0에 넣는다.
+2. 다음 edge에 low/high 또는 W 결과를 stage1로 이동한다.
+3. WB가 accept할 때 결과 entry를 비우며 killed sequence는 flush한다.
+
+**타이밍.** accept edge를 C0라 하면 no-stall result valid는 두 번째 pipeline edge 뒤 보인다. 처리율은 pipeline이 흐르면 한 multiply/cycle을 받을 수 있다. Backpressure/flush 규칙은 result stall이 stage1→stage0→request ready로 역전파되고 payload는 고정된다.
+
+**코너케이스.** MULH signedness, back-to-back full pipe, selective flush와 wrap sequence를 검사한다.
+
+**RTL 위치.** [`rtl/backend/rv_multiplier.sv`](../rtl/backend/rv_multiplier.sv)
+
+##### `rv_divider`
+
+[SVG 크게 보기](diagrams/modules/rv_divider.svg)
+
+![rv_divider block diagram](diagrams/modules/rv_divider.svg)
+
+**목적.** DIV/DIVU/REM/REMU를 한 bit/cycle restoring 방식으로 수행한다.
+
+**Step-by-step.**
+
+1. accept 때 부호와 절댓값, iteration 수를 저장한다.
+2. 매 cycle dividend bit 하나를 내려 quotient/remainder를 갱신한다.
+3. 마지막 iteration에서 부호/W-op를 적용해 result register를 valid로 만든다.
+
+**타이밍.** divide-by-zero와 signed overflow는 accept 직후 result valid, 일반 RV32는 32 iteration으로 약 33 cycle issue→visible이다. 처리율은 non-pipelined라 이전 result가 소비된 뒤 다음 요청 한 건을 받는다. Backpressure/flush 규칙은 busy/result-valid 동안 request ready=0이고 result stall 시 payload를 유지한다.
+
+**코너케이스.** 0 divisor, INT_MIN/-1, flush 중 busy/result, RV64 W 32-iteration을 처리한다.
+
+**RTL 위치.** [`rtl/backend/rv_divider.sv`](../rtl/backend/rv_divider.sv)
+
+##### `rv_fpu`
+
+[SVG 크게 보기](diagrams/modules/rv_fpu.svg)
+
+![rv_fpu block diagram](diagrams/modules/rv_fpu.svg)
+
+**목적.** RV32F arithmetic/FMA/divsqrt/convert/compare/move 결과와 fflags를 계산한다.
+
+**Step-by-step.**
+
+1. rm/frm과 operand bits로 canonical RV32F result/fflags를 계산한다.
+2. payload를 3-stage elastic pipeline으로 이동한다.
+3. WB가 결과를 ROB/PRF에 보내고 fflags는 retire 때만 FCSR에 누적한다.
+
+**타이밍.** 기본 LATENCY=3으로 accept 후 세 pipeline edge 뒤 result valid가 된다. 처리율은 stall이 없으면 한 FP operation/cycle을 받을 수 있다. Backpressure/flush 규칙은 마지막 stage stall이 전 stage ready와 request ready로 전파된다.
+
+**코너케이스.** NaN/sNaN, signed zero, subnormal, rounding, flush된 fflags를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_fpu.sv`](../rtl/backend/rv_fpu.sv)
+
+##### `rv_exec_result_buffer`
+
+[SVG 크게 보기](diagrams/modules/rv_exec_result_buffer.svg)
+
+![rv_exec_result_buffer block diagram](diagrams/modules/rv_exec_result_buffer.svg)
+
+**목적.** 조합 ALU/branch 결과에 sequence identity와 backpressure를 보존하는 1-entry register를 제공한다.
+
+**Step-by-step.**
+
+1. 실행 결과와 ROB/destination/exception metadata를 한 payload로 묶는다.
+2. 빈 entry 또는 동시 consume이면 새 payload를 capture한다.
+3. WB accept 시 비우고 flush boundary보다 younger면 즉시 invalidate한다.
+
+**타이밍.** request accept 다음 cycle에 result valid가 보이는 1 registered stage다. 처리율은 result가 매 cycle 소비되면 한 request/cycle이다. Backpressure/flush 규칙은 valid&&!ready 동안 모든 payload를 고정하고 killed sequence는 handshake 없이 제거한다.
+
+**코너케이스.** consume+refill, result stall, selective/full flush 동시 조건이 핵심이다.
+
+**RTL 위치.** [`rtl/backend/rv_exec_result_buffer.sv`](../rtl/backend/rv_exec_result_buffer.sv)
+
+##### `rv_writeback_arbiter`
+
+[SVG 크게 보기](diagrams/modules/rv_writeback_arbiter.svg)
+
+![rv_writeback_arbiter block diagram](diagrams/modules/rv_writeback_arbiter.svg)
+
+**목적.** 11개 completion source 중 ROB/PRF port 제약을 만족하는 최대 4개를 선택한다.
+
+**Step-by-step.**
+
+1. ROB live와 sequence를 확인해 stale completion을 걸러낸다.
+2. oldest/port-compatible source를 completion slot에 배치한다.
+3. PRF write, IQ wakeup과 ROB complete에 동일 grant를 fanout한다.
+
+**타이밍.** 순수 조합 arbitration이며 선택 결과가 같은 edge에 producer/ROB/PRF handshake된다. 처리율은 최대 completion 4개, INT write 2개, FP write 2개/cycle이다. Backpressure/flush 규칙은 선택되지 않은 stateful producer는 result valid/payload를 유지한다.
+
+**코너케이스.** 동일 destination collision, killed result, write-port 포화와 exception completion을 확인한다.
+
+**RTL 위치.** [`rtl/backend/rv_writeback_arbiter.sv`](../rtl/backend/rv_writeback_arbiter.sv)
+
+##### `rv_branch_recovery`
+
+[SVG 크게 보기](diagrams/modules/rv_branch_recovery.svg)
+
+![rv_branch_recovery block diagram](diagrams/modules/rv_branch_recovery.svg)
+
+**목적.** 여러 branch resolve 중 recovery를 소유할 oldest mispredict를 선택한다.
+
+**Step-by-step.**
+
+1. valid mispredict 후보만 남긴다.
+2. ROB sequence age로 가장 오래된 후보를 선택한다.
+3. 그 branch sequence를 flush boundary, actual target을 redirect PC로 낸다.
+
+**타이밍.** 순수 조합이며 선택된 recovery가 같은 cycle control fanout에 사용된다. 처리율은 cycle당 recovery 한 건이다. Backpressure/flush 규칙은 architectural trap/return redirect가 상위 priority에서 branch redirect를 막는다.
+
+**코너케이스.** 두 동시 mispredict, sequence wrap, trap과 branch 동시 발생을 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_branch_recovery.sv`](../rtl/backend/rv_branch_recovery.sv)
+
+#### E. Load/store subsystem
+
+두 LSU의 out-of-order memory 동작을 program order와 precise visibility로 바꾼다.
+
+##### `rv_lsu_pipe`
+
+[SVG 크게 보기](diagrams/modules/rv_lsu_pipe.svg)
+
+![rv_lsu_pipe block diagram](diagrams/modules/rv_lsu_pipe.svg)
+
+**목적.** base+immediate 주소, byte mask와 aligned store data를 만드는 1-stage AGU다.
+
+**Step-by-step.**
+
+1. base와 immediate로 effective/physical address를 만든다.
+2. size/alignment를 검사하고 beat mask와 shifted data를 만든다.
+3. LQ/SQ index와 함께 registered update로 전달한다.
+
+**타이밍.** issue accept 다음 cycle에 update valid가 보인다. 처리율은 lane마다 한 update/cycle이며 두 instance가 병렬 동작한다. Backpressure/flush 규칙은 update stall 시 payload 고정, flush cycle에는 새 issue를 받지 않는다.
+
+**코너케이스.** unsupported size, beat boundary, store address-only/data-only phase와 flush를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_lsu_pipe.sv`](../rtl/backend/rv_lsu_pipe.sv)
+
+##### `rv_lsq_order_check`
+
+[SVG 크게 보기](diagrams/modules/rv_lsq_order_check.svg)
+
+![rv_lsq_order_check block diagram](diagrams/modules/rv_lsq_order_check.svg)
+
+**목적.** 한 load와 모든 older SQ entry를 비교해 stall 또는 forwarding source를 결정한다.
+
+**Step-by-step.**
+
+1. load보다 older인 valid store만 후보로 남긴다.
+2. 미확정 주소 또는 부분 overlap이 있으면 stall reason을 만든다.
+3. full-cover 후보 중 load에 가장 가까운 youngest older store를 선택한다.
+
+**타이밍.** 순수 조합 검사로 SQ/LQ registered 상태를 같은 scheduler cycle에 판정한다. 처리율은 검사 port마다 한 load candidate/cycle이다. Backpressure/flush 규칙은 unknown address/data나 partial overlap이면 memory issue를 보수적으로 막는다.
+
+**코너케이스.** sequence wrap, 여러 same-address store, byte mask partial overlap을 확인한다.
+
+**RTL 위치.** [`rtl/backend/rv_lsq_order_check.sv`](../rtl/backend/rv_lsq_order_check.sv)
+
+##### `rv_lsq`
+
+[SVG 크게 보기](diagrams/modules/rv_lsq.svg)
+
+![rv_lsq block diagram](diagrams/modules/rv_lsq.svg)
+
+**목적.** speculative load와 store의 주소/data/완료 상태를 ROB sequence와 함께 추적한다.
+
+**Step-by-step.**
+
+1. ROB dispatch와 같은 edge에 LQ/SQ entry와 sequence를 예약한다.
+2. AGU update 뒤 모든 older store를 검사해 memory/forward/stall을 결정한다.
+3. load response 또는 store commit에서 entry를 완료/해제하고 flush younger를 제거한다.
+
+**타이밍.** dispatch/AGU update는 edge에서 반영되고 다음 scheduler cycle에 issue/forward 후보가 된다. 처리율은 최대 LQ/SQ allocate2, update2, commit2 및 load candidate2/cycle이다. Backpressure/flush 규칙은 unknown older store와 partial overlap에서 load를 hold하며 outstanding killed LQ는 tombstone 유지다.
+
+**코너케이스.** same-cycle store→load, flushed outstanding response, device serialization과 dual commit을 처리한다.
+
+**RTL 위치.** [`rtl/backend/rv_lsq.sv`](../rtl/backend/rv_lsq.sv)
+
+##### `rv_store_buffer`
+
+[SVG 크게 보기](diagrams/modules/rv_store_buffer.svg)
+
+![rv_store_buffer block diagram](diagrams/modules/rv_store_buffer.svg)
+
+**목적.** ROB에서 commit된 normal store를 memory response까지 보관하는 16-entry FIFO다.
+
+**Step-by-step.**
+
+1. ROB commit lane 순서로 store를 FIFO에 넣는다.
+2. oldest eligible entry를 bank별 D request로 보낸다.
+3. response ID로 entry를 제거하고 error면 sticky machine-check를 기록한다.
+
+**타이밍.** enqueue 후 drain은 fabric ready와 response latency에 따라 가변이다. 처리율은 공간이 있으면 두 commit store enqueue, 서로 다른 bank면 두 drain/cycle 가능하다. Backpressure/flush 규칙은 memory가 막히면 issued entry와 request payload를 유지하며 branch flush는 적용하지 않는다.
+
+**코너케이스.** dual enqueue 공간, same-bank drain, younger load forwarding, response error를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_store_buffer.sv`](../rtl/backend/rv_store_buffer.sv)
+
+#### F. Privilege, trap and protection
+
+CSR, PMP, exception, interrupt와 fence가 architectural boundary를 소유한다.
+
+##### `rv_csr_file`
+
+[SVG 크게 보기](diagrams/modules/rv_csr_file.svg)
+
+![rv_csr_file block diagram](diagrams/modules/rv_csr_file.svg)
+
+**목적.** M/U privilege, machine CSR, counters, FCSR와 PMP configuration의 architectural owner다.
+
+**Step-by-step.**
+
+1. ROB head CSR의 old value와 write intent/value를 평가한다.
+2. pending register에 주소/data를 고정하고 결과를 ROB에 완료한다.
+3. 정상 retire edge에서만 CSR/PMP/FCSR를 변경한다.
+
+**타이밍.** CSR evaluate payload는 먼저 capture되고 동일 ROB instruction commit edge에서만 side effect가 생긴다. 처리율은 serializing 정책으로 한 CSR/system transaction만 진행한다. Backpressure/flush 규칙은 trap이 MRET보다, MRET이 CSR commit보다 우선하며 flush가 pending CSR을 취소한다.
+
+**코너케이스.** CSRRS/RC x0 suppression, WARL, nested trap overwrite, counter/fflags order를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_csr_file.sv`](../rtl/backend/rv_csr_file.sv)
+
+##### `rv_pmp`
+
+[SVG 크게 보기](diagrams/modules/rv_pmp.svg)
+
+![rv_pmp block diagram](diagrams/modules/rv_pmp.svg)
+
+**목적.** OFF/TOR/NA4/NAPOT entry를 priority 순서로 검사해 R/W/X 권한을 판정한다.
+
+**Step-by-step.**
+
+1. 각 entry의 address mode로 lower/upper range를 계산한다.
+2. 접근 일부라도 처음 matching entry와 겹치면 그 entry를 선택한다.
+3. 전체 접근 포함 여부와 R/W/X, privilege/lock 규칙으로 allow를 결정한다.
+
+**타이밍.** 순수 조합 판정으로 IFU parcel 및 dual AGU 앞에 놓인다. 처리율은 CHECK_PORTS parameter 수만큼 병렬 access/cycle이다. Backpressure/flush 규칙은 state는 CSR file이 소유하며 PMP module 자체 backpressure는 없다.
+
+**코너케이스.** partial first-match, M unlocked bypass, locked entry와 2-byte IFU parcel 경계를 확인한다.
+
+**RTL 위치.** [`rtl/backend/rv_pmp.sv`](../rtl/backend/rv_pmp.sv)
+
+##### `rv_trap_controller`
+
+[SVG 크게 보기](diagrams/modules/rv_trap_controller.svg)
+
+![rv_trap_controller block diagram](diagrams/modules/rv_trap_controller.svg)
+
+**목적.** precise exception/interrupt와 MRET/WFI/FENCE/PMP post-commit redirect 순서를 정한다.
+
+**Step-by-step.**
+
+1. 동기 exception이 있으면 pending interrupt보다 먼저 선택한다.
+2. CSR에 precise PC/cause/tval을 전달하고 mtvec으로 redirect한다.
+3. MRET/FENCE.I/PMP write/WFI retire 뒤 next PC redirect 또는 sleep을 관리한다.
+
+**타이밍.** head exception은 즉시 trap handshake, post-commit redirect는 한 cycle pending 후 실행된다. 처리율은 동시에 architectural redirect 한 건만 허용한다. Backpressure/flush 규칙은 기존 pending redirect가 trap을 한 cycle 막고 interrupt는 ROB empty에서만 accept한다.
+
+**코너케이스.** exception+interrupt, trap-in-trap, WFI wake, dual-retire next-PC를 다룬다.
+
+**RTL 위치.** [`rtl/backend/rv_trap_controller.sv`](../rtl/backend/rv_trap_controller.sv)
+
+##### `rv_fence_controller`
+
+[SVG 크게 보기](diagrams/modules/rv_fence_controller.svg)
+
+![rv_fence_controller block diagram](diagrams/modules/rv_fence_controller.svg)
+
+**목적.** FENCE/FENCE.I가 older memory를 drain한 뒤 안전하게 완료되도록 판정한다.
+
+**Step-by-step.**
+
+1. head instruction에서 FENCE/FENCE.I와 mask를 읽는다.
+2. 요구된 predecessor operation이 모두 끝났는지 확인한다.
+3. 완료 sequence와 FENCE.I next-PC refetch 정보를 반환한다.
+
+**타이밍.** 순수 조합이며 idle 조건이 성립한 scheduler cycle에 completion을 제안한다. 처리율은 serializing head fence 한 건이다. Backpressure/flush 규칙은 LSQ/SB 또는 required I path가 busy이면 completion을 내지 않는다.
+
+**코너케이스.** committed store drain, outstanding load, FENCE.I target-buffer/epoch invalidate를 확인한다.
+
+**RTL 위치.** [`rtl/backend/rv_fence_controller.sv`](../rtl/backend/rv_fence_controller.sv)
+
+#### G. SoC fabric and memory
+
+Core/Host 요청이 TIM, peripheral 또는 error target까지 이동하고 반드시 response로 끝나는 경로다.
+
+##### `rv_local_to_axi_bridge`
+
+[SVG 크게 보기](diagrams/modules/rv_local_to_axi_bridge.svg)
+
+![rv_local_to_axi_bridge block diagram](diagrams/modules/rv_local_to_axi_bridge.svg)
+
+**목적.** Core local request 한 건을 AXI4 single-beat transaction으로 변환한다.
+
+**Step-by-step.**
+
+1. local request와 ID/committed/device를 capture한다.
+2. read는 AR, write는 독립 AW/W handshake를 완료한다.
+3. R/B를 local response로 바꾸거나 timeout SLVERR 뒤 late response를 폐기한다.
+
+**타이밍.** 정상 latency는 target AXI latency, 무응답은 기본 4096-cycle watchdog으로 종료한다. 처리율은 read 한 건과 write 한 건 중 bridge state가 허용하는 local outstanding 한 건이다. Backpressure/flush 규칙은 각 AXI channel valid&&!ready payload를 고정하며 partial-accepted timeout은 drain한다.
+
+**코너케이스.** AW/W 다른 cycle accept, bad ID/RLAST, timeout 전후 side-effect ambiguity를 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_local_to_axi_bridge.sv`](../rtl/soc/rv_local_to_axi_bridge.sv)
+
+##### `rv_axi_to_local_bridge`
+
+[SVG 크게 보기](diagrams/modules/rv_axi_to_local_bridge.svg)
+
+![rv_axi_to_local_bridge block diagram](diagrams/modules/rv_axi_to_local_bridge.svg)
+
+**목적.** Host/Xbar AXI burst를 local request sequence로 분해한다.
+
+**Step-by-step.**
+
+1. INCR/size/alignment/window/4-KiB 경계를 transaction 전에 검사한다.
+2. 유효하면 beat 하나씩 local request를 보내고 response를 모은다.
+3. read는 각 R beat, write는 최종 merged B response를 반환한다.
+
+**타이밍.** local beat마다 response를 기다리므로 burst latency는 beat 수×local latency+backpressure다. 처리율은 한 read 또는 write burst를 처리하고 local outstanding은 한 beat다. Backpressure/flush 규칙은 AW가 AR보다 우선하며 R/B stall 시 AXI payload와 beat index를 유지한다.
+
+**코너케이스.** window/4-KiB crossing은 local side effect 0, WLAST 오류와 narrow strobe를 처리한다.
+
+**RTL 위치.** [`rtl/soc/rv_axi_to_local_bridge.sv`](../rtl/soc/rv_axi_to_local_bridge.sv)
+
+##### `rv_axi_xbar`
+
+[SVG 크게 보기](diagrams/modules/rv_axi_xbar.svg)
+
+![rv_axi_xbar block diagram](diagrams/modules/rv_axi_xbar.svg)
+
+**목적.** 세 AXI initiator를 여섯 target으로 decode/arbitrate하고 ID prefix로 response를 복귀시킨다.
+
+**Step-by-step.**
+
+1. 첫/마지막 byte를 decode해 한 target과 4-KiB 안에 드는지 검사한다.
+2. 각 target에서 round-robin으로 한 AR/AW owner를 선택한다.
+3. downstream ID 상위 prefix로 B/R을 원 master에 반환한다.
+
+**타이밍.** address route는 handshake cycle에 결정되고 전체 latency는 arbitration+target response다. 처리율은 master별 read 1/write 1 outstanding, target별 AR/AW arbitration이다. Backpressure/flush 규칙은 AW accept부터 WLAST까지 target W owner를 고정하고 stalled channel payload를 보존한다.
+
+**코너케이스.** 동시 AR/AW, bad response prefix, unmapped/unsupported burst와 fairness를 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_axi_xbar.sv`](../rtl/soc/rv_axi_xbar.sv)
+
+##### `rv_axi_error_slave`
+
+[SVG 크게 보기](diagrams/modules/rv_axi_error_slave.svg)
+
+![rv_axi_error_slave block diagram](diagrams/modules/rv_axi_error_slave.svg)
+
+**목적.** unmapped/unsupported AXI transaction을 hang 없이 deterministic DECERR로 끝낸다.
+
+**Step-by-step.**
+
+1. AW 또는 AR metadata를 capture한다.
+2. write는 WLAST까지 data를 버리고 read는 beat count를 증가시킨다.
+3. B 또는 zero-data R에 DECERR를 실어 종료한다.
+
+**타이밍.** address accept 뒤 state machine이 response를 만들며 read는 LEN+1 beat를 반환한다. 처리율은 한 transaction at a time이며 AW와 AR 동시면 AW 우선이다. Backpressure/flush 규칙은 R/B stall 동안 ID/data/resp/last를 유지한다.
+
+**코너케이스.** malformed WLAST에서도 protocol state가 영구 대기하지 않도록 검증해야 한다.
+
+**RTL 위치.** [`rtl/soc/rv_axi_error_slave.sv`](../rtl/soc/rv_axi_error_slave.sv)
+
+##### `rv_i_fabric`
+
+[SVG 크게 보기](diagrams/modules/rv_i_fabric.svg)
+
+![rv_i_fabric block diagram](diagrams/modules/rv_i_fabric.svg)
+
+**목적.** Core IFU와 Xbar inbound 요청을 Boot ROM/2-bank ITIM 또는 outbound AXI로 중재한다.
+
+**Step-by-step.**
+
+1. 주소가 Boot ROM/ITIM/local 밖인지 decode한다.
+2. 필요한 bank read와 inbound 요청을 공정하게 grant한다.
+3. bank data를 fetch block으로 조립하거나 outbound response를 원 requester에 반환한다.
+
+**타이밍.** ITIM은 synchronous bank read를 조립하고 outbound는 AXI latency에 따른다. 처리율은 Core fetch block 1건과 inbound access가 bank conflict가 없을 때 병행 가능하다. Backpressure/flush 규칙은 response buffer 또는 bank conflict가 requester ready로 역전파된다.
+
+**코너케이스.** Core fetch와 Host ITIM write 경쟁, BootROM inbound read, response handoff를 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_i_fabric.sv`](../rtl/soc/rv_i_fabric.sv)
+
+##### `rv_d_fabric`
+
+[SVG 크게 보기](diagrams/modules/rv_d_fabric.svg)
+
+![rv_d_fabric block diagram](diagrams/modules/rv_d_fabric.svg)
+
+**목적.** LSU0/LSU1과 Xbar inbound를 2-bank DTIM/CLINT 또는 outbound AXI로 중재한다.
+
+**Step-by-step.**
+
+1. 각 요청 주소를 DTIM, CLINT 또는 outbound로 분류한다.
+2. bank/target별 age로 grant하고 request identity를 저장한다.
+3. response를 원 lane/Host inbound에 돌려주고 다음 요청을 같은 edge에 받을 수 있다.
+
+**타이밍.** DTIM synchronous read와 response handoff, CLINT/AXI target latency에 따라 가변이다. 처리율은 서로 다른 bank는 두 LSU가 병행하며 inbound Host가 세 번째 경쟁자가 된다. Backpressure/flush 규칙은 same-bank loser는 ready=0으로 payload를 유지하고 old response+next request handoff를 지원한다.
+
+**코너케이스.** same-bank dual load/store, Host race, old response ID와 next metadata 분리를 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_d_fabric.sv`](../rtl/soc/rv_d_fabric.sv)
+
+##### `rv_sram_1r1w`
+
+[SVG 크게 보기](diagrams/modules/rv_sram_1r1w.svg)
+
+![rv_sram_1r1w block diagram](diagrams/modules/rv_sram_1r1w.svg)
+
+**목적.** 한 read port와 한 byte-strobe write port를 가진 합성 가능한 synchronous SRAM wrapper다.
+
+**Step-by-step.**
+
+1. read/write address와 byte strobe를 받는다.
+2. write bytes를 기존 word와 merge해 memory에 기록한다.
+3. 동일 주소 read/write면 merge된 new data를 read output에 등록한다.
+
+**타이밍.** read enable edge 다음 cycle에 read_valid/data가 보인다. 처리율은 매 cycle read 1건과 write 1건을 동시에 받을 수 있다. Backpressure/flush 규칙은 memory array는 reset-clear하지 않고 read output register만 reset한다.
+
+**코너케이스.** same-row write-first policy와 미초기화 memory content가 ASIC macro와 일치해야 한다.
+
+**RTL 위치.** [`rtl/soc/rv_sram_1r1w.sv`](../rtl/soc/rv_sram_1r1w.sv)
+
+##### `rv_tim_2bank`
+
+[SVG 크게 보기](diagrams/modules/rv_tim_2bank.svg)
+
+![rv_tim_2bank block diagram](diagrams/modules/rv_tim_2bank.svg)
+
+**목적.** 주소 bit로 두 개의 64-bit 1R1W SRAM bank를 interleave한다.
+
+**Step-by-step.**
+
+1. beat address의 interleave bit로 bank를 선택한다.
+2. bank-local row address를 생성해 SRAM instance에 보낸다.
+3. 두 bank read-valid/data를 fabric에 독립 반환한다.
+
+**타이밍.** 각 bank read는 1-cycle synchronous latency다. 처리율은 서로 다른 bank에서 read2/write2, bank마다 read1+write1/cycle이다. Backpressure/flush 규칙은 same-bank 추가 arbitration은 I/D fabric이 수행한다.
+
+**코너케이스.** bank 선택 bit, odd/even row, same-bank read/write policy를 확인한다.
+
+**RTL 위치.** [`rtl/soc/rv_tim_2bank.sv`](../rtl/soc/rv_tim_2bank.sv)
+
+##### `rv_clint`
+
+[SVG 크게 보기](diagrams/modules/rv_clint.svg)
+
+![rv_clint block diagram](diagrams/modules/rv_clint.svg)
+
+**목적.** single-hart MSIP, MTIMECMP와 MTIME register를 제공한다.
+
+**Step-by-step.**
+
+1. offset과 narrow access를 decode한다.
+2. write strobe로 MSIP/MTIMECMP/MTIME word를 갱신한다.
+3. mtime>=mtimecmp와 msip bit로 IRQ를 생성한다.
+
+**타이밍.** local request handshake 뒤 register response를 반환하며 mtime은 매 cycle 증가한다. 처리율은 single local transaction path다. Backpressure/flush 규칙은 invalid size/address는 오류 response이며 reset이 IRQ state를 지운다.
+
+**코너케이스.** RV32 high/low word access, compare update 중 transient IRQ와 reset 값을 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_clint.sv`](../rtl/soc/rv_clint.sv)
+
+##### `rv_plic_local`
+
+[SVG 크게 보기](diagrams/modules/rv_plic_local.svg)
+
+![rv_plic_local block diagram](diagrams/modules/rv_plic_local.svg)
+
+**목적.** PLIC priority/pending/enable/claim-complete를 local bus register로 구현한다.
+
+**Step-by-step.**
+
+1. source level을 pending gateway에 capture한다.
+2. priority>threshold인 enabled 최고 priority source를 선택한다.
+3. claim read/complete write로 pending/in-service를 변경한다.
+
+**타이밍.** request와 source sampling은 edge에서 상태에 반영되고 response는 local handshake로 전달된다. 처리율은 한 MMIO transaction path와 source별 pending sampling이다. Backpressure/flush 규칙은 claim read는 선택 pending을 atomic clear하며 in-service source는 재claim하지 않는다.
+
+**코너케이스.** priority tie는 낮은 ID, source0 reserved, M/S context 독립 enable을 확인한다.
+
+**RTL 위치.** [`rtl/soc/rv_plic.sv`](../rtl/soc/rv_plic.sv)
+
+##### `rv_plic`
+
+[SVG 크게 보기](diagrams/modules/rv_plic.svg)
+
+![rv_plic block diagram](diagrams/modules/rv_plic.svg)
+
+**목적.** AXI4 single-beat access를 local PLIC register transaction으로 감싼 wrapper다.
+
+**Step-by-step.**
+
+1. AXI transaction을 single local request로 변환한다.
+2. PLIC local register/gateway 동작을 수행한다.
+3. local response를 원 AXI ID의 B/R로 반환한다.
+
+**타이밍.** AXI bridge latency와 local PLIC response가 합산된다. 처리율은 MMIO burst 최대 1 beat다. Backpressure/flush 규칙은 invalid burst는 PLIC state를 건드리지 않고 오류 response를 낸다.
+
+**코너케이스.** narrow/alignment, claim side effect와 AXI retry를 주의한다.
+
+**RTL 위치.** [`rtl/soc/rv_plic.sv`](../rtl/soc/rv_plic.sv)
+
+##### `rv_bootrom_local`
+
+[SVG 크게 보기](diagrams/modules/rv_bootrom_local.svg)
+
+![rv_bootrom_local block diagram](diagrams/modules/rv_bootrom_local.svg)
+
+**목적.** reset/WFI/MSIP boot code image를 read-only local memory로 제공한다.
+
+**Step-by-step.**
+
+1. 주소가 ROM window와 정렬에 맞는지 확인한다.
+2. 해당 word를 image array에서 읽는다.
+3. read data 또는 write/범위 오류 response를 반환한다.
+
+**타이밍.** read request 뒤 ROM response가 등록되어 반환된다. 처리율은 한 local read transaction/cycle 조건이다. Backpressure/flush 규칙은 write는 side effect 없이 오류이며 ROM array는 reset이 아니라 readmemh로 초기화된다.
+
+**코너케이스.** 잘못된 INIT_FILE, window 끝, Host write 시도를 다룬다.
+
+**RTL 위치.** [`rtl/soc/rv_bootrom.sv`](../rtl/soc/rv_bootrom.sv)
+
+##### `rv_bootrom`
+
+[SVG 크게 보기](diagrams/modules/rv_bootrom.svg)
+
+![rv_bootrom block diagram](diagrams/modules/rv_bootrom.svg)
+
+**목적.** AXI access 가능한 Boot ROM wrapper다.
+
+**Step-by-step.**
+
+1. AXI burst 전체 범위를 사전 검사한다.
+2. 각 read beat를 local ROM 요청으로 바꾼다.
+3. ROM response를 ID/RLAST가 있는 AXI R로 반환한다.
+
+**타이밍.** AXI beat sequencer와 ROM read latency가 합산된다. 처리율은 한 burst, local beat 한 건씩이다. Backpressure/flush 규칙은 write와 invalid burst는 ROM side effect 없이 error다.
+
+**코너케이스.** SoC top은 이 wrapper 대신 I-fabric 내부 local leaf를 사용한다.
+
+**RTL 위치.** [`rtl/soc/rv_bootrom.sv`](../rtl/soc/rv_bootrom.sv)
+
+##### `rv_hostif_local`
+
+[SVG 크게 보기](diagrams/modules/rv_hostif_local.svg)
+
+![rv_hostif_local block diagram](diagrams/modules/rv_hostif_local.svg)
+
+**목적.** simulation/FPGA host용 console, exit와 boot mailbox MMIO register를 제공한다.
+
+**Step-by-step.**
+
+1. 주소/size/write strobe로 HostIF register를 decode한다.
+2. console/exit write를 event payload로 capture한다.
+3. host가 event를 accept하면 pending을 지우고 MMIO response를 완료한다.
+
+**타이밍.** MMIO handshake와 event backpressure에 따라 완료 latency가 달라진다. 처리율은 한 local transaction과 한 pending event를 유지한다. Backpressure/flush 규칙은 event_valid&&!ready 동안 kind/data를 고정한다.
+
+**코너케이스.** event backpressure, partial write, HostIF와 DTIM HTIF 주소를 혼동하지 않아야 한다.
+
+**RTL 위치.** [`rtl/soc/rv_hostif.sv`](../rtl/soc/rv_hostif.sv)
+
+##### `rv_hostif`
+
+[SVG 크게 보기](diagrams/modules/rv_hostif.svg)
+
+![rv_hostif block diagram](diagrams/modules/rv_hostif.svg)
+
+**목적.** AXI4 HostIF target wrapper다.
+
+**Step-by-step.**
+
+1. AXI request를 local MMIO request로 바꾼다.
+2. HostIF register/event 동작을 수행한다.
+3. local response를 원 AXI ID로 반환한다.
+
+**타이밍.** AXI bridge와 event handshake latency가 합산된다. 처리율은 MMIO burst 최대 1 beat다. Backpressure/flush 규칙은 invalid burst는 event를 만들지 않고 오류로 끝난다.
+
+**코너케이스.** console event 재전송과 write response 순서를 확인한다.
+
+**RTL 위치.** [`rtl/soc/rv_hostif.sv`](../rtl/soc/rv_hostif.sv)
+
+##### `rv_soc_addr_decode`
+
+[SVG 크게 보기](diagrams/modules/rv_soc_addr_decode.svg)
+
+![rv_soc_addr_decode block diagram](diagrams/modules/rv_soc_addr_decode.svg)
+
+**목적.** parameterized memory map 주소를 I-local, D-local, PLIC, HostIF 또는 error target으로 분류한다.
+
+**Step-by-step.**
+
+1. 각 base<=addr<end를 병렬 비교한다.
+2. BootROM/ITIM과 DTIM/CLINT를 local target으로 묶는다.
+3. 일치가 없으면 default error target을 선택한다.
+
+**타이밍.** 순수 조합 decode다. 처리율은 주소 한 개당 즉시 한 target을 낸다. Backpressure/flush 규칙은 overlap 방지는 별도 map checker가 보장한다.
+
+**코너케이스.** region 끝의 half-open 경계와 size overflow가 중요하다.
+
+**RTL 위치.** [`rtl/soc/rv_soc_addr_decode.sv`](../rtl/soc/rv_soc_addr_decode.sv)
+
+##### `rv_soc_map_check`
+
+[SVG 크게 보기](diagrams/modules/rv_soc_map_check.svg)
+
+![rv_soc_map_check block diagram](diagrams/modules/rv_soc_map_check.svg)
+
+**목적.** 잘못된 base/size/alignment/overlap configuration을 time 0에 중단한다.
+
+**Step-by-step.**
+
+1. 각 region size가 nonzero이고 요구 alignment인지 검사한다.
+2. base+size가 address width를 넘지 않는지 계산한다.
+3. 모든 region pair가 겹치지 않는지 확인하고 위반 시 fatal한다.
+
+**타이밍.** runtime datapath가 아니라 elaboration/time-zero 검사다. 처리율은 configuration당 한 번 실행된다. Backpressure/flush 규칙은 backpressure/flush 개념이 없다.
+
+**코너케이스.** 새 external SRAM region을 추가하면 반드시 overlap pair에 포함해야 한다.
+
+**RTL 위치.** [`rtl/soc/rv_soc_map_check.sv`](../rtl/soc/rv_soc_map_check.sv)
+
+#### 15.43.4 그림과 RTL을 함께 변경하는 규칙
+
+module port, 저장 state, latency, 처리율 또는 event priority가 바뀌면 해당 RTL과
+이 절의 module card source data, SVG, directed test를 같은 commit에서 변경한다.
+`python scripts/generate_module_diagrams.py --check`는 checked-in SVG/HDD가 generator
+결과와 같은지 검사하고, option 없이 실행하면 다시 생성한다. 그림의 latency는
+희망 사양이 아니라 현재 RTL의 handshake edge를 기준으로 유지한다.
+
+<!-- END GENERATED MODULE WALKTHROUGHS -->
+
 ## 16. Flush와 recovery 우선순위
 
 같은 cycle에 여러 redirect 원인이 발생하면 older architectural event가 우선이다.
@@ -3103,3 +4204,4 @@ interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
 | v1.15.4 | 기존 decode-time breakpoint exception 경로를 unit/backend 통합 회귀로 고정하고 HDD의 낡은 EBREAK 미구현 표기를 수정. EBREAK/C.EBREAK가 ROB head에서 cause 3, faulting `mepc`, informative `mtval`로 trap하며 raw compressed trace를 보존하고 same-bundle younger write를 squash하는지 검증. backend runner에 병렬 C++ build option을 추가하고 full runner의 `BuildJobs`를 전달 |
 | v1.15.5 | local→AXI bridge에 parameterized forward-progress watchdog을 추가. 기본 4096 cycles 동안 AR/AW/W/R/B 진행이 없으면 core에 SLVERR를 반환해 instruction/load/store access fault로 ROB를 완료하고, 이미 accept된 AXI transaction의 늦은 응답은 drain state에서 폐기해 ID 재사용 오염을 방지. 무응답 read/write와 late-response recovery를 bridge 회귀로 고정 |
 | v1.16.0 | 49개 합성 source/48개 module을 최신 RTL과 다시 대조하고 3-master×6-target Main Xbar가 최종 system bus임을 명확화. S4 external SRAM 및 표준 Debug Module 확장 contract, Host/Core TIM visibility, 전 core cross-block corner-case matrix와 sign-off 잔여 범위를 추가. AXI4 4-KiB 경계 burst를 Xbar/inbound bridge 양쪽에서 side effect 없이 거부하고 신규 block/SoC directed 회귀로 고정했으며, 현재 baseline을 2-wide로 확정하고 4-issue는 active milestone에서 제외 |
+| v1.17.0 | 초보자가 RTL 없이도 request→state→response 흐름을 따라갈 수 있도록 48개 합성 module 각각에 block diagram, 목적, 3-step 동작, accept-edge 기준 latency/throughput/backpressure와 corner case를 추가. ROB OoO 완료/in-order dual commit, same-bundle rename, branch recovery, LSQ forwarding, precise trap, AXI burst, dual-bank LSU를 cycle-by-cycle timing diagram으로 보강하고 generator/check flow를 추가 |

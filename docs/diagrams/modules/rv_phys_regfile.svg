@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620" role="img" aria-labelledby="title desc">
+<title id="title">rv_phys_regfile block diagram</title>
+<desc id="desc">renamed INT 또는 FP operand 값과 ready 상태를 저장한다. Inputs flow left to right through three internal functions to outputs. Timing contract is shown below.</desc>
+<defs><marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" class="arrow-head"/></marker></defs>
+<style>
+  .bg { fill:#f8fafc; } .panel { fill:#ffffff; stroke:#334155; stroke-width:3; }
+  .core { fill:#eff6ff; stroke:#2563eb; stroke-width:4; } .stage { fill:#ffffff; stroke:#2563eb; stroke-width:2.5; }
+  .timing { fill:#f0fdf4; stroke:#15803d; stroke-width:3; } .wire { fill:none; stroke:#0f766e; stroke-width:5; marker-end:url(#arrow); }
+  .arrow-head { fill:#0f766e; } text { font-family:'Noto Sans KR','Malgun Gothic',Arial,sans-serif; fill:#0f172a; }
+  .title { font-size:32px; font-weight:700; } .subtitle { font-size:17px; fill:#475569; }
+  .label { font-size:20px; font-weight:700; } .body { font-size:17px; } .stage-text { font-size:18px; font-weight:600; }
+  .timing-text { font-size:16px; }
+  @media (prefers-color-scheme:dark) { .bg{fill:#0f172a} .panel{fill:#111827;stroke:#94a3b8} .core{fill:#172554;stroke:#60a5fa} .stage{fill:#111827;stroke:#60a5fa} .timing{fill:#052e16;stroke:#4ade80} text{fill:#e5e7eb} .subtitle{fill:#cbd5e1} .wire{stroke:#5eead4} .arrow-head{fill:#5eead4} }
+</style>
+<rect width="1280" height="620" class="bg"/>
+<text x="40" y="48" class="title">rv_phys_regfile</text>
+<text x="40" y="78" class="subtitle">C. Rename and scheduling · rtl/backend/rv_phys_regfile.sv</text>
+<text x="40" y="105" class="subtitle"><tspan x="40" dy="0">renamed INT 또는 FP operand 값과 ready 상태를 저장한다.</tspan></text>
+<rect x="40" y="146" width="270" height="218" rx="8" class="panel"/>
+<text x="60" y="180" class="label">Inputs / events</text>
+<text x="60" y="218" class="body"><tspan x="60" dy="0">read/query tag;</tspan><tspan x="60" dy="25">allocate-not-ready; dual</tspan><tspan x="60" dy="25">writeback</tspan></text>
+<rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
+<text x="390" y="158" class="label">Internal flow / state</text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">data array</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">ready bitmap</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">same-cycle write bypass</tspan></text>
+<rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
+<text x="990" y="180" class="label">Outputs / effects</text>
+<text x="990" y="218" class="body"><tspan x="990" dy="0">read data/ready와 query ready</tspan></text>
+<path d="M310 255 H350 V255 H370" class="wire"/>
+<path d="M910 255 H950 V255 H970" class="wire"/>
+<rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
+<text x="60" y="448" class="label">Timing contract</text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: read는 조합, allocate/write는 edge에서 반영되며 write bypass는 같은 cycle wakeup을 돕는다.</tspan><tspan x="60" dy="24">Throughput: instance마다 최대 8 read, 6 ready query, 2 write, 2 allocate/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: writeback이 막히면 producer가 payload를 유지하고 allocate tag는 not-ready가 된다.</tspan></text>
+</svg>
