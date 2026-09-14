@@ -8,6 +8,7 @@ param(
   [string]$SpikeTracePath = "",
   [string]$PerfPath = "",
   [switch]$Htif,
+  [switch]$RtlAssertions,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -60,9 +61,12 @@ try {
   $oldVerilatorRoot = $env:VERILATOR_ROOT
   try {
     $env:VERILATOR_ROOT = $VerilatorRoot
-    & $verilator --cc --exe --timing --main -DSYNTHESIS -Wno-fatal `
-      -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC `
-      --top-module $topModule --Mdir $BuildRoot @mappedSources
+    $verilatorArgs = @("--cc", "--exe", "--timing", "--main")
+    $verilatorArgs += if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
+    $verilatorArgs += @("-Wno-fatal", "-Wno-WIDTHEXPAND", "-Wno-WIDTHTRUNC",
+                        "--top-module", $topModule, "--Mdir", $BuildRoot)
+    $verilatorArgs += $mappedSources
+    & $verilator @verilatorArgs
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }
   } finally {
     $env:VERILATOR_ROOT = $oldVerilatorRoot

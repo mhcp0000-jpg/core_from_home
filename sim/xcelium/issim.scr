@@ -33,6 +33,7 @@ set sv_lib = "${build_dir}/libcore_htif_dpi.so"
 set timeout_cycles = "2000000"
 set heartbeat_cycles = "100000"
 set elf_verify = "1"
+set lsu_trace = "1"
 set trace_file = "${build_dir}/commit_trace.csv"
 set spike_trace_file = "${build_dir}/trace_log.out"
 set fsdb_enable = "1"
@@ -52,6 +53,8 @@ foreach arg ($argv)
     set heartbeat_cycles = `echo "$arg" | sed 's/-HEARTBEAT_CYCLES=//'`
   else if ("$arg" =~ "-ELF_VERIFY=*") then
     set elf_verify = `echo "$arg" | sed 's/-ELF_VERIFY=//'`
+  else if ("$arg" =~ "-LSU_TRACE=*") then
+    set lsu_trace = `echo "$arg" | sed 's/-LSU_TRACE=//'`
   else if ("$arg" =~ "-TRACE_FILE=*") then
     set trace_file = `echo "$arg" | sed 's/-TRACE_FILE=//'`
   else if ("$arg" =~ "-SPIKE_TRACE_FILE=*") then
@@ -154,6 +157,7 @@ exec xrun \
   +timeout_cycles="$timeout_cycles" \
   +heartbeat_cycles="$heartbeat_cycles" \
   +elf_verify="$elf_verify" \
+  +lsu_trace="$lsu_trace" \
   +trace_file="$trace_file" \
   +spike_trace_file="$spike_trace_file" \
   $fsdb_plusargs

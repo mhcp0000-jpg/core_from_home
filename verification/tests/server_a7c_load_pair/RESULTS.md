@@ -3,7 +3,7 @@
 Status: **directed test PASS; original server hang NOT reproduced or fixed**.
 
 - RTL baseline: `e40c2b6` (RTL unchanged from `20d833c`), with diagnostic TB additions.
-- Simulator: Verilator 5.050, 2-state, runner defines `SYNTHESIS` (assertions excluded).
+- Simulator: Verilator 5.050, 2-state. Both normal and `--assert` builds were run.
 - Compiler: xPack riscv-none-elf GCC 15.2.0, RV32IMFC+Zicsr+Zifencei, ilp32f.
 - Input: [source](../../../sw/tests/htif_smoke/server_a7c_load_pair.S), [ELF](load_pair.elf).
 - Results: [complete simulation log](verilator.log), [retirement CSV](commit.csv).
@@ -24,7 +24,11 @@ PMP/CSR initialization equivalence with the server.
 | 80000af0 | LBU after final SB s3 | 00000044 |
 
 Assembly checks these values and writes TOHOST=1 on success, 3 on mismatch.
-The run finishes with `HTIF TEST PASS`. `+lsu_trace=1` emits request/response
+The normal run and a second `scripts/run_soc_elf_test.ps1 -RtlAssertions` run both
+finish with `HTIF TEST PASS`. The assertion-enabled run did not define `SYNTHESIS`
+and did not fire `rv_local_mem_if.p_request_stable_when_stalled` or another SVA.
+It observed LHU at 80000a7c and LBU at 80000a80 retiring normally.
+`+lsu_trace=1` emits request/response
 transactions without sampling. A separate `+lsu_trace=0` run also passes and
 emits zero LSU-REQ/LSU-RSP lines. Xcelium execution and company wrapper behavior
 have not been tested locally. No RTL functional fix is claimed.

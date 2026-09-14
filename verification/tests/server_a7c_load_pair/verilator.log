@@ -2,7 +2,7 @@
 [STALL][0] retirement-stall monitor compiled; first snapshot after 256 idle cycles
 [BOOTROM][0] loading hex file: tb/fixtures/bootrom/bootrom_host_jump.hex
 [BOOTROM][0] hex loaded: word[0]=02028293000012b7 word[1]=0080029330529073 depth=512
-[COMMIT][0] trace file opened: C:/rv_build/server_a7c/diagnostic_commit.csv
+[COMMIT][0] trace file opened: C:/rv_build/server_a7c_assert/repeat.csv
 [COMMIT][0] live logger enabled: every retired instruction
 [TB][0] rv_soc_htif_dpi_tb started; timeout=300000 cycles
 [HOST-DPI][0] initialized; waiting for reset release
@@ -18,7 +18,7 @@
 [TB][255] Boot ROM WFI retired: lane=0 pc=0x00001018
 [COMMIT][255] order=6 cycle=22 lane=0 pc=00001018 instr=10500073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=WFI
 [HOST-DPI][255] Boot ROM WFI observed; starting ELF load
-[HOST-DPI][255] opening ELF: C:/rv_build/server_a7c/load_pair.elf
+[HOST-DPI][255] opening ELF: C:/rv_build/server_a7c_assert/payload.elf
 [HOST-DPI][255] ELF parsed: entry=0x80000000 segments=2
 [HOST-DPI][255] segment[0] start paddr=0x80000000 filesz=2844 memsz=2844
 [HOST-DPI][11400] segment[0] load progress 2844/2844 bytes
@@ -173,5 +173,5 @@ HTIF TEST PASS
 - Z:/tb/e2e/dpi\rv_soc_htif_dpi_tb.sv:379: Verilog $finish
 [COMMIT][526255] order=95 cycle=52622 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
 - S i m u l a t i o n   R e p o r t: Verilator 5.050 2026-07-01
-- Verilator: $finish at 526ns; walltime 0.417 s; speed 1.261 us/s
+- Verilator: $finish at 526ns; walltime 0.518 s; speed 1.017 us/s
 - Verilator: cpu 0.000 s on 1 threads; allocated 8 MB
