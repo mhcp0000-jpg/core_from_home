@@ -1,1 +1,26 @@
-There was an error committing your changes: File could not be edited
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845165 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[COMMIT][1845175000] order=235 cycle=184514 lane=0 pc=800072c4 instr=02195033 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=DIVU
+[COMMIT][1845175000] order=236 cycle=184514 lane=1 pc=800072c8 instr=261f0817 rd_we=1 rd_fp=0 rd=16 wdata=a61f72c8 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,166): (time 1845175 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_4 has failed 
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845175 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[COMMIT][1845185000] order=237 cycle=184515 lane=0 pc=800072cc instr=0000e491 rd_we=0 rd_fp=0 rd=12 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.BNEZ
+[COMMIT][1845185000] order=238 cycle=184515 lane=1 pc=800072ce instr=b3077b93 rd_we=1 rd_fp=0 rd=23 wdata=fd797310 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ANDI
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845185 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[COMMIT][1845195000] order=239 cycle=184516 lane=0 pc=800072d2 instr=40f05413 rd_we=1 rd_fp=0 rd=8 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SRAI
+[COMMIT][1845195000] order=240 cycle=184516 lane=1 pc=800072d6 instr=000086a9 rd_we=1 rd_fp=0 rd=13 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.SRAI
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845195 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,166): (time 1845195 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_4 has failed 
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845195 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[COMMIT][1845205000] order=241 cycle=184517 lane=0 pc=800072d8 instr=00001881 rd_we=1 rd_fp=0 rd=17 wdata=80035e0c trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.ADDI
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,166): (time 1845205 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_4 has failed 
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845205 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[COMMIT][1845215000] order=242 cycle=184518 lane=0 pc=800072da instr=0158a223 rd_we=0 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SW
+[COMMIT][1845215000] order=243 cycle=184518 lane=1 pc=800072de instr=00008c31 rd_we=1 rd_fp=0 rd=8 wdata=0000000f trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.XOR
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,166): (time 1845215 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_4 has failed 
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845215 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[LSU-REQ][1845225000] lane=0 id=21 seq=6 write=1 addr=80035e10 size=2 data=00000000800029a0 mask=0f
+[COMMIT][1845225000] order=244 cycle=184519 lane=0 pc=800072e0 instr=0001a117 rd_we=1 rd_fp=0 rd=2 wdata=800212e0 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+xmsim: *E,ASRTST (./rtl/backend/rv_issue_arbiter.sv,168): (time 1845225 NS) Assertion rv_soc_htif_dpi_tb.u_dut.u_core.u_backend.u_select.unmblk6.__assert_6 has failed 
+[LSU-RSP][1845235000] lane=0 id=21 resp=0 replay=0 data=0000000000000000
+[COMMIT][1845235000] order=245 cycle=184520 lane=0 pc=800072e4 instr=c9710113 rd_we=1 rd_fp=0 rd=2 wdata=80020f77 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+xmsim: *W,CNTRCW: Multiple control-C's detected. One more will exit simulation.
