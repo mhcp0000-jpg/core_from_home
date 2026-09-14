@@ -42,8 +42,78 @@ module rv_soc_htif_dpi_tb;
   logic [31:0] commit_last_pc;
   logic [31:0] commit_last_instr;
   integer timeout_cycles;
+  bit lsu_trace_enabled;
+
+  initial begin : p_lsu_trace_config
+    lsu_trace_enabled = $test$plusargs("lsu_trace");
+    void'($value$plusargs("lsu_trace=%d", lsu_trace_enabled));
+    $display("[LSU-TRACE] enabled=%0b (add +lsu_trace to log every accepted D request/response)",
+             lsu_trace_enabled);
+  end
+
+  // Transaction events, not retirement: distinguish a load never issued from
+  // a request accepted without response, and a response blocked at writeback.
+  // No sampling/print limit when enabled. Never alter interface handshakes.
+  always @(posedge clk) begin : p_lsu_transaction_trace
+    if (rst_n && lsu_trace_enabled) begin
+      for (int lane = 0; lane < 2; lane++) begin
+        if (u_dut.u_core.dmem_req_valid_o[lane] &&
+            u_dut.u_core.dmem_req_ready_i[lane])
+          $display("[LSU-REQ][%0t] lane=%0d id=%0h seq=%0d write=%0b addr=%08h size=%0d data=%016h mask=%02h",
+            $time, lane, u_dut.u_core.dmem_req_id_o[lane],
+            u_dut.u_core.dmem_req_rob_seq_o[lane],
+            u_dut.u_core.dmem_req_write_o[lane],
+            u_dut.u_core.dmem_req_addr_o[lane],
+            u_dut.u_core.dmem_req_size_o[lane],
+            u_dut.u_core.dmem_req_wdata_o[lane],
+            u_dut.u_core.dmem_req_wstrb_o[lane]);
+        if (u_dut.u_core.dmem_rsp_valid_i[lane] &&
+            u_dut.u_core.dmem_rsp_ready_o[lane])
+          $display("[LSU-RSP][%0t] lane=%0d id=%0h resp=%0d replay=%0d data=%016h",
+            $time, lane, u_dut.u_core.dmem_rsp_id_i[lane],
+            u_dut.u_core.dmem_rsp_resp_i[lane],
+            u_dut.u_core.dmem_rsp_replay_i[lane],
+            u_dut.u_core.dmem_rsp_rdata_i[lane]);
+      end
+    end
+  end
 
   task automatic print_stall_snapshot;
+    $display("[STALL][LQ] valid=%h addr_valid=%h issued=%h complete=%h killed=%h exception=%h device=%h",
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_valid_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_valid_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_issued_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_completed_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_killed_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_exception_q,
+      u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_device_q);
+    for (int lane = 0; lane < 2; lane++) begin
+      $display("[STALL][D%0d] req_valid=%b ready=%b id=%0h seq=%0d addr=%08h write=%b size=%0d rsp_valid=%b ready=%b id=%0h resp=%0d replay=%0d hold=%b candidate=%b eligible=%b candidate_seq=%0d candidate_addr=%08h reason=%0d completion=%b completion_ready=%b",
+        lane, u_dut.u_core.dmem_req_valid_o[lane],
+        u_dut.u_core.dmem_req_ready_i[lane], u_dut.u_core.dmem_req_id_o[lane],
+        u_dut.u_core.dmem_req_rob_seq_o[lane], u_dut.u_core.dmem_req_addr_o[lane],
+        u_dut.u_core.dmem_req_write_o[lane], u_dut.u_core.dmem_req_size_o[lane],
+        u_dut.u_core.dmem_rsp_valid_i[lane], u_dut.u_core.dmem_rsp_ready_o[lane],
+        u_dut.u_core.dmem_rsp_id_i[lane], u_dut.u_core.dmem_rsp_resp_i[lane],
+        u_dut.u_core.dmem_rsp_replay_i[lane], u_dut.u_core.dmem_hold_valid_q[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.load_candidate_present_o[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_valid[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_sequence[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_address[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.load_stall_reason[lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.completion_valid_o[2+lane],
+        u_dut.u_core.u_backend.u_lsu_cluster.completion_ready_i[2+lane]);
+    end
+    for (int entry = 0;
+         entry < $bits(u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_valid_q);
+         entry++) begin
+      if (u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_valid_q[entry])
+        $display("[STALL][LQ%0d] seq=%0d addr=%08h dest=p%0d mask=%02h",
+          entry, u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_sequence_q[entry],
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_q[entry],
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_destination_phys_q[entry],
+          u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_mask_q[entry]);
+    end
     $display("[STALL][%0t] idle=%0d last_pc=%08h last_instr=%08h fe_valid=%b fe_ready=%b fq_bytes=%0d fq_valid=%b if_outstanding=%0b if_addr=%08h",
       $time, commit_idle_cycles, commit_last_pc, commit_last_instr,
       u_dut.u_core.fe_valid, u_dut.u_core.fe_ready,
