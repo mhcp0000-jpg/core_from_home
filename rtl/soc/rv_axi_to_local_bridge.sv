@@ -70,15 +70,18 @@ module rv_axi_to_local_bridge #(
   );
     logic [63:0] start_ext;
     logic [63:0] transfer_end;
+    logic [63:0] last_byte;
     logic [63:0] beat_bytes;
     logic [63:0] align_mask;
     start_ext    = {{(64-ADDR_WIDTH){1'b0}}, start_address};
     beat_bytes   = 64'd1 << size;
     align_mask   = beat_bytes - 1'b1;
     transfer_end = start_ext + beat_bytes * (64'(length) + 1'b1);
+    last_byte    = transfer_end - 1'b1;
     return (size <= 3) && (burst == 2'b01) &&
            (length < MAX_BURST_BEATS) &&
            ((start_ext & align_mask) == 0) &&
+           (start_ext[63:12] == last_byte[63:12]) &&
            (transfer_fits_region(start_ext, transfer_end,
                                  TARGET_BASE_ADDR, TARGET_SIZE_KB) ||
             (SECOND_TARGET_ENABLE &&

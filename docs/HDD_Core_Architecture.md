@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized integration baseline v1.15.1 (2026-09-10) |
+| 상태 | RTL-synchronized integration baseline v1.16.0 (2026-09-13) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -36,7 +36,7 @@
 
 architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ에 주소와 데이터를 기록할 뿐 TIM/MMIO에 write하지 않는다. ROB head에서 정상 commit된 store만 store buffer를 거쳐 D local fabric에 보인다. 두 LSU 때문에 load가 store를 추월할 수 있으므로 초기 구현은 주소가 미확정인 older store가 하나라도 있으면 younger load를 issue하지 않는다.
 
-현재 구현 상태(2026-09-10)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성 및 IFU PMP parcel-boundary 수정 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀와 EBREAK/C.EBREAK를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, external debug module 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
+현재 구현 상태(2026-09-13)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성, IFU PMP parcel-boundary 수정 및 SoC bus corner audit 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다. `rv_fpu`는 현재 모든 RV32F operation을 하나의 3-stage elastic result pipe로 처리하며 결과와 `fflags`를 ROB에 보관하고 commit 시에만 FCSR에 누적한다. 분리 FMA/misc/divsqrt cluster는 현재 RTL이 아니라 PPA 교체 목표다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다. IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. Main Xbar는 unmapped/unsupported/region-crossing/4-KiB-crossing burst를 target side effect 없이 error slave로 보내고, core outbound bridge는 무응답 target을 기본 4096-cycle watchdog으로 access fault 완료한다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했다. precise control 회귀는 동기 예외 우선, ROB-empty interrupt 경계, MEIP>MSIP>MTIP 우선순위, WFI wake, mtvec/mepc/mcause/mtval, MRET→U 복귀와 EBREAK/C.EBREAK를 검사한다. 단, random long-run, Spike/Sail differential, riscv-arch-test, external SRAM controller, RISC-V Debug Module 및 S-mode 전체 기능 sign-off는 아직 남아 있다.
 
 이 문서의 표기 규칙은 다음과 같다. **현재 RTL**은 저장소의 합성 module이 실제로 구현하는 동작이고, **확장 목표**는 현재 port를 유지하며 교체할 예정인 구조다. 두 표현이 충돌하면 현재 RTL 설명이 구현 기준이다. `HAS_SMODE=1`, external debug module, cache/MMU와 분리형 FP divsqrt는 확장 목표이며 기본 sign-off configuration은 `XLEN=32`, `HAS_C=1`, `HAS_F=1`, `HAS_SMODE=0`이다.
 
@@ -133,6 +133,10 @@ architecturally unspecified이며, DPI ELF loader 또는 software가 사용 영�
 | LSU data access to ITIM | `LSU → rv_d_fabric OUT → u_d_outbound_bridge(M1) → u_main_xbar(S0) → u_i_inbound_bridge → rv_i_fabric → u_itim` |
 | LSU local DTIM/CLINT | `LSU0/1 → rv_d_fabric(D-Arbiter) → u_dtim 또는 u_clint` |
 | Host access to DTIM/CLINT | `DPI Host(M2) → u_main_xbar(S1) → u_d_inbound_bridge → rv_d_fabric → u_dtim 또는 u_clint` |
+| LSU access to PLIC/HostIF | `LSU → rv_d_fabric OUT → u_d_outbound_bridge(M1) → u_main_xbar(S2/S3) → u_plic 또는 u_hostif` |
+| Host access to PLIC/HostIF | `DPI Host(M2) → u_main_xbar(S2/S3) → u_plic 또는 u_hostif` |
+| unmapped access | `M0/M1/M2 → u_main_xbar(S5) → u_default_error_target → zero data + DECERR` |
+| future large SRAM | `M0/M1/M2/(future debug M3) → u_main_xbar(S4 재사용) → AXI SRAM controller → SRAM banks` |
 
 Main Xbar는 Boot ROM, ITIM, DTIM, CLINT의 native port를 직접 구동하지 않는다. AXI4의 AW/W/B/AR/R channel을 단순한 `rv_local_mem_if` request/response로 바꾸기 위해 S0/S1 뒤에 반드시 `rv_axi_to_local_bridge`가 있다. 반대로 I/D-Fabric에서 non-local 주소로 나가는 local request는 `rv_local_to_axi_bridge`를 거쳐 M0/M1 AXI master transaction이 된다. local address는 Fabric에서 먼저 흡수하므로 outbound→inbound self-loop는 발생하지 않는다.
 
@@ -247,6 +251,7 @@ flowchart TB
 | `0x1000_0000` | `0x1000_0FFF` | 4 KiB | HostIF | device, DPI mailbox/console |
 | `0x8000_0000` | `0x8001_FFFF` | 128 KiB | ITIM | RWX, 2-bank 1R1W |
 | `0x8002_0000` | `0x8003_FFFF` | 128 KiB | DTIM | RW, optional X by PMP policy |
+| 현재 미할당 | - | - | Xbar S4 reserved | future large SRAM/DDR controller slot |
 | 그 외 | - | - | Error slave | AXI `DECERR`, core access fault |
 
 `mtvec`의 boot 값과 ITIM base는 모두 `0x8000_0000`이다. CLINT는 표준적인 `0x0200_0000` base를 사용하므로 MSIP는 `0x0200_0000`, MTIMECMP low/high는 `0x0200_4000`/`0x0200_4004`, MTIME low/high는 `0x0200_BFF8`/`0x0200_BFFC`에 위치한다. 주소는 `rv_soc_pkg` 한 곳에서 정의하고 생성 스크립트가 SW·BootROM·검증 설정에 동일하게 반영한다.
@@ -390,32 +395,16 @@ ELF load, direct-string print, proxy write syscall, TOHOST=1 종료는 Verilator
 
 모든 용량은 parameter로 노출하되, 검증 configuration은 무분별하게 늘리지 않는다. 최초 sign-off 구성은 `rv32_default`와 `rv64_smoke` 두 개다.
 
-### 4.1 4-Issue 확장성 경계
+### 4.1 Issue 폭 고정 범위
 
-4-Issue/4-wide 코어로 확장하는 것은 가능하지만 현재 RTL에서 `ISSUE_WIDTH=4` 하나만
-바꾸는 증설은 아니다. `XLEN`, ROB/IQ/LSQ 용량과 일부 execution 구조는 이미
-parameter화됐지만 instruction bundle 폭은 여러 module interface에서 `[1:0]`으로
-고정돼 있다. 다음 항목을 하나의 configuration 변경으로 함께 넓혀야 한다.
-
-| 경로 | 4-wide 변경 요구 |
-|---|---|
-| Fetch/align/decode | cycle당 최대 4개 instruction boundary 생성, taken lane 뒤 younger lane 차단 |
-| Rename/dispatch | 4-lane intra-bundle RAW/WAW bypass, 최대 4개 INT/FP free-tag allocation, ROB/IQ/LSQ 원자 할당 |
-| Predictor/checkpoint | lane별 speculative GHR/RAS 순차 반영, 최대 4개 branch checkpoint 요청과 복구 priority |
-| Issue/select | global 4-grant age/port arbitration, 후보 수 증가에 따른 select critical path 분할 |
-| PRF/bypass | source 최대 12개와 destination 최대 4개의 read/write/bypass bandwidth |
-| Execute/WB | ALU 증설, branch/LSU/FPU port 정책, 최소 4-result completion arbitration |
-| ROB/commit | 4-head prefix retire, trap/store/CSR가 중간 lane에 있을 때 precise stop 규칙 |
-| Memory | dual LSU를 유지하면 memory issue는 최대 2/cycle이며 4-wide integer issue와 독립적으로 제한 |
-
-권장 migration은 먼저 bundle type과 `DISPATCH_WIDTH/ISSUE_WIDTH/COMMIT_WIDTH`를
-분리해 2-wide regression을 유지하고, 다음으로 frontend/rename/commit을 4-wide로
-넓힌 뒤 execution port를 workload에 맞춰 증설하는 순서다. 4-wide가 곧 IPC 2배를
-뜻하지는 않는다. 현재 CoreMark는 2-wide에서 IPC 1.241이고 평균 issue는 약
-1.277 uop/cycle이며 frontend empty와 load-dependent ROB-head wait가 남아 있다.
-따라서 현 단계 baseline은 2-wide를 유지하고 IPC/PPA 측정 후 4-wide configuration을
-별도 milestone로 연다. 4-wide에서도 dual LSU와 2-bank 1R1W DTIM은 유지할 수 있지만
-memory instruction이 3개 이상 준비된 cycle에는 구조적 backpressure가 발생한다.
+현재 제품/검증 baseline은 fetch, decode, rename, dispatch, global issue와 commit이 모두
+**2-wide**인 구조로 고정한다. `ISSUE_WIDTH=4` 같은 단일 parameter 변경으로 4-wide가
+되는 구조가 아니며, 4-issue는 현재 요구사항과 구현 milestone에서 제외한다. RTL의
+여러 architectural bundle이 명시적인 `[1:0]` port인 것은 의도된 interface 계약이다.
+`XLEN=64` 확장 가능하다는 표현은 register/data/주소 관련 폭을 넓힐 수 있다는 뜻이지
+issue 폭 확장을 뜻하지 않는다. 향후 별도 프로젝트에서 폭을 넓힐 경우 frontend,
+rename intra-bundle dependency, PRF port, ROB prefix commit, checkpoint와 completion
+arbitration을 함께 재설계하고 새 verification configuration으로 취급해야 한다.
 
 ### 4.2 Package encoding과 폭 계약
 
@@ -1120,6 +1109,7 @@ Main Xbar는 AXI4를 사용한다.
 | Local master ID | 4-bit |
 | Xbar slave-side ID | 6-bit = 2-bit master prefix + 4-bit local ID |
 | Burst | INCR, 최대 16 beats |
+| 4 KiB rule | 한 burst의 first/last byte는 같은 4 KiB page에 있어야 함 |
 | Transfer size | 1/2/4/8 bytes, naturally aligned baseline |
 | Outstanding | 현재 master별 read burst 1건 + write burst 1건; read와 write는 동시 가능 |
 | Unsupported | exclusive/locked, WRAP burst, atomics |
@@ -1138,18 +1128,21 @@ AXI invariant:
 - `valid && !ready` 동안 모든 payload는 stable이다.
 - AW를 grant한 write burst는 WLAST까지 해당 slave의 W ownership을 유지한다.
 - 동일 ID response ordering을 보존한다.
+- AXI4 burst는 4 KiB boundary를 넘지 않는다. Main Xbar는 위반 transaction 전체를 default error slave로 보내며 target에는 첫 beat도 전달하지 않는다. inbound bridge를 단독 사용할 때도 같은 검사를 반복해 local side effect 없이 SLVERR로 끝낸다.
 - CLINT/PLIC/HostIF의 register semantics는 32-bit naturally aligned access를 기준으로 하며 잘못된 접근은 error를 반환한다. Boot ROM은 S0 inbound bridge가 AXI burst를 64-bit local read로 분해하므로 ROM leaf 자체는 AXI channel을 갖지 않는다.
 - unmapped 또는 slave-window를 넘는 burst는 DECERR이며 일부 beat만 side effect를 만들 수 없다.
 
 ### 15.2 Main AXI Xbar
 
-AXI master port는 정확히 세 개다.
+Main Xbar가 이 SoC의 **최종 system bus**다. Xbar 뒤에 다시 하나의 공용 bus가 있는
+구조가 아니라, Xbar의 각 downstream AXI port가 선택된 slave로 이어진다. 현재 AXI
+master port는 정확히 세 개다.
 
 | Master index | Initiator | 용도 |
 |---:|---|---|
 | M0 | I-Fabric outbound bridge | Boot ROM/ITIM 이외의 non-local instruction fetch |
 | M1 | D-Arbiter outbound | PLIC/HostIF/ITIM/non-local data access |
-| M2 | DPI Host AXI master | ELF load, memory inspect, CLINT MSIP, peripheral access |
+| M2 | DPI Host AXI master | ELF load, memory inspect, CLINT MSIP, peripheral access; RISC-V Debug Module은 아님 |
 
 AXI slave port:
 
@@ -1163,6 +1156,11 @@ AXI slave port:
 | S5 | Default/unmapped error slave |
 
 주소 채널은 slave별 3-master round-robin arbitration을 사용한다. 각 master는 read response의 마지막 beat 전까지 다음 AR을, B response 전까지 다음 AW를 받지 않으므로 현재 ID 폭은 routing/echo 용도이지 한 master의 multi-outstanding reorder 용도가 아니다. AW를 승인한 slave는 WLAST까지 해당 master의 W channel을 독점한다. Host ELF loading이 진행되는 boot 구간에는 core traffic이 거의 없다고 가정하며, 별도 QoS 우선순위나 16-grant bound는 현재 Xbar RTL에 없다.
+
+현재 S4는 decode 결과가 도달하지 않는 `SOC_TARGET_RESERVED`이고 실제 연결은
+`rv_axi_error_slave`다. 따라서 “대용량 SRAM을 붙일 수 있다”는 말은 인터페이스상
+확장 가능하다는 뜻이며, 현재 bitstream/RTL에 외부 SRAM 용량이 이미 존재한다는 뜻은
+아니다. S4를 SRAM에 할당하는 구체 변경 계약은 Section 15.42에 정의한다.
 
 I/D local fabric은 같은 module 안에 `axi_m` outbound와 `axi_s` inbound를 분리한다. local requester가 자기 local window를 접근하면 outbound로 보내지 않는다. 다음 assertion을 둔다.
 
@@ -1433,7 +1431,7 @@ SoC의 기본 firmware contract를 바꾸지 않는다.
 | `rv_lsu_pipe` | Implemented standalone | core clock/reset | XLEN/PADDR/data/queue-index/ROB sequence 폭 |
 | `rv_store_buffer` | Implemented standalone | core clock/reset | PADDR/data/entry/ROB sequence 폭 |
 | `rv_lsq`, `rv_lsu_cluster` | Implemented and backend-integrated | core clock/reset | LQ/SQ/PADDR/data/tag/ROB sequence 폭 |
-| `rv_fpu` | Implemented/verified directed: unified RV32F bit-level execute + 3-stage elastic transport; exhaustive differential pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
+| `rv_fpu` | Implemented/verified: unified RV32F bit-level execute + 3-stage elastic transport, 6,470-vector fast 및 227,200-comparison extended exact-oracle PASS; 외부 Spike/SoftFloat random/exhaustive sign-off pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
 | `rv_host_dpi`, `elf_loader.cpp` | Implemented; custom HostIF + server HTIF modes E2E verified | testbench clock/reset + Host AXI | 전 memory-map, ELF path, TOHOST/FROMHOST |
 | `rv_writeback_arbiter`, `rv_branch_recovery`, `rv_exec_result_buffer` | Implemented and backend-integrated | core clock/reset 또는 조합 | Section 15.28~15.33 참조 |
 | `rv_csr_file` | Implemented and backend-integrated | core clock/reset | Section 15.34 참조 |
@@ -1578,7 +1576,7 @@ CLINT는 response backpressure를 내부 한 entry로 유지한다. `msip` reset
 |---|---|---|
 | `clk_i`, `rst_ni` | input | SoC clock/reset |
 | `external_irq_i[PLIC_NUM_SOURCES-1:1]` | input | source0을 제외한 external interrupt vector |
-| `host_axi_s` | `rv_axi4_if.slave` | DPI/FPGA debugger Host AXI master가 연결되는 SoC ingress |
+| `host_axi_s` | `rv_axi4_if.slave` | DPI Host 또는 검증 BFM이 구동하는 SoC ingress; 표준 RISC-V debugger port는 아님 |
 | `soc_ready_o` | output | Boot/SoC fabric이 transaction을 받을 수 있음 |
 | `host_boot_entry_o`, `host_boot_flags_o` | output | HostIF boot mailbox sideband |
 | `host_event_valid_o/ready_i` | output/input | CPU→DPI event handshake |
@@ -1698,7 +1696,7 @@ timeout 전에 AR/AW/W가 전혀 accept되지 않았다면 transaction을 안전
 - read는 local response 하나를 R beat 하나로 보낸 뒤 다음 address를 요청한다. `RLAST`는 `beat_index==ARLEN`에서만 1이다.
 - Host/DPI write는 local `req_committed=1`로 변환하며 target device parameter를 `req_device`에 전달한다.
 
-`rv_axi_bridge_tb`는 local→AXI→local write/read 왕복, ID 보존, misaligned 차단에 더해 AR accept 이후 R response 및 AW/W accept 이후 B response를 각각 차단한다. 두 경우 모두 8-cycle watchdog의 SLVERR 완료, late-response drain, 다음 ID의 정상 readback을 검사한다. `rv_axi_to_local_burst_tb`는 4-beat write/read, RLAST, window-crossing burst의 partial-side-effect 금지를 기술한다.
+`rv_axi_bridge_tb`는 local→AXI→local write/read 왕복, ID 보존, misaligned 차단에 더해 AR accept 이후 R response 및 AW/W accept 이후 B response를 각각 차단한다. 두 경우 모두 8-cycle watchdog의 SLVERR 완료, late-response drain, 다음 ID의 정상 readback을 검사한다. `rv_axi_to_local_burst_tb`는 4-beat write/read, RLAST, window-crossing burst와 4-KiB-crossing burst의 partial-side-effect 금지를 검사한다.
 
 ### 15.21 Main AXI Xbar exact interface와 baseline 동작
 
@@ -1708,7 +1706,7 @@ timeout 전에 AR/AW/W가 전혀 accept되지 않았다면 transaction을 안전
 |---|---|---|
 | `m0_s` | `rv_axi4_if.slave`, local ID | I-Fabric outbound bridge |
 | `m1_s` | `rv_axi4_if.slave`, local ID | D-Fabric outbound bridge |
-| `m2_s` | `rv_axi4_if.slave`, local ID | DPI/debug Host master |
+| `m2_s` | `rv_axi4_if.slave`, local ID | DPI Host/검증 BFM master |
 | `s0_m` | `rv_axi4_if.master`, prefixed ID | Boot ROM+ITIM/I-Fabric inbound bridge |
 | `s1_m` | `rv_axi4_if.master`, prefixed ID | DTIM+CLINT/D-Fabric inbound |
 | `s2_m` | `rv_axi4_if.master`, prefixed ID | PLIC |
@@ -2316,6 +2314,152 @@ ALU, branch, PMP, issue arbiter, fence controller와 address decoder에는 저�
 allocate/retire, sequence liveness, flush 후 wrong-path side-effect 0, store commit visibility,
 AXI ID/response return, reset 중 request 0이 assertion으로 성립해야 다음 단계로 간다.
 
+### 15.42 RTL 동기화 감사, final bus 및 확장 계약
+
+#### 15.42.1 2026-09-13 module/interface 감사 결과
+
+`rtl/**/*.sv`에는 package/interface를 제외하고 48개의 `module` 선언이 있다. 이 48개
+이름은 모두 Section 15.12~15.40의 module inventory, exact-interface 절 또는 wrapper
+pair 절에 등장한다. 49개 합성 SystemVerilog source라는 표기는 `rv_ooo_pkg`,
+`rv_soc_pkg`, `rv_axi4_if`, `rv_local_mem_if` 같은 package/interface source를 포함한
+file 수이며 module 수와 혼동하지 않는다. 외부에서 유지해야 하는 freeze boundary는
+`rv_soc_top`, `rv_ooo_core`, `rv_axi4_if`, `rv_local_mem_if` 네 개다. 내부 flattened
+signal의 authoritative 이름과 폭은 Section 15.13~15.39이며, RTL header와 충돌하면
+해당 revision에서 HDD와 RTL을 같이 수정해야 한다.
+
+감사에서 확인한 현재/미구현 경계는 다음과 같다.
+
+| 항목 | 현재 RTL | 확장 시 필요한 변경 |
+|---|---|---|
+| Final system bus | `rv_axi_xbar`, 3 master × 6 target | parameterized port array 또는 명시 port 추가 |
+| Core masters | M0 instruction, M1 data | cache refill/writeback을 넣어도 I/D ownership 유지 |
+| Host | M2 DPI/검증 AXI master + 별도 S3 HostIF slave | production에서 DMA/debug와 arbitration 필요 |
+| Local memory | S0→BootROM/ITIM, S1→DTIM/CLINT | base/size는 top/package와 map checker에 동일 전달 |
+| Interrupt | S2 PLIC, D-local CLINT, `external_irq_i` | source CDC는 SoC wrapper 책임 |
+| S4 | 항상 DECERR인 reserved target | large SRAM controller의 권장 연결 자리 |
+| S5 | default/unmapped DECERR | 항상 존재하며 decode miss를 흡수 |
+| Debug | core의 `debug_halt_req_i`가 top에서 0에 고정 | DTM/DM, halt/resume ack, abstract command, SBA 미구현 |
+| Cache/MMU/coherence | 없음, physical TIM/AXI 직접 접근 | L1/MMU/L2/coherence/IOMMU는 별도 milestone |
+
+`host_axi_s`라는 SystemVerilog modport 이름의 `slave`는 **SoC가 요청을 받는 방향**을
+뜻한다. 그 선을 구동하는 DPI Host BFM은 protocol initiator/master다. 반대로 PLIC와
+HostIF는 Xbar의 master-facing output에 연결되는 target/slave다. HostIF는 CPU가
+console/exit register를 접근하는 합성 MMIO block이고, DTIM의 TOHOST/FROMHOST polling은
+DPI가 M2로 DTIM을 읽고 쓰는 서버 호환 mode이므로 서로 다른 경로다.
+
+#### 15.42.2 large SRAM을 S4에 연결하는 contract
+
+초기 확장은 새 crossbar를 직렬로 붙이지 않고 현재 S4를 재사용한다. 권장 경로는
+`Core I/D 또는 Host M2 → Main Xbar S4 → AXI SRAM controller → SRAM macro/banks`다.
+실제 구현 때 다음 항목을 하나의 change set으로 바꾼다.
+
+1. `rv_soc_pkg`와 `rv_soc_top`에 `EXT_SRAM_BASE_ADDR`, `EXT_SRAM_SIZE_KB`를 추가한다.
+2. `SOC_TARGET_RESERVED=3'd4`를 `SOC_TARGET_EXT_SRAM=3'd4`로 명확히 바꾸고
+   `rv_soc_addr_decode`와 Xbar `decode_address`가 해당 window를 S4로 선택하게 한다.
+3. `rv_soc_map_check`에 non-zero, 4-KiB alignment, 32-bit overflow 및 기존 모든
+   region과의 pairwise non-overlap 검사를 추가한다.
+4. `rv_soc_top.s4_m`의 error slave를 합성 가능한 AXI SRAM controller로 교체한다.
+   물리 SRAM이 1RW이면 controller가 read/write 및 여러 master 요청을 backpressure로
+   serialize한다. N-bank이면 address interleave와 bank별 outstanding owner를 controller가
+   소유한다.
+5. executable SRAM을 허용하면 I-Fabric M0가 현재처럼 128-bit fetch block을 두 개의
+   64-bit AXI read로 조립한다. ITIM의 병렬 두-bank local hit보다 latency와 bandwidth가
+   낮으므로 대용량 code 성능은 controller latency에 의존한다.
+6. ELF loader가 현재 허용하는 PT_LOAD window는 ITIM/DTIM뿐이므로 external SRAM을
+   loader allow-list/readback verifier/linker script/configurator에도 추가한다.
+7. U-mode 사용 시 PMP가 새 SRAM window를 허용해야 한다. M-mode unlocked bypass만 믿고
+   U-mode code/data를 배치하면 access fault가 난다.
+8. SRAM ECC/parity error는 `SLVERR`로 반환하고, read data가 0이어도 core는 그 값을
+   retire하지 않고 instruction/load access fault로 처리한다.
+
+현재 AXI width는 address 32/data 64다. 4 GiB보다 큰 memory나 RV64 physical address를
+사용하려면 SRAM만 추가해서는 안 되고 interface, Xbar decode, bridge, PMP의
+`ADDR_WIDTH/PADDR_WIDTH`를 함께 넓혀야 한다. `XLEN=64`와 physical address width는
+독립 개념이다.
+
+#### 15.42.3 RISC-V Debug 연결 contract
+
+현재 RTL은 표준 Debug Module이 없다. `debug_halt_req_i`는 backend의 새 dispatch를
+막는 quiesce 입력일 뿐, 이미 실행 중인 uop drain, precise halt acknowledgment,
+resume, debug ROM, DCSR/DPC, abstract register access를 구현하지 않는다. 따라서 M2
+Host port를 “debugger 완성”으로 해석하면 안 된다.
+
+정식 debug 확장은 `JTAG/cJTAG → DTM(DMI) → RISC-V Debug Module`로 구성한다. Debug
+Module의 두 연결 면은 다음처럼 분리한다.
+
+- hart control: halt/resume request, halted/resume ack, DPC/DCSR 및 debug-mode entry
+- system bus access(SBA): Debug Module이 별도 AXI master로 Main Xbar를 접근
+
+SBA는 권장상 M3로 추가한다. 현재 2-bit master prefix가 0..3을 표현할 수는 있지만
+`MASTER_COUNT=3`, `m0_s..m2_s` port와 arbitration array는 고정이므로 M3 port/loop/
+response validation을 실제로 확장해야 한다. 대안으로 Host와 Debug SBA를 M2 앞의
+별도 2:1 arbiter로 합칠 수 있지만 Host ELF load와 debug access 간 fairness와
+ownership을 그 arbiter가 보장해야 한다. Debugger가 실행 중인 hart의 ITIM/DTIM을
+수정하려면 halt 완료 또는 software synchronization 뒤에 수행하며, instruction을
+고친 뒤에는 resume 전에 frontend invalidate/FENCE.I와 동등한 동작이 필요하다.
+
+#### 15.42.4 AXI와 memory corner-case 동작표
+
+| 조건 | Xbar/target 동작 | Core architectural 결과 |
+|---|---|---|
+| 정상 mapped read | `RVALID`, `OKAY`, data | load/fetch 완료 |
+| 정상 mapped write | `BVALID`, `OKAY` | commit된 store만 완료 |
+| unmapped address | S5가 모든 read beat에 zero+`DECERR`, write는 `DECERR` B | instruction/load/store access fault |
+| S4 reserved address | 현재 decode되지 않아 S5; S4 직접 연결도 DECERR | access fault |
+| unsupported WRAP/FIXED, size>8 B, beat 수>16 (`LEN>=16`) | Xbar가 whole transaction을 S5로 route | access fault; target side effect 0 |
+| 4-KiB crossing burst | Xbar가 whole transaction을 S5로 route | access fault; target side effect 0 |
+| target-window crossing burst | Xbar 또는 inbound bridge가 whole transaction reject | target side effect 0 |
+| naturally misaligned core load/store | LSU가 bus 전 차단 | cause 4/6 |
+| aligned unmapped core load/store | AXI DECERR까지 한 transaction | cause 5/7 |
+| `LBU/SB 0xffff_ffcb` | byte access라 정렬은 정상, S5 DECERR | cause 5/7 |
+| AXI read response ID mismatch 또는 single-beat RLAST 오류 | core outbound bridge가 local SLVERR | access fault |
+| core AR/AW/W/R/B no-progress | 4096-cycle watchdog 후 local zero+SLVERR | faulting ROB가 완료되어 precise access fault 가능 |
+| timeout 전 address channel 미수락 | AXI side effect 없이 취소 | trap handler 계속 실행 가능 |
+| timeout 뒤 이미 address/data 일부 수락 | core에 먼저 error, bridge는 late response drain | 해당 bridge의 새 outbound 요청은 drain까지 차단 |
+| accepted write response 영구 유실 | side effect 여부가 모호한 platform-fatal 상태 | software retry 금지 |
+| Host M2가 응답을 못 받음 | core watchdog 적용 대상 아님 | DPI/TB timeout이 simulation을 종료해야 함 |
+| reset mid-transaction | internal valid/owner state clear; pre-reset response 계약 폐기 | reset vector부터 재시작, external slave도 함께 reset 필요 |
+
+AXI protocol 자체에는 response deadline이 없으므로 무응답 slave가 protocol 위반이라고
+단정할 수는 없다. watchdog은 core liveness를 위한 platform policy다. 오류 read에서
+RDATA를 0으로 구동하는 것은 deterministic waveform을 위한 값일 뿐이며 `DECERR/SLVERR`
+가 함께 있으므로 architectural load 결과로 GPR에 기록하지 않는다. `0+OKAY` default
+slave를 넣으면 잘못된 포인터를 정상 접근으로 숨기고 Spike의 unmapped access-fault
+동작과 달라지므로 baseline에서는 금지한다.
+
+#### 15.42.5 동시 접근과 visibility corner
+
+- Xbar의 read와 write address channel은 독립이므로 한 master가 read burst 한 건과
+  write burst 한 건을 동시에 보유할 수 있다. 같은 target leaf가 한 transaction만
+  받으면 READY로 직렬화한다.
+- Xbar는 master 사이의 global memory order를 만들지 않는다. Core RVWMO 순서는
+  LSQ/store buffer/FENCE가, Host/Core 공유 memory의 순서는 mailbox나 halt handshake가
+  보장해야 한다.
+- Host가 실행 중인 ITIM의 동일 row를 쓰고 IFU가 동시에 읽으면 SRAM wrapper의
+  write-first 결과가 보일 수 있다. 그러나 fetch queue/target buffer에 이미 들어간
+  instruction까지 자동 invalidate하지 않으므로 live code patch는 금지하고, core를
+  멈추거나 software protocol 뒤 FENCE.I/redirect를 수행한다.
+- Host write와 core load/store가 같은 DTIM byte에서 경쟁하면 bank arbitration과
+  write-first electrical ordering만 정의된다. LSQ는 외부 Host write를 snoop하지 않으므로
+  data race 결과를 coherence로 보장하지 않는다. TOHOST/FROMHOST의 0/nonzero ownership
+  protocol처럼 software synchronization을 사용한다.
+- 서로 다른 DTIM bank의 두 read 또는 두 write는 같은 cycle 진행할 수 있고, 한 bank의
+  read 하나와 write 하나도 가능하다. 동일 bank same-row read/write는 strobe 적용 후
+  new data를 반환한다. 동일 bank read-read/write-write는 한 요청만 grant하고 나머지는
+  valid/payload를 유지한다.
+- PLIC/CLINT/HostIF와 `req_device=1` access는 speculative visibility를 허용하지 않는다.
+  특히 store는 ROB head에서 response까지 받은 뒤에만 retire한다.
+
+#### 15.42.6 이 감사에서 추가한 closure
+
+RTL은 Main Xbar와 `rv_axi_to_local_bridge` 양쪽에 4-KiB burst-boundary 검사를 둔다.
+`rv_axi_to_local_burst_tb`는 같은 큰 DTIM aperture 안에 있더라도
+`base+0xff8`, 2×8-byte burst를 local request 0회와 SLVERR 두 beat로 끝내는지 검사한다.
+`rv_soc_top_tb`는 같은 pattern을 Host M2에서 ITIM으로 보내 Xbar S5의 zero+DECERR 두
+beat와 정확한 RLAST를 검사한다. 기존 window-crossing no-partial-side-effect,
+unmapped DECERR, outbound timeout/late-drain test와 합쳐 address decode 및 liveness
+corner의 directed baseline을 이룬다.
+
 ## 16. Flush와 recovery 우선순위
 
 같은 cycle에 여러 redirect 원인이 발생하면 older architectural event가 우선이다.
@@ -2490,11 +2634,11 @@ unit 18종 전체 회귀도 PASS다. 기존 LSQ forwarding/older-store stall 회
 
 ### 18.5 실행 결과와 commit 비교 계약
 
-| Gate | 실행 산출물 | 2026-09-10 결과 |
+| Gate | 실행 산출물 | 2026-09-13 결과 |
 |---|---|---|
 | parse/elaboration | `python scripts/check_rtl.py` | RV32/RV64/PADDR34/relocated SoC 및 TB elaboration PASS |
 | unit | `scripts/run_unit_tests.ps1` | rename/PRF/execute/decode/divider/FPU directed+exact differential/fetch/LSU/SB/LSQ/WB/recovery/result buffer/CSR/PMP/trap controller 18종 PASS; RV32F 전체 연산군 6,470 vectors |
-| block | `scripts/run_block_tests.ps1` | ROB/IQ/issue arbiter/MUL/predictor/AXI bridge/I·D fabric/SoC peripheral/PLIC/CLINT 12종 PASS; D-Fabric handoff 포함 |
+| block | `scripts/run_block_tests.ps1` | ROB/IQ/issue arbiter/MUL/predictor/AXI outbound·inbound bridge/I·D fabric/SoC peripheral/PLIC/CLINT 13종 PASS; D-Fabric handoff와 4-KiB burst reject 포함 |
 | backend integration | `scripts/run_integration_tests.ps1` | dual dispatch/retire, dependency, branch recovery, FP same-pair dependency와 FADD.S exact-zero retire, LSU/CSR/PMP, EBREAK/C.EBREAK precise trap directed PASS |
 | SoC directed boot | `scripts/run_soc_boot_test.ps1` | Boot ROM/Host AXI/ITIM/DTIM/HostIF/CLINT MSIP PASS |
 | DPI ELF | `scripts/run_soc_elf_test.ps1` | ELF 3종 각각 PT_LOAD→mailbox→MSIP→ITIM→HostIF exit(0) PASS |
@@ -2756,6 +2900,67 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 `FSDB_ENABLE=1`을 기본 운영 규칙으로 사용한다. ELF AXI readback 역시 core wake 이전
 시간만 늘리므로 CoreMark 내부 `start_time()`~`stop_time()` 측정에는 포함되지 않는다.
 
+### 18.7 Cross-block corner-case audit
+
+이 절은 개별 module이 정상 입력에서 동작한다는 설명을 넘어, 서로 다른 block의
+상태 전이가 같은 cycle 또는 같은 instruction에 겹칠 때의 architectural 규칙을
+고정한다. `확인`은 현재 RTL과 directed test가 함께 존재한다는 뜻이고, `RTL`은
+구현은 확인했지만 해당 조합의 독립 directed test를 더 보강해야 한다는 뜻이다.
+
+| 경계/동시 사건 | 현재 RTL 규칙 | 상태와 추가 closure |
+|---|---|---|
+| lane0 invalid, lane1 valid | frontend/decode/rename/ROB는 program-order prefix만 수락하며 lane1 단독 allocate/retire를 금지 | 확인: rename/ROB assertion과 block test |
+| 같은 bundle RAW | lane1 source가 lane0 destination이면 lane0의 새 physical tag를 사용 | 확인: rename 및 backend same-pair test |
+| 같은 bundle WAW | lane1 stale tag는 lane0의 새 tag이고 lane1 mapping이 최종 RAT가 된다 | 확인: rename test; 두 stale tag는 commit 순서로 반환 |
+| x0 destination/source | x0 write는 physical register를 할당하지 않고 read는 항상 0 | 확인: invariant; long random/formal은 잔여 |
+| resource 부족과 같은-cycle retire | ROB/IQ/LQ/SQ/free-list 중 하나라도 부족하면 bundle 전체 dispatch를 멈추며, 허용된 same-cycle 반환 자원만 allocation 계산에 포함 | RTL+directed; 모든 자원 조합 random 필요 |
+| ROB head/tail wrap | 8-bit sequence의 modular age를 쓰고 active speculative window를 half-range보다 작게 유지 | 확인: ROB/LSQ wrap directed; parameter map check 유지 필요 |
+| completion과 selective branch flush 동시 | boundary 및 older completion은 보존하고 younger ROB/IQ/LQ/SQ/result는 제거 | 확인: ROB/recovery directed |
+| full flush와 completion/dispatch 동시 | architectural trap/reset full flush가 우선하고 해당 cycle의 speculative allocate/writeback은 architectural state를 만들지 않는다 | RTL+assertion; multi-source collision random 필요 |
+| lane0 exception, lane1 normal complete | lane0은 정상 retire하지 않고 trap하며 lane1과 모든 younger state를 flush | 확인: illegal/EBREAK same-bundle test |
+| 두 branch가 같은 cycle resolve | wrap-aware age상 older mispredict만 recovery boundary를 소유하고 younger resolve는 폐기 | RTL+directed; predictor history long random 필요 |
+| redirect와 stale I response | redirect가 fetch epoch를 증가시키고 이전 epoch의 block은 queue를 갱신하지 않는다 | 확인: frontend recovery/PMP boundary test |
+| redirect와 stale load response | flush cycle에 새 speculative read/forward handshake를 막고 기존 killed LQ slot은 response까지 tombstone으로 보존 | 확인: LSQ/backend/CoreMark 회귀 |
+| unknown older store와 younger load | store 주소가 모두 확정될 때까지 load가 memory request를 내지 않는다 | 확인: LSQ directed |
+| 같은 주소의 여러 older store | load보다 가까운 youngest older store가 load byte 전체를 덮고 data-ready일 때만 forwarding | 확인: LSQ directed |
+| partial-overlap 또는 matching data 미정 | byte merge를 추측하지 않고 load를 stall한다 | 확인: LSQ directed; speculative replay는 비목표 |
+| 같은 cycle lane0 store-address와 lane1 load | SQ update가 edge에서 확정된 다음 scheduler cycle에 비교하며 load가 먼저 memory로 나가지 않는다 | RTL+documented pair bypass; dedicated dual-LSU waveform test 보강 대상 |
+| LSU0/1 서로 다른 DTIM bank | 두 load 또는 두 store를 동시에 처리할 수 있고 bank별 1R1W를 독립 사용 | 확인: fabric/LSQ test |
+| LSU0/1 동일 bank | older 요청 하나만 grant하고 younger valid/payload를 유지해 재시도 | 확인: fabric test; 장시간 backpressure fairness random 필요 |
+| 동일 bank same-row read/write | byte strobe가 적용된 write-first 값을 read에 반환 | RTL+SRAM directed; ASIC macro가 다른 정책이면 wrapper bypass 필요 |
+| speculative store 완료 뒤 exception | data/address는 SQ에만 있고 외부 write는 만들지 않으며 flush에서 제거 | 확인: LSQ/store-buffer invariant |
+| committed store와 younger trap | ROB head에서 SB로 넘어간 store는 younger flush와 무관하게 drain한다 | 확인: LSQ/SB directed |
+| device/MMIO load/store | ROB head, older memory drain과 단일 outstanding 조건으로 serialize하고 store response 전 retire하지 않는다 | RTL+SoC directed; AXI VIP random 필요 |
+| FENCE/FENCE.I와 outstanding memory | LSQ/SB idle까지 기다리고 FENCE.I는 다음 PC refetch, fetch epoch 및 target buffer invalidate를 수행 | 확인: RV32C ELF directed; 전체 pred/succ 조합 pending |
+| PMP CSR write와 prefetched instruction | CSR commit 뒤 next PC로 강제 redirect하여 새 PMP 권한으로 parcel을 다시 검사 | 확인: PMP boundary regression |
+| PMP entry partial match | 가장 낮은 index의 matching entry가 전체 접근을 포함하지 못하면 후순위 entry를 찾지 않고 fault | 확인: PMP unit; IFU는 16-byte transport를 2-byte parcel로 별도 판정 |
+| misaligned이면서 unmapped인 data access | LSU alignment 검사에서 먼저 cause 4/6, AXI request 0회 | 확인: backend/full-SoC external-fault test |
+| aligned unmapped data/fetch | Xbar default error target이 DECERR를 반환하고 cause 5/7 또는 instruction access fault로 ROB를 완료 | 확인: full-SoC 및 watchdog test |
+| synchronous exception과 interrupt 동시 | ROB head synchronous exception이 우선하며 interrupt는 ROB-empty architectural boundary에서만 수락 | 확인: trap-controller test/assertion |
+| trap handler 내부 synchronous exception | 다시 M-mode trap으로 진입하고 `mepc/mcause/mtval`을 새 fault로 덮어쓴다 | 확인: 연속 trap CSR unit; software context-save 책임 |
+| trap handler 내부 maskable interrupt | trap entry가 `MIE=0`으로 만들기 때문에 handler가 명시적으로 다시 enable하지 않는 한 중첩되지 않는다 | RTL+CSR directed |
+| WFI와 pending interrupt | locally enabled pending은 sleep을 깨우며 global eligibility가 맞으면 precise trap으로 전환 | 확인: CSR/backend WFI→MSIP test |
+| FP result와 flush | result/tag/fflags는 speculative buffer에서 제거되고 `fflags`는 해당 instruction retire에서만 OR accrue | 확인: FPU transport/backend test; 모든 CSR/FP same-cycle 조합은 serializing 계약에 의존 |
+| AXI unsupported/window/4-KiB crossing burst | whole transaction을 오류로 종료하고 target local request와 partial write를 만들지 않는다 | 확인: inbound bridge와 SoC Xbar 신규 directed test |
+| AXI 무응답 또는 늦은 response | core outbound bridge는 watchdog 후 SLVERR로 완료하며 accept된 transaction의 늦은 response를 drain | 확인: read/write timeout과 ID-reuse directed |
+| Host와 core의 같은 TIM byte 경쟁 | 전기적 bank arbitration 외 coherence는 제공하지 않으며 mailbox/halt/FENCE.I software protocol이 필요 | 명시된 platform contract; data-race 결과는 검증 대상 아님 |
+| reset 중 또는 mid-transaction | 모든 합성 control/pipeline `always_ff`는 reset branch를 가지며 request valid를 차단한다. SRAM/ROM data array는 reset-clear하지 않는다 | `check_rtl.py` reset-policy 검사+회귀; external slave도 동일 reset domain이어야 함 |
+
+trap handler에서 다시 잘못된 `LW/SW/fetch`가 발생하는 것은 RTL 교착 조건이 아니다.
+두 번째 synchronous exception은 첫 trap context의 `mepc/mcause/mtval`을 덮어쓰고 다시
+`mtvec`으로 이동한다. handler가 같은 faulting 경로를 반복하거나 첫 context를 저장하지
+않으면 software 관점에서 무한 trap 또는 복귀 정보 손실이 된다. 따라서 production
+handler는 진입 즉시 필요한 CSR/GPR context를 저장하고, access-fault handler가 접근하는
+stack·code·data가 현재 PMP와 memory map에서 허용되는지 보장해야 한다.
+
+현재 directed baseline이 **전체 sign-off를 뜻하지는 않는다**. 남은 필수 항목은
+RV32IMFC+Zicsr/Zifencei의 장시간 Spike/Sail commit differential, riscv-arch-test 및 넓은
+riscv-dv generated suite, AXI VIP random backpressure/interleave, rename/ROB/LSQ formal,
+production lint warning-zero(폭·signedness 포함), RV64 functional ELF/differential,
+gate-level reset/X-propagation, 합성 STA/PPA와 CDC/RDC다.
+S-mode, 표준 RISC-V Debug Module, cache/MMU/coherence와 external SRAM controller는 현재
+interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
+
 ## 19. Clock/reset/DFT 원칙
 
 - 초기 RTL은 단일 SoC clock, synchronous active-low reset을 사용한다.
@@ -2897,3 +3102,4 @@ disk 사용량은 크게 증가할 수 있다. 성능 측정은 `FSDB_ENABLE=0`,
 | v1.15.3 | host FP에 의존하지 않는 exact-rational/integer-sqrt RV32F oracle과 6,470-vector differential TB를 추가. FADD/FSUB/FMUL/FDIV/FSQRT·4종 FMA뿐 아니라 sign/min/max/compare/class/convert/move까지 전체 RV32F operation, 5개 rounding mode, signed zero/normal/subnormal/infinity/qNaN/sNaN/overflow/underflow result와 fflags를 비교한다. 이 회귀가 발견한 FMA `large finite × zero + small addend`의 zero-product exponent alignment 오류를 수정하고 vector manifest 재현성 검사를 full runner에 편입 |
 | v1.15.4 | 기존 decode-time breakpoint exception 경로를 unit/backend 통합 회귀로 고정하고 HDD의 낡은 EBREAK 미구현 표기를 수정. EBREAK/C.EBREAK가 ROB head에서 cause 3, faulting `mepc`, informative `mtval`로 trap하며 raw compressed trace를 보존하고 same-bundle younger write를 squash하는지 검증. backend runner에 병렬 C++ build option을 추가하고 full runner의 `BuildJobs`를 전달 |
 | v1.15.5 | local→AXI bridge에 parameterized forward-progress watchdog을 추가. 기본 4096 cycles 동안 AR/AW/W/R/B 진행이 없으면 core에 SLVERR를 반환해 instruction/load/store access fault로 ROB를 완료하고, 이미 accept된 AXI transaction의 늦은 응답은 drain state에서 폐기해 ID 재사용 오염을 방지. 무응답 read/write와 late-response recovery를 bridge 회귀로 고정 |
+| v1.16.0 | 49개 합성 source/48개 module을 최신 RTL과 다시 대조하고 3-master×6-target Main Xbar가 최종 system bus임을 명확화. S4 external SRAM 및 표준 Debug Module 확장 contract, Host/Core TIM visibility, 전 core cross-block corner-case matrix와 sign-off 잔여 범위를 추가. AXI4 4-KiB 경계 burst를 Xbar/inbound bridge 양쪽에서 side effect 없이 거부하고 신규 block/SoC directed 회귀로 고정했으며, 현재 baseline을 2-wide로 확정하고 4-issue는 active milestone에서 제외 |

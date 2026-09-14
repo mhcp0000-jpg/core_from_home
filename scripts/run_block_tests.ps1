@@ -69,6 +69,15 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_axi_to_local_burst_tb"
+    Files = @(
+      "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",
+      "rtl/soc/rv_axi4_if.sv",
+      "rtl/soc/rv_local_mem_if.sv", "rtl/soc/rv_axi_to_local_bridge.sv",
+      "tb/unit/soc/rv_axi_bridge_tb.sv"
+    )
+  },
+  @{
     Top = "rv_d_fabric_tb"
     Files = @(
       "rtl/soc/rv_soc_pkg.sv", "rtl/rv_ooo_pkg.sv",

@@ -417,6 +417,30 @@ module rv_axi_to_local_burst_tb;
     if (local_request_count != request_count_before)
       $fatal(1, "invalid burst produced a partial local side effect");
 
+    // AXI4 bursts may not cross a 4 KiB boundary even when both ends are in
+    // the same larger target aperture.  The bridge must reject the complete
+    // burst before issuing its first local beat.
+    request_count_before = local_request_count;
+    ar_valid = 1'b1;
+    ar_id    = 4'h8;
+    ar_addr  = DTIM_BASE_ADDR + 32'h0000_0ff8;
+    ar_len   = 8'd1;
+    do @(posedge clk); while (!axi_bus.ar_ready);
+    @(negedge clk);
+    ar_valid = 1'b0;
+    for (int unsigned beat = 0; beat < 2; beat++) begin
+      while (!axi_bus.r_valid) @(negedge clk);
+      if ((axi_bus.r_id != 4'h8) ||
+          (axi_bus.r_resp != AXI_RESP_SLVERR) ||
+          (axi_bus.r_data != '0) ||
+          (axi_bus.r_last != (beat == 1)))
+        $fatal(1, "4 KiB-crossing inbound burst was not rejected at beat %0d",
+               beat);
+      @(negedge clk);
+    end
+    if (local_request_count != request_count_before)
+      $fatal(1, "4 KiB-crossing burst produced a partial local side effect");
+
     $display("rv_axi_to_local_burst_tb PASS");
     $finish;
   end

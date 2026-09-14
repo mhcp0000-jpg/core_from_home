@@ -160,6 +160,10 @@ module rv_axi_xbar #(
                 ((64'(length) + 1'b1) << size) - 1'b1;
     if (last_byte[63:32] != 0)
       return SOC_TARGET_ERROR;
+    // AXI4 forbids a burst from crossing a 4 KiB address boundary.  Reject it
+    // in the interconnect before any target can observe a partial transfer.
+    if (address[31:12] != last_byte[31:12])
+      return SOC_TARGET_ERROR;
     first_target = decode_address(address);
     last_target  = decode_address(last_byte[31:0]);
     if ((first_target == SOC_TARGET_ERROR) ||

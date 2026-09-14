@@ -179,6 +179,34 @@ module rv_soc_top_tb;
     @(posedge clk);
   endtask
 
+  task automatic axi_read_burst_expect_decerr(
+    input logic [3:0] id,
+    input logic [31:0] address,
+    input logic [7:0] length,
+    input logic [2:0] size
+  );
+    @(negedge clk);
+    ar_id    = id;
+    ar_addr  = address;
+    ar_len   = length;
+    ar_size  = size;
+    ar_valid = 1'b1;
+    do @(posedge clk); while (!host_axi.ar_ready);
+    @(negedge clk);
+    ar_valid = 1'b0;
+    for (int unsigned beat = 0; beat <= length; beat++) begin
+      while (!host_axi.r_valid)
+        @(negedge clk);
+      if ((host_axi.r_id != id) ||
+          (host_axi.r_resp != AXI_RESP_DECERR) ||
+          (host_axi.r_data != '0) ||
+          (host_axi.r_last != (beat == length)))
+        $fatal(1, "SoC rejected-burst response mismatch at beat %0d", beat);
+      @(negedge clk);
+    end
+    ar_len = '0;
+  endtask
+
   logic [63:0] read_data;
   logic [1:0] response;
 
@@ -249,6 +277,12 @@ module rv_soc_top_tb;
     axi_read(4'h7, 32'hde00_0000, 3'd3, read_data, response);
     if (response != AXI_RESP_DECERR)
       $fatal(1, "Unmapped access did not return DECERR");
+
+    // Both addresses are inside ITIM, but the two-beat transfer crosses a
+    // 4 KiB boundary and is therefore illegal AXI4.  The Main Xbar must route
+    // the whole request to its DECERR target instead of touching ITIM.
+    axi_read_burst_expect_decerr(4'ha, ITIM_BASE_ADDR + 32'h0000_0ff8,
+                                 8'd1, 3'd3);
 
     // The interrupt is deliberately the final Host write. This is the boot
     // contract: all ELF/TIM/mailbox writes have completed before wake-up.
