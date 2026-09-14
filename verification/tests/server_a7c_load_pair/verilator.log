@@ -1,0 +1,177 @@
+[LSU-TRACE] enabled=1 (add +lsu_trace to log every accepted D request/response)
+[STALL][0] retirement-stall monitor compiled; first snapshot after 256 idle cycles
+[BOOTROM][0] loading hex file: tb/fixtures/bootrom/bootrom_host_jump.hex
+[BOOTROM][0] hex loaded: word[0]=02028293000012b7 word[1]=0080029330529073 depth=512
+[COMMIT][0] trace file opened: C:/rv_build/server_a7c/diagnostic_commit.csv
+[COMMIT][0] live logger enabled: every retired instruction
+[TB][0] rv_soc_htif_dpi_tb started; timeout=300000 cycles
+[HOST-DPI][0] initialized; waiting for reset release
+[TB][30] reset deasserted
+[HOST-DPI][30] reset released; waiting for SoC ready
+[HOST-DPI][30] SoC ready; waiting for Boot ROM WFI retire
+[COMMIT][125] order=0 cycle=9 lane=0 pc=00001000 instr=000012b7 rd_we=1 rd_fp=0 rd=5 wdata=00001000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[COMMIT][135] order=1 cycle=10 lane=0 pc=00001004 instr=02028293 rd_we=1 rd_fp=0 rd=5 wdata=00001020 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][155] order=2 cycle=12 lane=0 pc=00001008 instr=30529073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=1 csr_we=1 csr_addr=0x305 csr_name=mtvec csr_wdata=00001020 mnemonic=CSRRW
+[COMMIT][185] order=3 cycle=15 lane=0 pc=0000100c instr=00800293 rd_we=1 rd_fp=0 rd=5 wdata=00000008 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][205] order=4 cycle=17 lane=0 pc=00001010 instr=30429073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=1 csr_we=1 csr_addr=0x304 csr_name=mie csr_wdata=00000008 mnemonic=CSRRW
+[COMMIT][225] order=5 cycle=19 lane=0 pc=00001014 instr=3002a073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=1 csr_we=1 csr_addr=0x300 csr_name=mstatus csr_wdata=00000008 mnemonic=CSRRS
+[TB][255] Boot ROM WFI retired: lane=0 pc=0x00001018
+[COMMIT][255] order=6 cycle=22 lane=0 pc=00001018 instr=10500073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=WFI
+[HOST-DPI][255] Boot ROM WFI observed; starting ELF load
+[HOST-DPI][255] opening ELF: C:/rv_build/server_a7c/load_pair.elf
+[HOST-DPI][255] ELF parsed: entry=0x80000000 segments=2
+[HOST-DPI][255] segment[0] start paddr=0x80000000 filesz=2844 memsz=2844
+[HOST-DPI][11400] segment[0] load progress 2844/2844 bytes
+[HOST-DPI][11400] segment[0] complete
+[HOST-DPI][11400] segment[1] start paddr=0x80020000 filesz=56080 memsz=56080
+[HOST-DPI][75400] segment[1] load progress 16384/56080 bytes
+[HOST-DPI][139400] segment[1] load progress 32768/56080 bytes
+[HOST-DPI][203400] segment[1] load progress 49152/56080 bytes
+[HOST-DPI][230480] segment[1] load progress 56080/56080 bytes
+[HOST-DPI][230480] segment[1] complete
+[HOST-DPI][230480] ELF AXI readback verification enabled
+[HOST-DPI][230480] segment[0] readback start paddr=0x80000000 memsz=2844
+[HOST-DPI][244720] segment[0] readback progress 2844/2844 bytes
+[HOST-DPI][244720] segment[0] readback PASS checked=2844 bytes
+[HOST-DPI][244720] segment[1] readback start paddr=0x80020000 memsz=56080
+[HOST-DPI][326640] segment[1] readback progress 16384/56080 bytes
+[HOST-DPI][408560] segment[1] readback progress 32768/56080 bytes
+[HOST-DPI][490480] segment[1] readback progress 49152/56080 bytes
+[HOST-DPI][525120] segment[1] readback progress 56080/56080 bytes
+[HOST-DPI][525120] segment[1] readback PASS checked=56080 bytes
+[HOST-DPI][525120] ELF AXI readback PASS total=58924 bytes
+[HOST-DPI][525120] all ELF segments loaded and accepted
+[HOST-DPI][525120] writing boot entry 0x80000000 to 0x10000004
+[HOST-DPI][525170] writing boot-ready flag to 0x10000008
+[TB][525195] boot mailbox ready: entry=0x80000000 flags=0x00000001
+[HOST-DPI][525220] asserting software interrupt: CLINT MSIP[0] @ 0x02000000
+[TB][525245] CLINT MSIP asserted; software interrupt is pending
+[COMMIT][525255] order=7 cycle=52522 lane=0 pc=0000101c instr=00000000 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=1 cause=3 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=C.ILLEGAL
+[HOST-DPI][525270] CLINT MSIP write acknowledged
+[HOST-DPI][525270] ELF load complete; core wake-up requested
+[HOST-DPI][525270] HTIF server polling TOHOST=0x80020000 FROMHOST=0x80020008
+[COMMIT][525355] order=8 cycle=52532 lane=0 pc=00001020 instr=020002b7 rd_we=1 rd_fp=0 rd=5 wdata=02000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[COMMIT][525365] order=9 cycle=52533 lane=0 pc=00001024 instr=00028293 rd_we=1 rd_fp=0 rd=5 wdata=02000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[LSU-REQ][525375] lane=0 id=30 seq=10 write=1 addr=02000000 size=2 data=0000000000000000 mask=0f
+[TB][525375] CLINT MSIP cleared by Boot ROM handler
+[LSU-RSP][525385] lane=0 id=30 resp=0 replay=0 data=0000000000000001
+[COMMIT][525385] order=10 cycle=52535 lane=0 pc=00001028 instr=0002a023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SW
+[COMMIT][525385] order=11 cycle=52535 lane=1 pc=0000102c instr=100002b7 rd_we=1 rd_fp=0 rd=5 wdata=10000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[COMMIT][525405] order=12 cycle=52537 lane=0 pc=00001030 instr=00028293 rd_we=1 rd_fp=0 rd=5 wdata=10000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[LSU-REQ][525415] lane=0 id=0 seq=13 write=0 addr=10000004 size=2 data=0000000000000000 mask=00
+[LSU-RSP][525465] lane=0 id=0 resp=0 replay=0 data=8000000000000000
+[COMMIT][525485] order=13 cycle=52545 lane=0 pc=00001034 instr=0042a303 rd_we=1 rd_fp=0 rd=6 wdata=80000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LW
+[COMMIT][525485] order=14 cycle=52545 lane=1 pc=00001038 instr=00030067 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JALR
+[COMMIT][525525] order=15 cycle=52549 lane=0 pc=80000000 instr=000062b7 rd_we=1 rd_fp=0 rd=5 wdata=00006000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[COMMIT][525545] order=16 cycle=52551 lane=0 pc=80000004 instr=3002a073 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=1 csr_we=1 csr_addr=0x300 csr_name=mstatus csr_wdata=00007880 mnemonic=CSRRS
+[COMMIT][525605] order=17 cycle=52557 lane=0 pc=80000008 instr=f00001d3 rd_we=1 rd_fp=1 rd=3 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=1 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=FMV.W.X
+[COMMIT][525615] order=18 cycle=52558 lane=0 pc=8000000c instr=f0000c53 rd_we=1 rd_fp=1 rd=24 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=1 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=FMV.W.X
+[COMMIT][525625] order=19 cycle=52559 lane=0 pc=80000010 instr=f0000153 rd_we=1 rd_fp=1 rd=2 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=1 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=FMV.W.X
+[COMMIT][525625] order=20 cycle=52559 lane=1 pc=80000014 instr=01100713 rd_we=1 rd_fp=0 rd=14 wdata=00000011 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525635] order=21 cycle=52560 lane=0 pc=80000018 instr=02200d13 rd_we=1 rd_fp=0 rd=26 wdata=00000022 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525635] order=22 cycle=52560 lane=1 pc=8000001c instr=03300b93 rd_we=1 rd_fp=0 rd=23 wdata=00000033 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525645] order=23 cycle=52561 lane=0 pc=80000020 instr=04400993 rd_we=1 rd_fp=0 rd=19 wdata=00000044 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525645] order=24 cycle=52561 lane=1 pc=80000024 instr=25e0006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][525655] order=25 cycle=52562 lane=0 pc=80000282 instr=7f20006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][525655] order=26 cycle=52562 lane=1 pc=80000a74 instr=0002d297 rd_we=1 rd_fp=0 rd=5 wdata=8002da74 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+[COMMIT][525665] order=27 cycle=52563 lane=0 pc=80000a78 instr=f6928293 rd_we=1 rd_fp=0 rd=5 wdata=8002d9dd trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[LSU-REQ][525675] lane=0 id=0 seq=37 write=0 addr=8002d92a size=1 data=0000000000000000 mask=00
+[LSU-REQ][525685] lane=0 id=2 seq=39 write=0 addr=8002da84 size=1 data=0000000000000000 mask=00
+[LSU-RSP][525685] lane=0 id=0 resp=0 replay=0 data=5a5a5a5a5a5a5a5a
+[LSU-REQ][525685] lane=1 id=1 seq=38 write=0 addr=8002d92a size=0 data=0000000000000000 mask=00
+[LSU-RSP][525695] lane=0 id=2 resp=0 replay=0 data=5a5a5a5a5a5a5a5a
+[LSU-REQ][525695] lane=1 id=3 seq=40 write=0 addr=8002dab3 size=0 data=0000000000000000 mask=00
+[LSU-RSP][525695] lane=1 id=1 resp=0 replay=0 data=5a5a5a5a5a5a5a5a
+[COMMIT][525695] order=28 cycle=52566 lane=0 pc=80000a7c instr=f4d2d903 rd_we=1 rd_fp=0 rd=18 wdata=00005a5a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LHU
+[LSU-REQ][525705] lane=0 id=4 seq=41 write=0 addr=8002dab3 size=0 data=0000000000000000 mask=00
+[LSU-RSP][525705] lane=1 id=3 resp=0 replay=0 data=5a5a5a5a5a5a5a5a
+[COMMIT][525705] order=29 cycle=52567 lane=0 pc=80000a80 instr=f4d2cd83 rd_we=1 rd_fp=0 rd=27 wdata=0000005a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LBU
+[LSU-RSP][525715] lane=0 id=4 resp=0 replay=0 data=5a5a5a5a5a5a5a5a
+[COMMIT][525715] order=30 cycle=52568 lane=0 pc=80000a84 instr=0a729203 rd_we=1 rd_fp=0 rd=4 wdata=00005a5a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LH
+[COMMIT][525725] order=31 cycle=52569 lane=0 pc=80000a88 instr=0d628203 rd_we=1 rd_fp=0 rd=4 wdata=0000005a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LB
+[COMMIT][525735] order=32 cycle=52570 lane=0 pc=80000a8c instr=0d62cc83 rd_we=1 rd_fp=0 rd=25 wdata=0000005a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LBU
+[COMMIT][525735] order=33 cycle=52570 lane=1 pc=80000a90 instr=1181c847 rd_we=1 rd_fp=1 rd=16 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=1 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=FMSUB.S
+[COMMIT][525745] order=34 cycle=52571 lane=0 pc=80000a94 instr=0ce28b23 rd_we=0 rd_fp=0 rd=22 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SB
+[LSU-REQ][525755] lane=0 id=20 seq=43 write=1 addr=8002dab3 size=0 data=0000000011000000 mask=08
+[LSU-RSP][525765] lane=0 id=20 resp=0 replay=0 data=0000000000000000
+[COMMIT][525765] order=35 cycle=52573 lane=0 pc=80000a98 instr=3401d273 rd_we=1 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=1 csr_we=1 csr_addr=0x340 csr_name=mscratch csr_wdata=00000003 mnemonic=CSRRWI
+[LSU-REQ][525805] lane=0 id=0 seq=45 write=0 addr=8002dab3 size=0 data=0000000000000000 mask=00
+[LSU-RSP][525815] lane=0 id=0 resp=0 replay=0 data=5a5a5a5a115a5a5a
+[COMMIT][525825] order=36 cycle=52579 lane=0 pc=80000a9c instr=0d628583 rd_we=1 rd_fp=0 rd=11 wdata=00000011 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LB
+[COMMIT][525835] order=37 cycle=52580 lane=0 pc=80000aa0 instr=0da28b23 rd_we=0 rd_fp=0 rd=22 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SB
+[COMMIT][525835] order=38 cycle=52580 lane=1 pc=80000aa4 instr=01a254b3 rd_we=1 rd_fp=0 rd=9 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SRL
+[LSU-REQ][525845] lane=0 id=21 seq=46 write=1 addr=8002dab3 size=0 data=0000000022000000 mask=08
+[COMMIT][525845] order=39 cycle=52581 lane=0 pc=80000aa8 instr=0d62cc83 rd_we=1 rd_fp=0 rd=25 wdata=00000022 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LBU
+[LSU-RSP][525855] lane=0 id=21 resp=0 replay=0 data=0000000000000000
+[COMMIT][525855] order=40 cycle=52582 lane=0 pc=80000aac instr=0d628683 rd_we=1 rd_fp=0 rd=13 wdata=00000022 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LB
+[COMMIT][525865] order=41 cycle=52583 lane=0 pc=80000ab0 instr=0d728b23 rd_we=0 rd_fp=0 rd=22 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SB
+[LSU-REQ][525875] lane=0 id=22 seq=50 write=1 addr=8002dab3 size=0 data=0000000033000000 mask=08
+[COMMIT][525875] order=42 cycle=52584 lane=0 pc=80000ab4 instr=0d328b23 rd_we=0 rd_fp=0 rd=22 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SB
+[COMMIT][525875] order=43 cycle=52584 lane=1 pc=80000ab8 instr=00028097 rd_we=1 rd_fp=0 rd=1 wdata=80028ab8 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+[LSU-RSP][525885] lane=0 id=22 resp=0 replay=0 data=0000000000000000
+[COMMIT][525885] order=44 cycle=52585 lane=0 pc=80000abc instr=56e08093 rd_we=1 rd_fp=0 rd=1 wdata=80029026 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525885] order=45 cycle=52585 lane=1 pc=80000ac0 instr=00006337 rd_we=1 rd_fp=0 rd=6 wdata=00006000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[LSU-REQ][525895] lane=0 id=23 seq=51 write=1 addr=8002dab3 size=0 data=0000000044000000 mask=08
+[COMMIT][525895] order=46 cycle=52586 lane=0 pc=80000ac4 instr=a5a30313 rd_we=1 rd_fp=0 rd=6 wdata=00005a5a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525895] order=47 cycle=52586 lane=1 pc=80000ac8 instr=02691e63 rd_we=0 rd_fp=0 rd=28 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[LSU-RSP][525905] lane=0 id=23 resp=0 replay=0 data=0000000000000000
+[COMMIT][525905] order=48 cycle=52587 lane=0 pc=80000acc instr=05a00313 rd_we=1 rd_fp=0 rd=6 wdata=0000005a trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525905] order=49 cycle=52587 lane=1 pc=80000ad0 instr=026d9a63 rd_we=0 rd_fp=0 rd=20 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[COMMIT][525915] order=50 cycle=52588 lane=0 pc=80000ad4 instr=01100313 rd_we=1 rd_fp=0 rd=6 wdata=00000011 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525915] order=51 cycle=52588 lane=1 pc=80000ad8 instr=02659663 rd_we=0 rd_fp=0 rd=12 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[LSU-REQ][525925] lane=0 id=0 seq=66 write=0 addr=8002dab3 size=0 data=0000000000000000 mask=00
+[COMMIT][525925] order=52 cycle=52589 lane=0 pc=80000adc instr=02200313 rd_we=1 rd_fp=0 rd=6 wdata=00000022 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525925] order=53 cycle=52589 lane=1 pc=80000ae0 instr=026c9263 rd_we=0 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[LSU-RSP][525935] lane=0 id=0 resp=0 replay=0 data=5a5a5a5a445a5a5a
+[COMMIT][525935] order=54 cycle=52590 lane=0 pc=80000ae4 instr=02669063 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[COMMIT][525935] order=55 cycle=52590 lane=1 pc=80000ae8 instr=8002e2b7 rd_we=1 rd_fp=0 rd=5 wdata=8002e000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LUI
+[COMMIT][525945] order=56 cycle=52591 lane=0 pc=80000aec instr=ab328293 rd_we=1 rd_fp=0 rd=5 wdata=8002dab3 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525955] order=57 cycle=52592 lane=0 pc=80000af0 instr=0002c303 rd_we=1 rd_fp=0 rd=6 wdata=00000044 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=LBU
+[COMMIT][525955] order=58 cycle=52592 lane=1 pc=80000af4 instr=04400393 rd_we=1 rd_fp=0 rd=7 wdata=00000044 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525965] order=59 cycle=52593 lane=0 pc=80000af8 instr=00731663 rd_we=0 rd_fp=0 rd=12 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=BNE
+[COMMIT][525965] order=60 cycle=52593 lane=1 pc=80000afc instr=00100313 rd_we=1 rd_fp=0 rd=6 wdata=00000001 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525975] order=61 cycle=52594 lane=0 pc=80000b00 instr=0080006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][525975] order=62 cycle=52594 lane=1 pc=80000b08 instr=0001f297 rd_we=1 rd_fp=0 rd=5 wdata=8001fb08 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=AUIPC
+[COMMIT][525985] order=63 cycle=52595 lane=0 pc=80000b0c instr=4f828293 rd_we=1 rd_fp=0 rd=5 wdata=80020000 trap=0 cause=0 tval=00000000 gpr_we=1 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=ADDI
+[COMMIT][525995] order=64 cycle=52596 lane=0 pc=80000b10 instr=0002a223 rd_we=0 rd_fp=0 rd=4 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SW
+[LSU-REQ][526005] lane=0 id=24 seq=73 write=1 addr=80020004 size=2 data=0000000000000000 mask=f0
+[COMMIT][526005] order=65 cycle=52597 lane=0 pc=80000b14 instr=0062a023 rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=SW
+[COMMIT][526005] order=66 cycle=52597 lane=1 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[LSU-RSP][526015] lane=0 id=24 resp=0 replay=0 data=0000000000000000
+[COMMIT][526015] order=67 cycle=52598 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526015] order=68 cycle=52598 lane=1 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[LSU-REQ][526025] lane=0 id=25 seq=74 write=1 addr=80020000 size=2 data=0000000000000001 mask=0f
+[COMMIT][526025] order=69 cycle=52599 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526025] order=70 cycle=52599 lane=1 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[LSU-RSP][526035] lane=0 id=25 resp=0 replay=0 data=0000000000000000
+[COMMIT][526035] order=71 cycle=52600 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526035] order=72 cycle=52600 lane=1 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526045] order=73 cycle=52601 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526045] order=74 cycle=52601 lane=1 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526055] order=75 cycle=52602 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526065] order=76 cycle=52603 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526075] order=77 cycle=52604 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526085] order=78 cycle=52605 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526095] order=79 cycle=52606 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526105] order=80 cycle=52607 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526115] order=81 cycle=52608 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526125] order=82 cycle=52609 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526135] order=83 cycle=52610 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526145] order=84 cycle=52611 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526155] order=85 cycle=52612 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526165] order=86 cycle=52613 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526175] order=87 cycle=52614 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526185] order=88 cycle=52615 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526195] order=89 cycle=52616 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526205] order=90 cycle=52617 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526215] order=91 cycle=52618 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526225] order=92 cycle=52619 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526235] order=93 cycle=52620 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[COMMIT][526245] order=94 cycle=52621 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+[host-finish code=0]
+HTIF TEST PASS
+- Z:/tb/e2e/dpi\rv_soc_htif_dpi_tb.sv:379: Verilog $finish
+[COMMIT][526255] order=95 cycle=52622 lane=0 pc=80000b18 instr=0000006f rd_we=0 rd_fp=0 rd=0 wdata=00000000 trap=0 cause=0 tval=00000000 gpr_we=0 fpr_we=0 csr_valid=0 csr_we=0 csr_addr=0x000 csr_name=none csr_wdata=00000000 mnemonic=JAL
+- S i m u l a t i o n   R e p o r t: Verilator 5.050 2026-07-01
+- Verilator: $finish at 526ns; walltime 0.417 s; speed 1.261 us/s
+- Verilator: cpu 0.000 s on 1 threads; allocated 8 MB
