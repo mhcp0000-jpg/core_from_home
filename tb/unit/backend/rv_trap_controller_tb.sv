@@ -15,6 +15,7 @@ module rv_trap_controller_tb;
   logic [1:0][31:0] retire_next_pc;
   logic retire_is_mret, retire_is_wfi, retire_is_fence_i;
   logic retire_is_pmp_write;
+  logic retire_is_decode_state_write;
   logic [31:0] mret_pc;
   logic wfi_wake;
   logic redirect_valid, redirect_pending, wfi_sleep;
@@ -38,6 +39,7 @@ module rv_trap_controller_tb;
     .retire_is_mret_i(retire_is_mret), .retire_is_wfi_i(retire_is_wfi),
     .retire_is_fence_i_i(retire_is_fence_i), .mret_pc_i(mret_pc),
     .retire_is_pmp_write_i(retire_is_pmp_write),
+    .retire_is_decode_state_write_i(retire_is_decode_state_write),
     .wfi_wake_i(wfi_wake),
     .architectural_redirect_valid_o(redirect_valid),
     .architectural_redirect_pc_o(redirect_pc),
@@ -62,6 +64,7 @@ module rv_trap_controller_tb;
     retire_is_wfi = 1'b0;
     retire_is_fence_i = 1'b0;
     retire_is_pmp_write = 1'b0;
+    retire_is_decode_state_write = 1'b0;
     mret_pc = '0;
     wfi_wake = 1'b0;
   endtask
@@ -163,6 +166,18 @@ module rv_trap_controller_tb;
     #1;
     if (redirect_pending)
       $fatal(1, "PMP redirect must be a single-cycle event");
+
+    @(negedge clk);
+    retire_is_decode_state_write = 1'b1;
+    retire_next_pc[0] = 32'h8000_0904;
+    retire_fire = 2'b01;
+    @(posedge clk);
+    #1;
+    if (!redirect_pending || !redirect_valid ||
+        redirect_pc != 32'h8000_0904)
+      $fatal(1, "Decode-state CSR commit must refetch the next PC");
+    @(negedge clk);
+    idle_inputs();
 
     $display("rv_trap_controller_tb PASS");
     $finish;

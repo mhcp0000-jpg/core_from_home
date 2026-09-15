@@ -11,6 +11,10 @@ module rv_decode2 #(
   input  rv_ooo_pkg::inst_len_e [1:0]        in_inst_len_i,
   input  rv_ooo_pkg::prediction_meta_t [1:0] in_prediction_i,
   input  logic [1:0]                         in_fetch_fault_i,
+  // FP instructions access architectural f-register/FCSR state only while
+  // mstatus.FS is not Off.  This dynamic permission is deliberately separate
+  // from HAS_F, which describes the physically implemented extension.
+  input  logic                               fp_state_enabled_i,
 
   output logic [1:0]                         uop_valid_o,
   input  logic [1:0]                         uop_ready_i,
@@ -499,7 +503,7 @@ module rv_decode2 #(
           uop_immediate_o[lane] = imm_i(insn);
           uop_mem_size_o[lane] = 2;
           uop_is_load_o[lane] = 1'b1;
-          illegal = !HAS_F || (funct3 != 3'b010);
+          illegal = !HAS_F || !fp_state_enabled_i || (funct3 != 3'b010);
         end
 
         7'b0100111: begin // FSW
@@ -514,7 +518,7 @@ module rv_decode2 #(
           uop_immediate_o[lane] = imm_s(insn);
           uop_mem_size_o[lane] = 2;
           uop_is_store_o[lane] = 1'b1;
-          illegal = !HAS_F || (funct3 != 3'b010);
+          illegal = !HAS_F || !fp_state_enabled_i || (funct3 != 3'b010);
         end
 
         7'b1000011, 7'b1000111, 7'b1001011, 7'b1001111: begin // FMADD family
@@ -530,7 +534,8 @@ module rv_decode2 #(
           uop_dst_class_o[lane] = REG_FP;
           uop_writes_dst_o[lane] = 1'b1;
           uop_operation_o[lane] = {9'b0, opcode};
-          illegal = !HAS_F || (insn[26:25] != 2'b00) ||
+          illegal = !HAS_F || !fp_state_enabled_i ||
+                    (insn[26:25] != 2'b00) ||
                     !valid_rounding_mode(funct3);
         end
 
@@ -543,7 +548,7 @@ module rv_decode2 #(
           uop_src_used_o[lane][0] = 1'b1;
           uop_dst_class_o[lane] = REG_FP;
           uop_writes_dst_o[lane] = 1'b1;
-          illegal = !HAS_F;
+          illegal = !HAS_F || !fp_state_enabled_i;
           case (funct7)
             7'b0000000, 7'b0000100, 7'b0001000, 7'b0001100:
               begin
@@ -618,6 +623,16 @@ module rv_decode2 #(
         uop_fu_o[lane] = FU_NONE;
         uop_exec_port_mask_o[lane] = '0;
         uop_writes_dst_o[lane] = 1'b0;
+        // An illegal encoding is represented only by its precise ROB
+        // exception.  Clear all side-effect/resource classifications so a
+        // malformed load/store cannot allocate LSQ state before trapping.
+        uop_is_load_o[lane] = 1'b0;
+        uop_is_store_o[lane] = 1'b0;
+        uop_is_branch_o[lane] = 1'b0;
+        uop_is_csr_o[lane] = 1'b0;
+        uop_is_fence_o[lane] = 1'b0;
+        uop_is_fence_i_o[lane] = 1'b0;
+        uop_is_serializing_o[lane] = 1'b0;
         uop_exception_valid_o[lane] = 1'b1;
         uop_exception_cause_o[lane] = EXC_ILLEGAL_INSTRUCTION;
         uop_exception_tval_o[lane] =

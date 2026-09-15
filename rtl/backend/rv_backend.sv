@@ -129,12 +129,15 @@ module rv_backend #(
   logic [1:0][11:0] dec_csr_addr;
   logic [1:0] dec_csr_immediate;
   logic [1:0][3:0] dec_fence_predecessor, dec_fence_successor;
+  logic [XLEN-1:0] csr_mstatus;
 
   rv_decode2 #(.XLEN(XLEN), .HAS_C(HAS_C), .HAS_F(HAS_F), .HAS_SMODE(HAS_SMODE)) u_decode (
     .in_valid_i(fetch_valid_i), .in_ready_o(fetch_ready_o),
     .in_pc_i(fetch_pc_i), .in_instruction_i(fetch_instr_i),
     .in_inst_len_i(fetch_inst_len_i), .in_prediction_i(fetch_prediction_i),
-    .in_fetch_fault_i(fetch_fault_i), .uop_valid_o(dec_valid),
+    .in_fetch_fault_i(fetch_fault_i),
+    .fp_state_enabled_i(HAS_F && (csr_mstatus[14:13] != 2'b00)),
+    .uop_valid_o(dec_valid),
     .uop_ready_i(dec_ready), .uop_pc_o(dec_pc),
     .uop_raw_instruction_o(dec_raw),
     .uop_canonical_instruction_o(dec_instruction), .uop_inst_len_o(dec_len),
@@ -978,7 +981,7 @@ module rv_backend #(
   logic head_is_ecall, head_is_mret, head_is_wfi, head_is_fence,
         head_is_fence_i, head_special_request;
   logic retire_is_csr, retire_is_mret, retire_is_wfi, retire_is_fence_i;
-  logic retire_is_pmp_write;
+  logic retire_is_pmp_write, retire_is_decode_state_write;
   csr_cmd_e head_csr_cmd;
   logic [XLEN-1:0] head_csr_operand, csr_rdata;
   logic csr_ready, csr_illegal, csr_write_effect, csr_execute, csr_commit;
@@ -987,7 +990,7 @@ module rv_backend #(
                    csr_trap_vector;
   logic [5:0] csr_trap_cause, csr_interrupt_cause;
   logic csr_mret_ready, csr_mret_illegal, csr_wfi_illegal, csr_wfi_wake;
-  logic [XLEN-1:0] csr_mret_pc, csr_mstatus, csr_mtvec, csr_mepc;
+  logic [XLEN-1:0] csr_mret_pc, csr_mtvec, csr_mepc;
   logic [4:0] csr_fflags;
   logic [4:0] commit_fflags;
   logic commit_fflags_valid;
@@ -1061,8 +1064,17 @@ module rv_backend #(
     ((retire_instruction[0][13:12] == 2'b01) ||
      (retire_instruction[0][19:15] != 5'b0));
 
+  // mstatus.FS changes whether prefetched FP operations are legal. Refetch
+  // after a committed mstatus write so younger uops decoded under the old
+  // state cannot survive the serializing CSR.
+  assign retire_is_decode_state_write = retire_is_csr &&
+    (retire_instruction[0][31:20] == 12'h300) &&
+    ((retire_instruction[0][13:12] == 2'b01) ||
+     (retire_instruction[0][19:15] != 5'b0));
+
   rv_csr_file #(
-    .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_SMODE(HAS_SMODE), .PMP_ENTRIES(8),
+    .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH), .HAS_C(HAS_C), .HAS_F(HAS_F),
+    .HAS_SMODE(HAS_SMODE), .PMP_ENTRIES(8),
     .RESET_MTVEC(TRAP_VECTOR), .HART_ID('0)
   ) u_csr_file (
     .clk_i, .rst_ni, .csr_valid_i(head_special_request &&
@@ -1120,6 +1132,7 @@ module rv_backend #(
     .retire_is_wfi_i(retire_is_wfi),
     .retire_is_fence_i_i(retire_is_fence_i),
     .retire_is_pmp_write_i(retire_is_pmp_write),
+    .retire_is_decode_state_write_i(retire_is_decode_state_write),
     .mret_pc_i(csr_mret_pc),
     .wfi_wake_i(csr_wfi_wake),
     .architectural_redirect_valid_o(architectural_redirect_valid),

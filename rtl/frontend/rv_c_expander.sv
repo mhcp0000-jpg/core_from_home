@@ -164,7 +164,9 @@ module rv_c_expander #(
           3'b010: begin // C.LI
             imm12 = {{6{compressed_i[12]}}, compressed_i[12], compressed_i[6:2]};
             instruction_o = enc_i(imm12, 5'd0, 3'b000, rd_rs1, 7'b0010011);
-            illegal_o = (rd_rs1 == 0);
+            // rd=x0 is a standard RVC HINT, not a reserved encoding.  It may
+            // execute as ADDI x0,x0,imm and therefore has no architectural
+            // effect other than advancing the PC/counters.
           end
           3'b011: begin
             if (rd_rs1 == 5'd2) begin // C.ADDI16SP
@@ -177,8 +179,9 @@ module rv_c_expander #(
               instruction_o = enc_u({{14{compressed_i[12]}},
                                      compressed_i[12], compressed_i[6:2]},
                                     rd_rs1, 7'b0110111);
-              illegal_o = (rd_rs1 == 0) || (rd_rs1 == 2) ||
-                          ({compressed_i[12], compressed_i[6:2]} == 0);
+              // C.LUI rd=x0,nzimm is a HINT.  nzimm=0 remains reserved;
+              // rd=x2 was already selected above as C.ADDI16SP.
+              illegal_o = ({compressed_i[12], compressed_i[6:2]} == 0);
             end
           end
           3'b100: begin
@@ -257,7 +260,9 @@ module rv_c_expander #(
           3'b000: begin // C.SLLI
             imm12 = {6'b000000, compressed_i[12], compressed_i[6:2]};
             instruction_o = enc_i(imm12, rd_rs1, 3'b001, rd_rs1, 7'b0010011);
-            illegal_o = (rd_rs1 == 0) || ((XLEN == 32) && compressed_i[12]);
+            // rd=x0 and shamt=0 are HINT encodings.  RV32 still reserves a
+            // shift amount whose high bit (instruction bit 12) is one.
+            illegal_o = (XLEN == 32) && compressed_i[12];
           end
           3'b010: begin // C.LWSP
             imm12 = {4'b0, compressed_i[3:2], compressed_i[12],
@@ -288,7 +293,7 @@ module rv_c_expander #(
               end else begin // C.MV
                 instruction_o = enc_r(7'b0000000, rs2, 5'd0, 3'b000,
                                         rd_rs1, 7'b0110011);
-                illegal_o = (rd_rs1 == 0);
+                // rd=x0,rs2!=x0 is an RVC HINT.
               end
             end else begin
               if ((rd_rs1 == 0) && (rs2 == 0)) begin // C.EBREAK
@@ -300,7 +305,8 @@ module rv_c_expander #(
               end else begin // C.ADD
                 instruction_o = enc_r(7'b0000000, rs2, rd_rs1, 3'b000,
                                         rd_rs1, 7'b0110011);
-                illegal_o = (rd_rs1 == 0);
+                // rd=x0,rs2!=x0 is an RVC HINT (including standardized NTL
+                // hints for rs2=x2..x5).
               end
             end
           end

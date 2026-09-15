@@ -15,6 +15,7 @@ module rv_decode2_tb;
   inst_len_e [1:0] in_inst_len;
   prediction_meta_t [1:0] in_prediction;
   logic [1:0] in_fetch_fault;
+  logic fp_state_enabled;
   logic [1:0] uop_valid;
   logic [1:0] uop_ready;
   logic [1:0][31:0] uop_canonical;
@@ -59,6 +60,7 @@ module rv_decode2_tb;
     .in_inst_len_i                 (in_inst_len),
     .in_prediction_i               (in_prediction),
     .in_fetch_fault_i              (in_fetch_fault),
+    .fp_state_enabled_i            (fp_state_enabled),
     .uop_valid_o                   (uop_valid),
     .uop_ready_i                   (uop_ready),
     .uop_canonical_instruction_o   (uop_canonical),
@@ -103,6 +105,7 @@ module rv_decode2_tb;
     in_inst_len[1] = INST_LEN_32;
     in_prediction = '0;
     in_fetch_fault = '0;
+    fp_state_enabled = 1'b1;
     uop_ready = 2'b11;
     #1;
 
@@ -131,6 +134,27 @@ module rv_decode2_tb;
       $fatal(1, "RV32 C.FSW expansion failed");
     if (c64_illegal || (c64_out != 32'h00f7_b023))
       $fatal(1, "RV64 C.SD expansion failed");
+
+    c32_in = 16'h7049; // C.LUI x0,nzimm: architectural HINT
+    #1;
+    if (c32_illegal || (c32_out[11:7] != 5'd0) ||
+        (c32_out[6:0] != 7'b0110111))
+      $fatal(1, "C.LUI rd=x0 HINT was rejected");
+
+    in_instruction[0] = 32'h0000_e054; // C.FSW f13,4(x8)
+    in_inst_len[0] = INST_LEN_16;
+    fp_state_enabled = 1'b0;
+    #1;
+    if (!uop_exception_valid[0] ||
+        (uop_exception_cause[0] != EXC_ILLEGAL_INSTRUCTION) ||
+        uop_is_store[0])
+      $fatal(1, "C.FSW executed while mstatus.FS was Off");
+    fp_state_enabled = 1'b1;
+    #1;
+    if (uop_exception_valid[0] || !uop_is_store[0] ||
+        (uop_src_class[0][1] != REG_FP) ||
+        (uop_immediate[0] != 4))
+      $fatal(1, "C.FSW was rejected while floating-point state was enabled");
 
     c32_in = 16'h60b2; // C.FLWSP f1,12(sp)
     #1;

@@ -1,6 +1,8 @@
 module rv_csr_file #(
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = XLEN,
+  parameter bit HAS_C = 1'b1,
+  parameter bit HAS_F = 1'b1,
   parameter bit HAS_SMODE = 1'b0,
   parameter int unsigned PMP_ENTRIES = 8,
   parameter logic [XLEN-1:0] RESET_MTVEC = 'h8000_0000,
@@ -106,6 +108,7 @@ module rv_csr_file #(
   logic [XLEN-1:0] mstatus_read_value;
   logic csr_exists;
   logic csr_counter_access;
+  logic csr_fp_state_access;
   logic csr_read_only;
   logic csr_privilege_ok;
   logic csr_write_intent;
@@ -115,8 +118,8 @@ module rv_csr_file #(
   function automatic logic [XLEN-1:0] build_misa;
     logic [XLEN-1:0] value;
     value = '0;
-    value[2]  = 1'b1; // C
-    value[5]  = 1'b1; // F
+    value[2]  = HAS_C; // C
+    value[5]  = HAS_F; // F
     value[8]  = 1'b1; // I
     value[12] = 1'b1; // M
     value[20] = 1'b1; // U
@@ -169,11 +172,21 @@ module rv_csr_file #(
 
     csr_exists = 1'b1;
     csr_counter_access = 1'b0;
+    csr_fp_state_access = 1'b0;
     csr_read_value = '0;
     case (csr_addr_i)
-      12'h001: csr_read_value = XLEN'(fflags_q);
-      12'h002: csr_read_value = XLEN'(frm_q);
-      12'h003: csr_read_value = XLEN'({frm_q, fflags_q});
+      12'h001: begin
+        csr_read_value = XLEN'(fflags_q);
+        csr_fp_state_access = 1'b1;
+      end
+      12'h002: begin
+        csr_read_value = XLEN'(frm_q);
+        csr_fp_state_access = 1'b1;
+      end
+      12'h003: begin
+        csr_read_value = XLEN'({frm_q, fflags_q});
+        csr_fp_state_access = 1'b1;
+      end
       12'h300: csr_read_value = mstatus_read_value;
       12'h301: csr_read_value = misa_value;
       12'h304: csr_read_value = mie_q;
@@ -274,6 +287,8 @@ module rv_csr_file #(
     csr_rdata_o = csr_read_value;
     csr_illegal_o = csr_valid_i &&
       (!csr_exists || !csr_privilege_ok ||
+       (csr_fp_state_access &&
+        (!HAS_F || (mstatus_q[MSTATUS_FS_LO +: 2] == 2'b00))) ||
        (csr_read_only && csr_write_intent) ||
        (csr_cmd_i == CSR_CMD_NONE));
     csr_write_effect_o = csr_valid_i && !csr_illegal_o && csr_write_intent;

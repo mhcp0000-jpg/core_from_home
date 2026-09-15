@@ -183,6 +183,13 @@ module rv_csr_file_tb;
     if ((privilege != PRIV_M) || (mtvec != 32'h8000_0000))
       $fatal(1, "CSR reset privilege/mtvec is wrong");
 
+    // FS resets to Off. Even with an implemented F extension, direct FCSR
+    // access is illegal until privileged software enables floating-point
+    // architectural state in mstatus.
+    read_csr(12'h003, value, illegal);
+    if (!illegal)
+      $fatal(1, "FCSR access was accepted while mstatus.FS was Off");
+
     // Evaluation without commit must return the old value but not mutate it.
     csr_valid = 1'b1;
     csr_execute = 1'b0;
@@ -246,7 +253,7 @@ module rv_csr_file_tb;
       $fatal(1, "interrupt mcause is wrong: %h", value);
 
     // Set MPIE and MPP=U, then MRET into U mode.
-    write_csr(12'h300, 32'h0000_0080);
+    write_csr(12'h300, 32'h0000_2080); // FS=Initial, MPIE=1, MPP=U
     mret_valid = 1'b1;
     mret_commit = 1'b1;
     #1;
