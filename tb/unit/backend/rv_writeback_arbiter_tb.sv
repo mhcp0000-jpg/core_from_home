@@ -144,6 +144,29 @@ module rv_writeback_arbiter_tb;
     if (!source_ready[0] || (|complete_valid))
       $fatal(1, "Non-live completion was not drained safely");
 
+    source_live = '1;
+    source_valid = 5'b1_1111;
+    source_destination_valid = 5'b0_1111;
+    source_exception_valid = '0;
+    source_sequence[0] = 8'd250;
+    source_sequence[1] = 8'd2;
+    source_sequence[2] = 8'd251;
+    source_sequence[3] = 8'd3;
+    source_sequence[4] = 8'd4;
+    source_destination_class[0] = REG_INT;
+    source_destination_class[1] = REG_INT;
+    source_destination_class[2] = REG_FP;
+    source_destination_class[3] = REG_FP;
+    source_destination_class[4] = REG_NONE;
+    #1;
+    if ((source_ready != 5'b0_1111) ||
+        (complete_valid != 4'b1111) ||
+        (complete_sequence[0] != 8'd250) ||
+        (complete_sequence[1] != 8'd251) ||
+        (complete_sequence[2] != 8'd2) ||
+        (complete_sequence[3] != 8'd3))
+      $fatal(1, "Sequence wrap-around age ranking failed");
+
     $display("rv_writeback_arbiter_tb PASS");
     $finish;
   end

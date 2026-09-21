@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">dispatch2; AGU update2; load</tspan><tspan x="60" dy="25">response; commit2; flush</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">LQ24/SQ16 arrays</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">registered load candidate</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">ordering/forward + tombstone recovery</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">LQ24 parallel age-rank 0/1 + SQ16</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">registered load candidate identity</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">older-SQ ordering/forward + recovery</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">load issue/forward;</tspan><tspan x="990" dy="25">SQ→SB/direct store;</tspan><tspan x="990" dy="25">occupancy</tspan></text>

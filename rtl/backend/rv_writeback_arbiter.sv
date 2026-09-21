@@ -54,7 +54,7 @@ module rv_writeback_arbiter #(
 
   import rv_ooo_pkg::*;
 
-  localparam int unsigned SOURCE_INDEX_WIDTH = $clog2(SOURCE_COUNT);
+  localparam int unsigned RANK_WIDTH = $clog2(SOURCE_COUNT + 1);
   function automatic logic sequence_before(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
     input logic [ROB_SEQ_WIDTH-1:0] rhs
@@ -75,70 +75,89 @@ module rv_writeback_arbiter #(
 
   always_comb begin
     logic [SOURCE_COUNT-1:0] eligible_work;
+    logic [SOURCE_COUNT-1:0] discard_work;
+    logic [SOURCE_COUNT-1:0] needs_int_work;
+    logic [SOURCE_COUNT-1:0] needs_fp_work;
+    logic [SOURCE_COUNT-1:0] resource_eligible_work;
     logic [SOURCE_COUNT-1:0] selected_work;
-    logic [ROB_COMPLETE_PORTS-1:0] select_found_work;
-    logic [ROB_COMPLETE_PORTS-1:0][SOURCE_INDEX_WIDTH-1:0]
-      select_index_work;
-    integer unsigned int_ports_used_work;
-    integer unsigned fp_ports_used_work;
+    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] int_rank_work;
+    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] fp_rank_work;
+    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] complete_rank_work;
 
     source_ready_o = '0;
     eligible_work = '0;
+    discard_work = '0;
+    needs_int_work = '0;
+    needs_fp_work = '0;
+    resource_eligible_work = '0;
+    selected_work = '0;
+    int_rank_work = '0;
+    fp_rank_work = '0;
+    complete_rank_work = '0;
+
+    // First classify every producer independently.  Invalidated results are
+    // consumed immediately, while live results enter the age-rank network.
     for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
-      if (source_valid_i[source] &&
-          (!source_live_i[source] ||
-           (flush_valid_i &&
-            (flush_all_i || sequence_after(source_sequence_i[source],
-                                           flush_sequence_i))))) begin
-        source_ready_o[source] = 1'b1;
-      end else begin
-        eligible_work[source] =
-          source_valid_i[source] && source_live_i[source];
-      end
+      discard_work[source] = source_valid_i[source] &&
+        (!source_live_i[source] ||
+         (flush_valid_i &&
+          (flush_all_i || sequence_after(source_sequence_i[source],
+                                         flush_sequence_i))));
+      eligible_work[source] = source_valid_i[source] &&
+                              source_live_i[source] &&
+                              !discard_work[source];
+      needs_int_work[source] =
+        source_destination_valid_i[source] &&
+        !source_exception_valid_i[source] &&
+        (source_destination_class_i[source] == REG_INT);
+      needs_fp_work[source] =
+        source_destination_valid_i[source] &&
+        !source_exception_valid_i[source] &&
+        (source_destination_class_i[source] == REG_FP);
+      source_ready_o[source] = discard_work[source];
     end
 
-    selected_work = '0;
-    select_found_work = '0;
-    select_index_work = '0;
-    int_ports_used_work = 0;
-    fp_ports_used_work = 0;
-
-    for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
-      for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
-        logic needs_int_port;
-        logic needs_fp_port;
-        logic resource_available;
-        needs_int_port = source_destination_valid_i[source] &&
-                         !source_exception_valid_i[source] &&
-                         (source_destination_class_i[source] == REG_INT);
-        needs_fp_port = source_destination_valid_i[source] &&
-                        !source_exception_valid_i[source] &&
-                        (source_destination_class_i[source] == REG_FP);
-        resource_available =
-          (!needs_int_port ||
-           (int_ports_used_work < INT_WRITE_PORTS)) &&
-          (!needs_fp_port || (fp_ports_used_work < FP_WRITE_PORTS));
-
-        if (eligible_work[source] && !selected_work[source] &&
-            resource_available &&
-            (!select_found_work[slot] ||
-             sequence_before(source_sequence_i[source],
-                             source_sequence_i[select_index_work[slot]]))) begin
-          select_found_work[slot] = 1'b1;
-          select_index_work[slot] = SOURCE_INDEX_WIDTH'(source);
+    // Rank integer and FP writers in parallel.  A lower source number is the
+    // deterministic tie break, matching the former forward scan for the
+    // otherwise-invalid case of duplicate live ROB sequence numbers.
+    for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
+      for (int unsigned other = 0; other < SOURCE_COUNT; other++) begin
+        logic other_precedes;
+        other_precedes =
+          sequence_before(source_sequence_i[other],
+                          source_sequence_i[source]) ||
+          ((source_sequence_i[other] == source_sequence_i[source]) &&
+           (other < source));
+        if (eligible_work[other] && other_precedes) begin
+          if (needs_int_work[other])
+            int_rank_work[source] = int_rank_work[source] + 1'b1;
+          if (needs_fp_work[other])
+            fp_rank_work[source] = fp_rank_work[source] + 1'b1;
         end
       end
+      resource_eligible_work[source] = eligible_work[source] &&
+        (!needs_int_work[source] ||
+         (int_rank_work[source] < RANK_WIDTH'(INT_WRITE_PORTS))) &&
+        (!needs_fp_work[source] ||
+         (fp_rank_work[source] < RANK_WIDTH'(FP_WRITE_PORTS)));
+    end
 
-      if (select_found_work[slot]) begin
-        selected_work[select_index_work[slot]] = 1'b1;
-        if (source_destination_valid_i[select_index_work[slot]] &&
-            !source_exception_valid_i[select_index_work[slot]]) begin
-          if (source_destination_class_i[select_index_work[slot]] == REG_INT)
-            int_ports_used_work = int_ports_used_work + 1;
-          else if (source_destination_class_i[select_index_work[slot]] == REG_FP)
-            fp_ports_used_work = fp_ports_used_work + 1;
-        end
+    // Rank the resource-eligible union once.  This replaces four serial
+    // oldest-source scans with a comparator/popcount network whose depth does
+    // not grow with ROB_COMPLETE_PORTS.
+    for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
+      for (int unsigned other = 0; other < SOURCE_COUNT; other++) begin
+        logic other_precedes;
+        other_precedes =
+          sequence_before(source_sequence_i[other],
+                          source_sequence_i[source]) ||
+          ((source_sequence_i[other] == source_sequence_i[source]) &&
+           (other < source));
+        if (resource_eligible_work[other] && other_precedes)
+          complete_rank_work[source] = complete_rank_work[source] + 1'b1;
       end
+      selected_work[source] = resource_eligible_work[source] &&
+        (complete_rank_work[source] < RANK_WIDTH'(ROB_COMPLETE_PORTS));
     end
 
     int_wb_valid_o = '0;
@@ -156,50 +175,61 @@ module rv_writeback_arbiter #(
     complete_branch_mispredict_o = '0;
     complete_branch_target_o = '0;
     complete_fflags_o = '0;
-    int_ports_used_work = 0;
-    fp_ports_used_work = 0;
     for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
       wakeup_class_o[slot] = REG_NONE;
       complete_exception_cause_o[slot] = EXC_ILLEGAL_INSTRUCTION;
     end
 
-    for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
-      logic [SOURCE_INDEX_WIDTH-1:0] source;
-      source = '0;
-      if (select_found_work[slot]) begin
-        source = select_index_work[slot];
-        source_ready_o[source] = 1'b1;
-        complete_valid_o[slot] = 1'b1;
-        complete_sequence_o[slot] = source_sequence_i[source];
-        complete_exception_valid_o[slot] =
-          source_exception_valid_i[source];
-        complete_exception_cause_o[slot] =
-          source_exception_cause_i[source];
-        complete_exception_tval_o[slot] = source_exception_tval_i[source];
-        complete_branch_mispredict_o[slot] =
-          source_branch_mispredict_i[source];
-        complete_branch_target_o[slot] = source_branch_target_i[source];
-        complete_fflags_o[slot] = source_fflags_i[source];
+    for (int unsigned source = 0; source < SOURCE_COUNT; source++)
+      source_ready_o[source] = discard_work[source] || selected_work[source];
 
-        if (source_destination_valid_i[source] &&
-            !source_exception_valid_i[source] &&
-            (source_destination_class_i[source] != REG_NONE)) begin
-          wakeup_valid_o[slot] = 1'b1;
-          wakeup_class_o[slot] = source_destination_class_i[source];
-          wakeup_phys_o[slot] = source_destination_phys_i[source];
-          if (source_destination_class_i[source] == REG_INT) begin
-            int_wb_valid_o[int_ports_used_work] = 1'b1;
-            int_wb_phys_o[int_ports_used_work] =
-              source_destination_phys_i[source];
-            int_wb_data_o[int_ports_used_work] = source_data_i[source];
-            int_ports_used_work = int_ports_used_work + 1;
-          end else if (source_destination_class_i[source] == REG_FP) begin
-            fp_wb_valid_o[fp_ports_used_work] = 1'b1;
-            fp_wb_phys_o[fp_ports_used_work] =
-              source_destination_phys_i[source];
-            fp_wb_data_o[fp_ports_used_work] = 32'(source_data_i[source]);
-            fp_ports_used_work = fp_ports_used_work + 1;
+    // Compare a source's computed rank against each constant output slot.
+    // Constant-indexed assignments avoid a false combinational loop in some
+    // synthesis frontends while retaining one parallel payload mux layer.
+    for (int unsigned slot = 0; slot < ROB_COMPLETE_PORTS; slot++) begin
+      for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
+        if (selected_work[source] &&
+            (complete_rank_work[source] == RANK_WIDTH'(slot))) begin
+          complete_valid_o[slot] = 1'b1;
+          complete_sequence_o[slot] = source_sequence_i[source];
+          complete_exception_valid_o[slot] =
+            source_exception_valid_i[source];
+          complete_exception_cause_o[slot] =
+            source_exception_cause_i[source];
+          complete_exception_tval_o[slot] = source_exception_tval_i[source];
+          complete_branch_mispredict_o[slot] =
+            source_branch_mispredict_i[source];
+          complete_branch_target_o[slot] = source_branch_target_i[source];
+          complete_fflags_o[slot] = source_fflags_i[source];
+          if (source_destination_valid_i[source] &&
+              !source_exception_valid_i[source] &&
+              (source_destination_class_i[source] != REG_NONE)) begin
+            wakeup_valid_o[slot] = 1'b1;
+            wakeup_class_o[slot] = source_destination_class_i[source];
+            wakeup_phys_o[slot] = source_destination_phys_i[source];
           end
+        end
+      end
+    end
+
+    for (int unsigned port = 0; port < INT_WRITE_PORTS; port++) begin
+      for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
+        if (selected_work[source] && needs_int_work[source] &&
+            (int_rank_work[source] == RANK_WIDTH'(port))) begin
+          int_wb_valid_o[port] = 1'b1;
+          int_wb_phys_o[port] = source_destination_phys_i[source];
+          int_wb_data_o[port] = source_data_i[source];
+        end
+      end
+    end
+
+    for (int unsigned port = 0; port < FP_WRITE_PORTS; port++) begin
+      for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
+        if (selected_work[source] && needs_fp_work[source] &&
+            (fp_rank_work[source] == RANK_WIDTH'(port))) begin
+          fp_wb_valid_o[port] = 1'b1;
+          fp_wb_phys_o[port] = source_destination_phys_i[source];
+          fp_wb_data_o[port] = 32'(source_data_i[source]);
         end
       end
     end

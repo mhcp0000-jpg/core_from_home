@@ -10,7 +10,8 @@ module rv_lsq #(
   localparam int unsigned LQ_INDEX_WIDTH = $clog2(LQ_ENTRIES),
   localparam int unsigned SQ_INDEX_WIDTH = $clog2(SQ_ENTRIES),
   localparam int unsigned LQ_COUNT_WIDTH = $clog2(LQ_ENTRIES + 1),
-  localparam int unsigned SQ_COUNT_WIDTH = $clog2(SQ_ENTRIES + 1)
+  localparam int unsigned SQ_COUNT_WIDTH = $clog2(SQ_ENTRIES + 1),
+  localparam int unsigned LQ_RANK_WIDTH  = $clog2(LQ_ENTRIES + 1)
 ) (
   input  logic                                  clk_i,
   input  logic                                  rst_ni,
@@ -256,42 +257,50 @@ module rv_lsq #(
   end
 
   always_comb begin
-    logic [1:0] found_work;
-    logic [1:0][LQ_INDEX_WIDTH-1:0] index_work;
-    logic [1:0][SEQ_WIDTH-1:0] sequence_work;
+    logic [LQ_ENTRIES-1:0] eligible_work;
+    logic [LQ_ENTRIES-1:0][LQ_RANK_WIDTH-1:0] rank_work;
 
-    found_work = '0;
-    index_work = '0;
-    sequence_work = '0;
+    eligible_work = '0;
+    rank_work = '0;
+    selected_candidate_found = '0;
+    selected_candidate_index = '0;
+    selected_candidate_sequence = '0;
+
+    // Classify all loads independently, then rank them in parallel by ROB
+    // sequence.  The former running oldest/second-oldest scan synthesized as
+    // a 24-entry priority chain.  This comparator/popcount form preserves the
+    // same ordering while keeping the logic depth logarithmic after mapping.
     for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
-      if (lq_valid_q[entry] && !lq_killed_q[entry] &&
-          lq_address_valid_q[entry] && !lq_issued_q[entry] &&
-          !lq_completed_q[entry] && !lq_exception_q[entry] &&
-          !(candidate_found[0] &&
-            (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
-          !(candidate_found[1] &&
-            (candidate_index[1] == LQ_INDEX_WIDTH'(entry)))) begin
-        if (!found_work[0] ||
-            sequence_after(sequence_work[0], lq_sequence_q[entry])) begin
-          found_work[1] = found_work[0];
-          index_work[1] = index_work[0];
-          sequence_work[1] = sequence_work[0];
-          found_work[0] = 1'b1;
-          index_work[0] = LQ_INDEX_WIDTH'(entry);
-          sequence_work[0] = lq_sequence_q[entry];
-        end else if (!found_work[1] ||
-                     sequence_after(sequence_work[1],
-                                    lq_sequence_q[entry])) begin
-          found_work[1] = 1'b1;
-          index_work[1] = LQ_INDEX_WIDTH'(entry);
-          sequence_work[1] = lq_sequence_q[entry];
+      eligible_work[entry] =
+        lq_valid_q[entry] && !lq_killed_q[entry] &&
+        lq_address_valid_q[entry] && !lq_issued_q[entry] &&
+        !lq_completed_q[entry] && !lq_exception_q[entry] &&
+        !(candidate_found[0] &&
+          (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
+        !(candidate_found[1] &&
+          (candidate_index[1] == LQ_INDEX_WIDTH'(entry)));
+    end
+
+    for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
+      for (int unsigned other = 0; other < LQ_ENTRIES; other++) begin
+        logic other_precedes;
+        other_precedes =
+          sequence_after(lq_sequence_q[entry], lq_sequence_q[other]) ||
+          ((lq_sequence_q[other] == lq_sequence_q[entry]) &&
+           (other < entry));
+        if (eligible_work[other] && other_precedes)
+          rank_work[entry] = rank_work[entry] + 1'b1;
+      end
+
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (eligible_work[entry] &&
+            (rank_work[entry] == LQ_RANK_WIDTH'(lane))) begin
+          selected_candidate_found[lane] = 1'b1;
+          selected_candidate_index[lane] = LQ_INDEX_WIDTH'(entry);
+          selected_candidate_sequence[lane] = lq_sequence_q[entry];
         end
       end
     end
-
-    selected_candidate_found = found_work;
-    selected_candidate_index = index_work;
-    selected_candidate_sequence = sequence_work;
   end
 
   always_comb begin

@@ -3,7 +3,7 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark IPC 1.2 목표 달성, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현하며 store 주소는 데이터 operand보다 먼저 SQ에 확정할 수 있습니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. IFU는 16-byte ITIM transport bandwidth를 유지하면서 PMP를 8개의 2-byte instruction parcel로 판정하고, 실제 16/32-bit instruction이 사용하는 parcel의 fault만 합성합니다. 따라서 TOR 경계와 같은 fetch block 안의 허용/비허용 영역이 섞여도 이웃 instruction 때문에 정상 instruction이 거부되지 않습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff하며 target-buffer hit는 redirect edge에 fetch queue를 바로 채웁니다. predictor resolve에는 compressed branch의 canonical expansion이 아니라 raw 16-bit encoding을 보존해 C.Bxx/C.J/C.JR/C.JALR 학습과 history/RAS recovery를 유지합니다. D-Fabric도 이전 response를 소비하는 cycle에 다음 request를 받아 synchronous TIM의 불필요한 turnaround bubble을 제거하며, outstanding 깊이는 1로 유지합니다. 공식 source 기반 CoreMark 2-iteration short RTL run은 CRC/exit(0), 464,335 cycles, 576,450 instret, IPC 1.241453, 비공식 추정 4.307235 CoreMark/MHz를 기록했습니다. 직전 v1.12.2 대비 cycle은 3.89% 감소하고 IPC는 4.05% 증가했습니다. parse/elaboration, unit 18종, block 13종, backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했습니다. RV32F 전체 연산군은 host FP를 사용하지 않는 exact-rational oracle의 6,470개 deterministic vector로 5개 rounding mode와 특수값/subnormal/overflow를 비교하지만, C/CSR/FENCE의 모든 조합과 random long-run, 외부 Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark IPC 1.2 목표 달성, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현하며 store 주소는 데이터 operand보다 먼저 SQ에 확정할 수 있습니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. IFU는 16-byte ITIM transport bandwidth를 유지하면서 PMP를 8개의 2-byte instruction parcel로 판정하고, 실제 16/32-bit instruction이 사용하는 parcel의 fault만 합성합니다. 따라서 TOR 경계와 같은 fetch block 안의 허용/비허용 영역이 섞여도 이웃 instruction 때문에 정상 instruction이 거부되지 않습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff하며 target-buffer hit는 redirect edge에 fetch queue를 바로 채웁니다. predictor resolve에는 compressed branch의 canonical expansion이 아니라 raw 16-bit encoding을 보존해 C.Bxx/C.J/C.JR/C.JALR 학습과 history/RAS recovery를 유지합니다. D-Fabric도 이전 response를 소비하는 cycle에 다음 request를 받아 synchronous TIM의 불필요한 turnaround bubble을 제거하며, outstanding 깊이는 1로 유지합니다. v1.18 timing-boundary RTL의 공식 source 기반 CoreMark 2-iteration short run은 CRC/exit(0), 468,930 cycles, 576,450 instret, IPC 1.229288, 비공식 추정 4.265029 CoreMark/MHz를 기록했습니다. parse/elaboration, unit 18종, block 17종, backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했습니다. RV32F 전체 연산군은 host FP를 사용하지 않는 exact-rational oracle의 6,470개 deterministic vector로 5개 rounding mode와 특수값/subnormal/overflow를 비교하지만, C/CSR/FENCE의 모든 조합과 random long-run, 외부 Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
 ## Linux 서버에서 ELF 바로 실행
 
@@ -156,6 +156,19 @@ bridge가 drain하여 다음 request ID와 섞이지 않게 합니다.
 ```powershell
 python -m pip install -r requirements-dev.txt
 python scripts/check_rtl.py
+```
+
+무료 Yosys/ABC로 독립 core의 구조와 큰 조합 경로를 먼저 확인할 수 있습니다.
+`NANGATE45_LIBERTY`에는 사용할 standard-cell Liberty를 지정합니다. 이 결과는
+SRAM macro와 배치·배선을 포함하지 않는 상대 비교용이며 서버 STA를 대체하지 않습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_open_timing.ps1 -Mode All
+```
+
+```bash
+export NANGATE45_LIBERTY=/path/to/NangateOpenCellLibrary_typical.lib
+./scripts/run_open_timing.sh all
 ```
 
 core 블록의 Icarus 사이클 단위 회귀:

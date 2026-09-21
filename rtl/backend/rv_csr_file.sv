@@ -244,12 +244,19 @@ module rv_csr_file #(
             csr_read_value = '0;
             for (int unsigned byte_index = 0;
                  byte_index < (XLEN/8); byte_index++) begin
-              int unsigned entry_index;
-              entry_index = cfg_csr * 4 + byte_index;
-              if (XLEN == 64)
-                entry_index = (cfg_csr / 2) * 8 + byte_index;
-              if (entry_index < PMP_ENTRIES)
-                csr_read_value[byte_index*8 +: 8] = pmpcfg_q[entry_index];
+              // Keep the RV32/RV64 index expressions in separate constant
+              // branches.  Reassigning one automatic loop-local index made
+              // some synthesis frontends build a false combinational
+              // self-loop even though XLEN is an elaboration constant.
+              if (XLEN == 32) begin
+                if ((cfg_csr * 4 + byte_index) < PMP_ENTRIES)
+                  csr_read_value[byte_index*8 +: 8] =
+                    pmpcfg_q[cfg_csr * 4 + byte_index];
+              end else begin
+                if (((cfg_csr / 2) * 8 + byte_index) < PMP_ENTRIES)
+                  csr_read_value[byte_index*8 +: 8] =
+                    pmpcfg_q[(cfg_csr / 2) * 8 + byte_index];
+              end
             end
           end
         end

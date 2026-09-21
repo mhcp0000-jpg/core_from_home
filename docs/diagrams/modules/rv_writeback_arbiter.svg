@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">source valid/payload; INT/FP</tspan><tspan x="60" dy="25">write 요구; ROB live query</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">stale source filter</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">age/port compatible select</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">source-ready와 WB bundle 생성</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">live/stale source parallel classify</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">INT/FP rank → completion age rank 0..3</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">constant-slot payload mux + ready fanout</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">4 completion; INT2/FP2</tspan><tspan x="990" dy="25">write; source ready</tspan></text>
@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: 조합 grant이며 LSQ candidate와 execution-port register가 장거리 경로를 분할한다.</tspan><tspan x="60" dy="24">Throughput: 최대 completion 4개, INT write 2개, FP write 2개/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: 선택되지 않은 stateful producer는 result valid/payload를 유지한다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: parallel comparator/rank + payload mux; preflight 15.936 ns → 2.347 ns.</tspan><tspan x="60" dy="24">Throughput: 최대 completion 4개, INT write 2개, FP write 2개/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: 선택되지 않은 stateful producer는 result valid/payload를 유지한다.</tspan></text>
 </svg>

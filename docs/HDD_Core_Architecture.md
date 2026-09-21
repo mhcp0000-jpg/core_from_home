@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized beginner-readable baseline v1.18.0 (2026-09-21) |
+| 상태 | RTL-synchronized beginner-readable baseline v1.18.1 (2026-09-22) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -2050,7 +2050,7 @@ effective address는 `base+immediate`이며 natural alignment를 요구한다. m
 
 LQ entry의 실제 저장 상태는 valid/killed, address-valid/issued/completed, exception, destination-valid/physical tag, unsigned/device, sequence, size, address, mask, exception cause다. SQ entry는 valid, address-valid/data-valid, exception/device, sequence, address, data, mask, size, exception cause를 저장한다. ROB index, PC, register class, response ID/epoch, forwarded data, replay reason, committed/SB-accepted bit은 현재 `rv_lsq` entry에 저장하지 않는다.
 
-24-entry LQ의 oldest-ready scan 결과인 lane별 index/sequence는 먼저 2-entry candidate register에 저장한다. 다음 cycle에 그 identity로 LQ payload를 읽고 16-entry SQ ordering/forwarding 및 store-buffer query를 수행한다. candidate가 consume되는 edge에는 현재 두 identity를 제외한 다음 oldest load로 refill할 수 있다. stall 중인 candidate도 매 cycle reselect 대상이므로, 뒤늦게 주소가 준비된 더 오래된 load가 젊은 unknown-store-stalled identity 뒤에 영구히 갇히지 않는다. 이 pipeline boundary는 `lq_killed/valid/address` scan과 SQ compare가 한 combinational cone으로 합쳐지는 것을 막으며 load scheduling에 한 cycle을 추가한다.
+24-entry LQ의 ready entry마다 다른 ready entry 중 자신보다 오래된 entry 수를 병렬로 세어 age rank 0/1을 lane 0/1 후보로 고른다. 동일 sequence가 비정상적으로 중복되면 낮은 LQ index가 먼저라는 결정적 tie-break를 쓴다. 이 구조는 기능적으로 oldest/second-oldest scan과 같지만 24단 직렬 priority 갱신을 comparator/popcount network로 바꾼다. 선택한 lane별 index/sequence는 먼저 2-entry candidate register에 저장한다. 다음 cycle에 그 identity로 LQ payload를 읽고 16-entry SQ ordering/forwarding 및 store-buffer query를 수행한다. candidate가 consume되는 edge에는 현재 두 identity를 제외한 다음 oldest load로 refill할 수 있다. stall 중인 candidate도 매 cycle reselect 대상이므로, 뒤늦게 주소가 준비된 더 오래된 load가 젊은 unknown-store-stalled identity 뒤에 영구히 갇히지 않는다. 이 pipeline boundary는 `lq_killed/valid/address` selection과 SQ compare가 한 combinational cone으로 합쳐지는 것을 막으며 load scheduling에 한 cycle을 추가한다. rank network는 timing을 줄이는 대신 comparator area가 증가하므로 Section 18.6.3의 합성 수치를 함께 본다.
 
 load 주소가 준비되면 LSQ는 모든 valid older SQ를 wrap-aware sequence로 비교한다. 주소 미정 older SQ가 하나라도 있으면 stall한다. overlap store의 data가 미정이거나 load byte를 완전히 덮지 않으면 초기 baseline은 stall한다. full-cover 후보가 여러 개면 load보다 older이면서 sequence distance가 가장 작은, 즉 youngest older store를 선택한다. 같은 cycle의 lane0 older store update와 lane1 load update는 edge 뒤 registered SQ/LQ 상태에서 검사하므로 다음 scheduler cycle까지 기다리며 memory read를 먼저 내보내지 않는다.
 
@@ -2104,7 +2104,7 @@ exception/cause/tval, branch mispredict/target, fflags의 flattened array다. �
 `wakeup_valid/class/phys_o[3:0]`, ROB에 가는
 `complete_valid/sequence/exception/cause/tval/branch/fflags_o[3:0]`다.
 
-한 source는 필요한 PRF write port와 ROB completion port를 모두 받을 때만 ready다. destination 없는 completion은 ROB port만 사용한다. 같은 physical tag/class에 두 write를 허용하지 않는다. grant된 결과만 PRF write, IQ wakeup, ROB complete를 같은 edge에 발생시킨다. flush된 sequence, ROB에 없는 sequence, allocation generation이 다른 result는 모든 출력 전에 drop한다. arbiter 자체와 IQ wakeup bypass는 조합이다. 별도의 LSU completion register는 CoreMark의 load-use/ROB-head latency를 늘려 제거했으며, LSQ candidate register와 P4 FP issue register가 합성용 timing boundary를 담당한다.
+한 source는 필요한 PRF write port와 ROB completion port를 모두 받을 때만 ready다. destination 없는 completion은 ROB port만 사용한다. same-cycle live source를 한 번씩 독립 분류한 뒤, source별로 자신보다 오래된 INT writer 수와 FP writer 수를 병렬 계산한다. rank가 각 PRF port 수 미만인 source만 resource-eligible이며, 그 union에서 다시 completion age rank 0~3을 선택한다. 따라서 네 번의 직렬 oldest scan 없이도 program age, INT2/FP2, completion4 제약을 동시에 만족한다. 동일 sequence가 중복되는 방어적 경우에는 낮은 source index를 먼저 선택한다. 같은 physical tag/class에 두 write를 허용하지 않는다. grant된 결과만 PRF write, IQ wakeup, ROB complete를 같은 edge에 발생시킨다. flush된 sequence, ROB에 없는 sequence, allocation generation이 다른 result는 모든 출력 전에 drop한다. arbiter 자체와 IQ wakeup bypass는 조합이다. 별도의 LSU completion register는 CoreMark의 load-use/ROB-head latency를 늘려 제거했으며, LSQ candidate register와 P4 FP issue register가 합성용 timing boundary를 담당한다.
 
 #### `rv_branch_recovery`
 
@@ -3030,10 +3030,10 @@ issue된 uop이 계산되고 결과가 PRF/ROB에 돌아오는 경로다.
 **Step-by-step.**
 
 1. ROB live와 sequence를 확인해 stale completion을 걸러낸다.
-2. oldest/port-compatible source를 completion slot에 배치한다.
-3. PRF write, IQ wakeup과 ROB complete에 동일 grant를 fanout한다.
+2. source별 INT/FP age rank를 병렬 계산해 각 2개 write port 안에 드는 source만 남긴다.
+3. 남은 source의 completion age rank 0~3을 payload mux에 배치하고, 동일 grant를 PRF write, IQ wakeup과 ROB complete에 fanout한다.
 
-**타이밍.** 조합 grant이며 LSQ candidate와 execution-port register가 장거리 경로를 분할한다. 처리율은 최대 completion 4개, INT write 2개, FP write 2개/cycle이다. Backpressure/flush 규칙은 선택되지 않은 stateful producer는 result valid/payload를 유지한다.
+**타이밍.** 조합 grant지만 네 번 이어지는 oldest scan 대신 병렬 comparator/rank와 한 payload mux layer를 사용한다. LSQ candidate와 execution-port register가 전후 장거리 경로를 분할한다. 처리율은 최대 completion 4개, INT write 2개, FP write 2개/cycle이다. Backpressure/flush 규칙은 선택되지 않은 stateful producer는 result valid/payload를 유지한다.
 
 **코너케이스.** 동일 destination collision, killed result, write-port 포화와 exception completion을 확인한다.
 
@@ -3882,6 +3882,45 @@ IQ nonempty/no-issue 98,389, ROB-head incomplete 115,312 cycles이며 branch
 mispredict는 7,041회다. 이 결과는 기능·cycle trade-off의 RTL 기준이고 실제
 Fmax 개선은 동일 synthesis constraint/library에서 이전 netlist와 비교해야 한다.
 
+##### 무료 합성 preflight와 v1.18.1 조합 경로 개선
+
+서버 sign-off 전에 심각한 조합 경로를 찾기 위해 `scripts/run_open_timing.ps1`과
+`scripts/run_open_timing.sh`를 추가했다. 둘 다 기존 `sim/xcelium/sources_core.f`를
+그대로 읽고, Slang frontend가 포함된 Yosys로 `rv_ooo_core` hierarchy/process/check를
+수행한다. 이어 Nangate45 typical Liberty, `INV_X1` input driver, output load 5 fF,
+wire-load 없음, 10 ns ABC target으로 병목 block을 독립 mapping한다. array-heavy
+ROB/IQ/LSQ는 `$mem_v2` macro boundary를 유지하므로 표의 area에는 memory macro가
+포함되지 않는다. 이 수치는 배치·배선, clock uncertainty, 실제 SRAM Liberty가 없는
+**상대 비교용 preflight**이며 MHz sign-off 값이 아니다.
+
+| Block/configuration | preflight delay | mapped area | 해석 |
+|---|---:|---:|---|
+| WB arbiter, 이전 4회 직렬 oldest scan | 15.936 ns | 12,611.9 µm² | 사용자 장거리 경로의 가장 큰 조합 원인 |
+| WB arbiter, 병렬 INT/FP/completion age rank | **2.347 ns** | **12,453.6 µm²** | delay 85.3% 감소, CoreMark cycle 불변 |
+| LSQ, 이전 24-entry 직렬 oldest-two scan | 9.993 ns | 25,024.7 µm² + memory | candidate FF 입력 경로 |
+| LSQ, 병렬 load age rank | **6.379 ns** | **41,212.7 µm² + memory** | delay 36.2% 감소, area 64.7% 증가 |
+| FPU, current 3-stage/iterative slow path | 8.956 ns | 39,249.6 µm² | 현재 preflight 최장 block |
+| Issue queue 56-entry | 7.913 ns | 23,862.1 µm² + memory | wakeup/ready/oldest selection 후보 |
+| ROB 48-entry | 3.140 ns | 14,501.5 µm² + memory | 현재 우선순위 낮음 |
+| Rename2 | 2.380 ns | 69,500.7 µm² | full FF/free-list mapping 포함 |
+| PMP 8 entries × 8 fetch parcels | 2.146 ns | 30,571.6 µm² | parcel 병렬 검사 |
+| Issue arbiter, 실제 2 candidates × 5 ports | 1.093 ns | 235.4 µm² | global 2-wide grant 자체는 병목 아님 |
+
+표의 10 ns target은 첫 screening 조건이므로 각 숫자가 절대 최소 delay는 아니다.
+ABC target을 5 ns로 낮춘 추가 mapping에서 FPU는 7.293 ns/39,951.1 µm²,
+56-entry IQ는 6.397 ns/24,535.8 µm²였다. cell sizing/mapping만으로 일부 개선되지만
+FPU는 여전히 가장 길다. 다음 Fmax 단계는 add/FMA의 align/accumulate와
+normalize/round/pack 사이를 실제 register로 나누는 구조 변경이며 FP latency와
+flush/backpressure 계약을 다시 검증해야 하므로 서버 STA가 같은 경로를 확인한 뒤
+적용한다.
+
+WB와 LSQ 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration과
+CoreMark를 재실행했다. CoreMark는 468,930 cycles, 576,450 instret, IPC 1.229288,
+CRC/exit PASS로 변경 전과 bit/cycle 수준에서 같다. 서버 library 비교가 최종 채택
+gate다. 특히 LSQ는 delay 개선과 면적 증가를 함께
+평가하여, 서버 합성에서 area 또는 routing이 악화되면 banked tournament selector로
+바꾸는 후속 선택지를 유지한다.
+
 위 event는 동시에 발생할 수 있으므로 표의 비율을 합산하지 않는다. 특히
 profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라는 뜻이
 아니다. `fetch_valid[1:0]`이 모두 0인 cycle을 세므로 queue가 비었거나, 남은
@@ -4245,3 +4284,4 @@ interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
 | v1.16.0 | 49개 합성 source/48개 module을 최신 RTL과 다시 대조하고 3-master×6-target Main Xbar가 최종 system bus임을 명확화. S4 external SRAM 및 표준 Debug Module 확장 contract, Host/Core TIM visibility, 전 core cross-block corner-case matrix와 sign-off 잔여 범위를 추가. AXI4 4-KiB 경계 burst를 Xbar/inbound bridge 양쪽에서 side effect 없이 거부하고 신규 block/SoC directed 회귀로 고정했으며, 현재 baseline을 2-wide로 확정하고 4-issue는 active milestone에서 제외 |
 | v1.17.0 | 초보자가 RTL 없이도 request→state→response 흐름을 따라갈 수 있도록 48개 합성 module 각각에 block diagram, 목적, 3-step 동작, accept-edge 기준 latency/throughput/backpressure와 corner case를 추가. ROB OoO 완료/in-order dual commit, same-bundle rename, branch recovery, LSQ forwarding, precise trap, AXI burst, dual-bank LSU를 cycle-by-cycle timing diagram으로 보강하고 generator/check flow를 추가 |
 | v1.18.0 | 합성에서 관측된 LSQ→ROB/WB→IQ select→FPU 장거리 경로를 단계별로 절단. registered LSQ load candidate와 P4 FP issue/operand register를 추가했다. rename first-free를 8-bit group encoder로, PMP range 계산을 shared predecode로 바꾸고 FDIV/FSQRT를 88/64-step iterative unit으로 이동했다. registered load candidate가 stalled younger identity를 고정해 newly-ready older load를 막는 순환 stall을 CoreMark가 발견하여 stalled slot reselect 규칙과 directed regression을 추가했다. 성능 재측정에서 P0~P3 issue register, LSU completion register와 registered-only IQ wakeup이 과도한 load-use/producer-consumer bubble을 만든 것을 확인해 제거하고, global WB와 same-cycle wakeup은 IPC를 위해 조합으로 유지했다. 최종 CoreMark 2-iteration run은 CRC/exit PASS, 468,930 cycles, 576,450 instret, IPC 1.229288, 추정 4.265029 CoreMark/MHz를 기록했다. unit 18종, block 17종, backend integration, RV32/RV64/map변형 elaboration을 재실행해 PASS했으며 실제 Fmax는 사용자 합성 환경에서 재측정한다. |
+| v1.18.1 | Slang/Yosys+Nangate45 기반 공개 합성 preflight를 Windows/Linux script로 추가하고 `rv_ooo_core` 구조 check와 8개 주요 block timing을 재현 가능하게 했다. 11-source writeback의 네 번 직렬 oldest scan을 parallel INT/FP/completion age-rank로 바꿔 15.936→2.347 ns, 24-entry LQ oldest-two scan을 parallel load age-rank로 바꿔 9.993→6.379 ns를 기록했다. WB wrap-around directed test와 CSR PMP cfg loop의 synthesis-front-end-safe constant indexing을 추가했다. 두 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration, CoreMark CRC/exit를 통과했고 CoreMark는 468,930 cycles/IPC 1.229288로 불변이다. LSQ는 64.7% area 증가가 있어 서버 library 결과를 최종 채택 gate로 명시한다. |
