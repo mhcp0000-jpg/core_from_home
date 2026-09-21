@@ -18,6 +18,74 @@ module rv_pmp #(
 );
   import rv_ooo_pkg::*;
 
+  logic [7:0] entry_cfg_decoded [0:PMP_ENTRIES-1];
+  logic [1:0] entry_mode_decoded [0:PMP_ENTRIES-1];
+  logic [PADDR_WIDTH:0] region_low_decoded [0:PMP_ENTRIES-1];
+  logic [PADDR_WIDTH:0] region_high_decoded [0:PMP_ENTRIES-1];
+
+  // Decode each PMP entry once, independently of the number of access ports.
+  // In particular, NAPOT trailing-one detection and TOR bound construction
+  // are shared by IFU and both LSU checks instead of being replicated inside
+  // every port/entry comparison cone.
+  always_comb begin : p_predecode
+    for (int unsigned entry = 0; entry < PMP_ENTRIES; entry++) begin
+      logic [PMP_ADDR_WIDTH-1:0] entry_addr;
+      logic [PMP_ADDR_WIDTH-1:0] previous_addr;
+      logic [PMP_ADDR_WIDTH-1:0] napot_low_mask;
+      logic trailing;
+      int unsigned trailing_ones;
+
+      entry_cfg_decoded[entry] = pmpcfg_i[entry*8 +: 8];
+      entry_mode_decoded[entry] = entry_cfg_decoded[entry][4:3];
+      region_low_decoded[entry] = '0;
+      region_high_decoded[entry] = '0;
+      entry_addr = pmpaddr_i[entry*PMP_ADDR_WIDTH +: PMP_ADDR_WIDTH];
+      previous_addr = '0;
+      if (entry != 0)
+        previous_addr = pmpaddr_i[(entry-1)*PMP_ADDR_WIDTH +:
+                                  PMP_ADDR_WIDTH];
+      napot_low_mask = '0;
+      trailing = 1'b1;
+      trailing_ones = 0;
+
+      case (entry_mode_decoded[entry])
+        2'b01: begin // TOR
+          if (entry != 0)
+            region_low_decoded[entry] = {1'b0, previous_addr, 2'b00};
+          region_high_decoded[entry] = {1'b0, entry_addr, 2'b00};
+        end
+        2'b10: begin // NA4
+          region_low_decoded[entry] = {1'b0, entry_addr, 2'b00};
+          region_high_decoded[entry] = region_low_decoded[entry] +
+                                       (PADDR_WIDTH+1)'(4);
+        end
+        2'b11: begin // NAPOT
+          for (int unsigned bit_index = 0;
+               bit_index < PMP_ADDR_WIDTH; bit_index++) begin
+            if (trailing && entry_addr[bit_index]) begin
+              napot_low_mask[bit_index] = 1'b1;
+              trailing_ones++;
+            end else begin
+              trailing = 1'b0;
+            end
+          end
+          if ((trailing_ones + 3) >= PADDR_WIDTH) begin
+            region_low_decoded[entry] = '0;
+            region_high_decoded[entry] = '0;
+            region_high_decoded[entry][PADDR_WIDTH] = 1'b1;
+          end else begin
+            region_low_decoded[entry] = {1'b0,
+              (entry_addr & ~napot_low_mask), 2'b00};
+            region_high_decoded[entry] = region_low_decoded[entry];
+            region_high_decoded[entry][trailing_ones + 3] = 1'b1;
+          end
+        end
+        default: begin
+        end
+      endcase
+    end
+  end
+
   // PMP regions and accesses use an exclusive upper bound with one extra bit
   // so a region ending exactly at 2**PADDR_WIDTH is representable.
   always_comb begin : p_lookup
@@ -51,70 +119,21 @@ module rv_pmp #(
                       access_in_range;
 
       for (int unsigned entry = 0; entry < PMP_ENTRIES; entry++) begin
-        logic [1:0] address_mode;
-        logic [7:0] entry_cfg;
-        logic [PMP_ADDR_WIDTH-1:0] entry_addr;
-        logic [PMP_ADDR_WIDTH-1:0] previous_addr;
-        logic [PADDR_WIDTH:0] region_low;
-        logic [PADDR_WIDTH:0] region_high;
-        logic [PMP_ADDR_WIDTH-1:0] napot_low_mask;
-        logic trailing;
-        int unsigned trailing_ones;
         logic overlaps;
         logic full_match;
         logic permissions_ok;
 
-        entry_cfg = pmpcfg_i[entry*8 +: 8];
-        entry_addr = pmpaddr_i[entry*PMP_ADDR_WIDTH +: PMP_ADDR_WIDTH];
-        previous_addr = '0;
-        if (entry != 0)
-          previous_addr = pmpaddr_i[(entry-1)*PMP_ADDR_WIDTH +:
-                                    PMP_ADDR_WIDTH];
-        address_mode = entry_cfg[4:3];
-        region_low = '0;
-        region_high = '0;
-        napot_low_mask = '0;
-        trailing = 1'b1;
-        trailing_ones = 0;
-
-        if (address_mode == 2'b01) begin // TOR
-          if (entry != 0)
-            region_low = {1'b0, previous_addr, 2'b00};
-          region_high = {1'b0, entry_addr, 2'b00};
-        end else if (address_mode == 2'b10) begin // NA4
-          region_low = {1'b0, entry_addr, 2'b00};
-          region_high = region_low + (PADDR_WIDTH+1)'(4);
-        end else if (address_mode == 2'b11) begin // NAPOT
-          for (int unsigned bit_index = 0;
-               bit_index < PMP_ADDR_WIDTH; bit_index++) begin
-            if (trailing && entry_addr[bit_index]) begin
-              napot_low_mask[bit_index] = 1'b1;
-              trailing_ones++;
-            end else begin
-              trailing = 1'b0;
-            end
-          end
-          if ((trailing_ones + 3) >= PADDR_WIDTH) begin
-            region_low = '0;
-            region_high = '0;
-            region_high[PADDR_WIDTH] = 1'b1;
-          end else begin
-            region_low = {1'b0,
-              (entry_addr & ~napot_low_mask), 2'b00};
-            region_high = region_low;
-            region_high[trailing_ones + 3] = 1'b1;
-          end
-        end
-
-        overlaps = (address_mode != 2'b00) &&
-                   (access_low < region_high) &&
-                   (access_high > region_low);
-        full_match = overlaps && (access_low >= region_low) &&
-                     (access_high <= region_high) &&
+        overlaps = (entry_mode_decoded[entry] != 2'b00) &&
+                   (access_low < region_high_decoded[entry]) &&
+                   (access_high > region_low_decoded[entry]);
+        full_match = overlaps &&
+                     (access_low >= region_low_decoded[entry]) &&
+                     (access_high <= region_high_decoded[entry]) &&
                      access_in_range;
         permissions_ok =
-          ((check_access_i[port] & ~entry_cfg[2:0]) == 3'b000) &&
-          !(entry_cfg[1] && !entry_cfg[0]);
+          ((check_access_i[port] & ~entry_cfg_decoded[entry][2:0]) ==
+           3'b000) &&
+          !(entry_cfg_decoded[entry][1] && !entry_cfg_decoded[entry][0]);
 
         if (check_valid_i[port] && !selected && overlaps) begin
           selected = 1'b1;
@@ -122,7 +141,7 @@ module rv_pmp #(
           if (!full_match)
             allow_o[port] = 1'b0;
           else if ((check_privilege_i[port] == PRIV_M) &&
-                   !entry_cfg[7])
+                   !entry_cfg_decoded[entry][7])
             allow_o[port] = 1'b1;
           else
             allow_o[port] = permissions_ok;

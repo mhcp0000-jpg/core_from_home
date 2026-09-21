@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: 순수 조합 arbitration이며 선택 결과가 같은 edge에 producer/ROB/PRF handshake된다.</tspan><tspan x="60" dy="24">Throughput: 최대 completion 4개, INT write 2개, FP write 2개/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: 선택되지 않은 stateful producer는 result valid/payload를 유지한다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: 조합 grant이며 LSQ candidate와 execution-port register가 장거리 경로를 분할한다.</tspan><tspan x="60" dy="24">Throughput: 최대 completion 4개, INT write 2개, FP write 2개/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: 선택되지 않은 stateful producer는 result valid/payload를 유지한다.</tspan></text>
 </svg>

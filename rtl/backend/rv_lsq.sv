@@ -150,6 +150,11 @@ module rv_lsq #(
   logic [1:0] candidate_found;
   logic [1:0][LQ_INDEX_WIDTH-1:0] candidate_index;
   logic [1:0][SEQ_WIDTH-1:0] candidate_sequence;
+  logic [1:0] selected_candidate_found;
+  logic [1:0][LQ_INDEX_WIDTH-1:0] selected_candidate_index;
+  logic [1:0][SEQ_WIDTH-1:0] selected_candidate_sequence;
+  logic [1:0] candidate_consume;
+  logic [1:0] candidate_replace;
 
   function automatic logic [LQ_INDEX_WIDTH-1:0] first_free_lq(
     input logic [LQ_ENTRIES-1:0] free_bitmap
@@ -261,7 +266,11 @@ module rv_lsq #(
     for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
       if (lq_valid_q[entry] && !lq_killed_q[entry] &&
           lq_address_valid_q[entry] && !lq_issued_q[entry] &&
-          !lq_completed_q[entry] && !lq_exception_q[entry]) begin
+          !lq_completed_q[entry] && !lq_exception_q[entry] &&
+          !(candidate_found[0] &&
+            (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
+          !(candidate_found[1] &&
+            (candidate_index[1] == LQ_INDEX_WIDTH'(entry)))) begin
         if (!found_work[0] ||
             sequence_after(sequence_work[0], lq_sequence_q[entry])) begin
           found_work[1] = found_work[0];
@@ -280,9 +289,68 @@ module rv_lsq #(
       end
     end
 
-    candidate_found = found_work;
-    candidate_index = index_work;
-    candidate_sequence = sequence_work;
+    selected_candidate_found = found_work;
+    selected_candidate_index = index_work;
+    selected_candidate_sequence = sequence_work;
+  end
+
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      candidate_consume[lane] = candidate_found[lane] &&
+        load_candidate_valid_o[lane] && load_candidate_ready_i[lane];
+      // A candidate blocked by an unresolved older access must not reserve a
+      // slot indefinitely.  An older load address can become ready after two
+      // younger stalled identities were captured; holding both would prevent
+      // that older load from ever issuing and create a circular LSQ stall.
+      // Release/reselect stalled identities every cycle so the oldest newly
+      // eligible load can preempt them.  Handshaking candidates still leave
+      // exactly once through candidate_consume.
+      candidate_replace[lane] = !candidate_found[lane] ||
+                                candidate_consume[lane] ||
+                                (candidate_found[lane] &&
+                                 !load_candidate_valid_o[lane]);
+    end
+  end
+
+  // Candidate identity is registered before the wide SQ/LQ ordering checks.
+  // This cuts the 24-entry oldest-load selection and variable LQ array reads
+  // away from the 16-entry store compare/forwarding cone.  Consumed slots may
+  // be refilled on the same edge; the combinational selector excludes both
+  // currently held identities so an outgoing load cannot be selected twice.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      candidate_found <= '0;
+      candidate_index <= '0;
+      candidate_sequence <= '0;
+    end else if (flush_valid_i) begin
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (candidate_found[lane] &&
+            (flush_all_i ||
+             sequence_after(candidate_sequence[lane], flush_sequence_i)))
+          candidate_found[lane] <= 1'b0;
+      end
+    end else begin
+      logic lane0_refill;
+      lane0_refill = candidate_replace[0];
+      if (lane0_refill) begin
+        candidate_found[0] <= selected_candidate_found[0];
+        if (selected_candidate_found[0]) begin
+          candidate_index[0] <= selected_candidate_index[0];
+          candidate_sequence[0] <= selected_candidate_sequence[0];
+        end
+      end
+      if (candidate_replace[1]) begin
+        candidate_found[1] <= lane0_refill ? selected_candidate_found[1] :
+                                             selected_candidate_found[0];
+        if (lane0_refill && selected_candidate_found[1]) begin
+          candidate_index[1] <= selected_candidate_index[1];
+          candidate_sequence[1] <= selected_candidate_sequence[1];
+        end else if (!lane0_refill && selected_candidate_found[0]) begin
+          candidate_index[1] <= selected_candidate_index[0];
+          candidate_sequence[1] <= selected_candidate_sequence[0];
+        end
+      end
+    end
   end
 
   for (genvar lane = 0; lane < 2; lane++) begin : g_order_check
@@ -291,7 +359,7 @@ module rv_lsq #(
     // compares this sequence against the ROB head) cannot feed back through
     // the same procedural block that produces the sequence.
     always_comb begin
-      load_candidate_present_o[lane] = candidate_found[lane];
+      load_candidate_present_o[lane] = candidate_found[lane] && !flush_valid_i;
       load_candidate_index_o[lane] = candidate_index[lane];
       load_candidate_sequence_o[lane] = candidate_sequence[lane];
       load_candidate_address_o[lane] = '0;
@@ -346,7 +414,7 @@ module rv_lsq #(
       youngest_distance = '1;
       sq_forward_data = '0;
 
-      candidate_present = candidate_found[lane];
+      candidate_present = candidate_found[lane] && !flush_valid_i;
       candidate_valid = 1'b0;
       selected_index = candidate_index[lane];
       selected_sequence = candidate_sequence[lane];
@@ -459,7 +527,7 @@ module rv_lsq #(
   // introducing an artificial combinational loop by assigning request and
   // response-dependent load controls in the same procedural block.
   always_comb begin
-    sb_query_valid_o = candidate_found;
+    sb_query_valid_o = candidate_found & {2{!flush_valid_i}};
     sb_query_address_o = '0;
     sb_query_mask_o = '0;
     for (int unsigned lane = 0; lane < 2; lane++) begin

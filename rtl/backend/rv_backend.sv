@@ -601,6 +601,15 @@ module rv_backend #(
   logic [1:0] fast_req_ready, lsu_issue_ready;
   logic mul_req_ready, div_req_ready, fpu_req_ready;
   logic [1:0][4:0] effective_mask;
+  logic fpu_issue_valid_q;
+  logic [ROB_SEQ_WIDTH-1:0] fpu_issue_sequence_q;
+  logic [XLEN-1:0] fpu_issue_operand0_q, fpu_issue_operand1_q,
+                   fpu_issue_operand2_q;
+  logic [31:0] fpu_issue_instruction_q;
+  logic [2:0] fpu_issue_rounding_q;
+  logic fpu_issue_dst_valid_q;
+  reg_class_e fpu_issue_dst_class_q;
+  logic [PHYS_TAG_WIDTH-1:0] fpu_issue_dst_phys_q;
   always_comb begin
     effective_mask='0;
     for(int unsigned candidate=0;candidate<2;candidate++) begin
@@ -616,7 +625,8 @@ module rv_backend #(
           effective_mask[candidate][2]=cand_port_mask[candidate][2]&&lsu_issue_ready[0];
           effective_mask[candidate][3]=cand_port_mask[candidate][3]&&lsu_issue_ready[1];
         end
-        FU_FP:effective_mask[candidate][4]=cand_port_mask[candidate][4]&&fpu_req_ready;
+        FU_FP:effective_mask[candidate][4]=cand_port_mask[candidate][4]&&
+          (!fpu_issue_valid_q||fpu_req_ready);
         default:effective_mask[candidate]='0;
       endcase
       if (serial_barrier_valid_q[0] &&
@@ -627,6 +637,7 @@ module rv_backend #(
   end
   logic [1:0] cand_grant;
   logic [1:0][2:0] cand_grant_port;
+  logic [4:0] selected_port_valid;
   logic [4:0] port_valid;
   logic [4:0] port_candidate;
   logic [1:0] issue_valid, issue_candidate;
@@ -636,7 +647,7 @@ module rv_backend #(
     .candidate_valid_i(cand_valid),.candidate_sequence_i(cand_sequence),
     .candidate_port_mask_i(effective_mask),.port_ready_i('1),
     .candidate_grant_o(cand_grant),.candidate_port_o(cand_grant_port),
-    .port_valid_o(port_valid),.port_candidate_o(port_candidate),
+    .port_valid_o(selected_port_valid),.port_candidate_o(port_candidate),
     .issue_valid_o(issue_valid),.issue_candidate_o(issue_candidate),
     .issue_port_o(issue_port)
   );
@@ -660,16 +671,23 @@ module rv_backend #(
   logic [4:0][PHYS_TAG_WIDTH-1:0] port_dst_phys;
   inst_len_e [4:0] port_len;
   prediction_meta_t [4:0] port_prediction;
+
+  // Keep the integer, branch and memory ports fall-through for CoreMark IPC.
+  // The synthesis-reported endpoint was the FPU payload register, so only P4
+  // receives an elastic issue/operand register.  It can consume and refill on
+  // the same edge and therefore preserves a pipelined FP throughput of one
+  // request/cycle while breaking IQ/PRF -> FPU input timing.
   always_comb begin
-    port_sequence='0;port_fu='0;port_pc='0;port_operand0='0;
+    port_valid='0;port_sequence='0;port_fu='0;port_pc='0;port_operand0='0;
     port_operand1='0;port_operand2='0;port_immediate='0;port_instruction='0;
     port_operation='0;port_dst_valid='0;
     port_use_pc='0;port_use_immediate='0;port_word='0;port_mem_unsigned='0;
     port_mem_size='0;port_rounding='0;port_lq_index='0;port_sq_index='0;
     port_store_address_valid='0;port_store_data_valid='0;
-    port_dst_class='0;port_dst_phys='0;
-    port_len='0;port_prediction='0;
-    for(int unsigned port=0;port<5;port++) if(port_valid[port]) begin
+    port_dst_class='0;port_dst_phys='0;port_len='0;port_prediction='0;
+    for(int unsigned port=0;port<4;port++) if(selected_port_valid[port] &&
+                                                    !flush_valid) begin
+      port_valid[port]=1'b1;
       port_sequence[port]=cand_sequence[port_candidate[port]];
       port_fu[port]=cand_fu[port_candidate[port]];
       port_pc[port]=cand_pc[port_candidate[port]];
@@ -696,6 +714,52 @@ module rv_backend #(
         cand_store_address_valid[port_candidate[port]];
       port_store_data_valid[port]=
         cand_store_data_valid[port_candidate[port]];
+    end
+    port_valid[4]=fpu_issue_valid_q&&!flush_valid;
+    port_sequence[4]=fpu_issue_sequence_q;
+    port_fu[4]=FU_FP;
+    port_operand0[4]=fpu_issue_operand0_q;
+    port_operand1[4]=fpu_issue_operand1_q;
+    port_operand2[4]=fpu_issue_operand2_q;
+    port_instruction[4]=fpu_issue_instruction_q;
+    port_rounding[4]=fpu_issue_rounding_q;
+    port_dst_valid[4]=fpu_issue_dst_valid_q;
+    port_dst_class[4]=fpu_issue_dst_class_q;
+    port_dst_phys[4]=fpu_issue_dst_phys_q;
+  end
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      fpu_issue_valid_q <= 1'b0;
+      fpu_issue_sequence_q <= '0;
+      fpu_issue_operand0_q <= '0;
+      fpu_issue_operand1_q <= '0;
+      fpu_issue_operand2_q <= '0;
+      fpu_issue_instruction_q <= '0;
+      fpu_issue_rounding_q <= '0;
+      fpu_issue_dst_valid_q <= 1'b0;
+      fpu_issue_dst_class_q <= REG_NONE;
+      fpu_issue_dst_phys_q <= '0;
+    end else if (flush_valid) begin
+      if (fpu_issue_valid_q &&
+          (flush_all || sequence_after_backend(fpu_issue_sequence_q,
+                                               flush_sequence)))
+        fpu_issue_valid_q <= 1'b0;
+    end else begin
+      if (selected_port_valid[4]) begin
+        fpu_issue_valid_q <= 1'b1;
+        fpu_issue_sequence_q <= cand_sequence[port_candidate[4]];
+        fpu_issue_operand0_q <= cand_operand0[port_candidate[4]];
+        fpu_issue_operand1_q <= cand_operand1[port_candidate[4]];
+        fpu_issue_operand2_q <= cand_operand2[port_candidate[4]];
+        fpu_issue_instruction_q <= cand_instruction[port_candidate[4]];
+        fpu_issue_rounding_q <= cand_rounding[port_candidate[4]];
+        fpu_issue_dst_valid_q <= cand_dst_valid[port_candidate[4]];
+        fpu_issue_dst_class_q <= cand_dst_class[port_candidate[4]];
+        fpu_issue_dst_phys_q <= cand_dst_phys[port_candidate[4]];
+      end else if (fpu_issue_valid_q && fpu_req_ready) begin
+        fpu_issue_valid_q <= 1'b0;
+      end
     end
   end
 
@@ -875,6 +939,7 @@ module rv_backend #(
   logic [4:0][PHYS_TAG_WIDTH-1:0] lsu_completion_dst_phys;
   logic [4:0][XLEN-1:0] lsu_completion_data, lsu_completion_tval;
   exception_code_e [4:0] lsu_completion_cause;
+
   logic store_buffer_empty, lsu_memory_idle, store_machine_check;
   privilege_e current_privilege, effective_data_privilege;
   logic [7:0][7:0] csr_pmpcfg;

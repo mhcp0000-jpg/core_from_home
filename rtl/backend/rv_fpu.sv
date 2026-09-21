@@ -71,6 +71,50 @@ module rv_fpu #(
   logic [2:0] effective_rm;
   logic request_illegal_rm;
 
+  typedef enum logic [2:0] {
+    SLOW_IDLE,
+    SLOW_DIVIDE,
+    SLOW_DIV_PACK,
+    SLOW_SQRT,
+    SLOW_SQRT_PACK
+  } slow_state_e;
+
+  slow_state_e slow_state_q;
+  pipe_payload_t slow_payload_q;
+  logic slow_result_valid_q;
+  logic request_is_divide, request_is_sqrt, request_is_slow;
+  logic request_accept, fast_request_accept, slow_request_accept;
+  logic fast_pipe_empty;
+  fp_calc_t slow_special_calc;
+  logic slow_special_case;
+
+  logic div_sign_q;
+  logic [2:0] div_rm_q;
+  logic signed [31:0] div_exponent_q;
+  logic [23:0] div_divisor_q;
+  logic [87:0] div_numerator_q;
+  logic [24:0] div_remainder_q;
+  logic [87:0] div_quotient_q;
+  logic [6:0] div_count_q;
+  logic [24:0] div_shifted_remainder;
+  logic [24:0] div_next_remainder;
+  logic [87:0] div_next_quotient;
+  logic div_quotient_bit;
+
+  logic [2:0] sqrt_rm_q;
+  logic signed [31:0] sqrt_exponent_q;
+  logic [127:0] sqrt_radicand_q;
+  logic [129:0] sqrt_remainder_q;
+  logic [63:0] sqrt_root_q;
+  logic [5:0] sqrt_count_q;
+  logic [129:0] sqrt_shifted_remainder;
+  logic [129:0] sqrt_trial;
+  logic [129:0] sqrt_next_remainder;
+  logic [63:0] sqrt_next_root;
+  logic sqrt_root_bit;
+  fp_calc_t div_pack_calc;
+  fp_calc_t sqrt_pack_calc;
+
   function automatic logic sequence_after(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
     input logic [ROB_SEQ_WIDTH-1:0] rhs
@@ -461,103 +505,6 @@ module rv_fpu #(
     return result;
   endfunction
 
-  function automatic fp_calc_t fp_divide(
-    input logic [31:0] a,
-    input logic [31:0] b,
-    input logic [2:0] rm
-  );
-    fp_calc_t result;
-    logic sign;
-    logic [127:0] numerator, quotient;
-    logic [23:0] divisor;
-    logic remainder_nonzero;
-    integer result_exponent;
-    result = '0;
-    sign = a[31] ^ b[31];
-    if (fp_is_nan(a) || fp_is_nan(b)) begin
-      result.data[31:0] = CANONICAL_NAN;
-      if (fp_is_snan(a) || fp_is_snan(b)) result.flags = FFLAG_NV;
-    end else if ((fp_is_zero(a) && fp_is_zero(b)) ||
-                 (fp_is_inf(a) && fp_is_inf(b))) begin
-      result.data[31:0] = CANONICAL_NAN;
-      result.flags = FFLAG_NV;
-    end else if (fp_is_inf(a)) begin
-      result.data[31:0] = {sign, 8'hff, 23'h0};
-    end else if (fp_is_inf(b)) begin
-      result.data[31:0] = {sign, 31'h0};
-    end else if (fp_is_zero(b)) begin
-      result.data[31:0] = {sign, 8'hff, 23'h0};
-      result.flags = FFLAG_DZ;
-    end else if (fp_is_zero(a)) begin
-      result.data[31:0] = {sign, 31'h0};
-    end else begin
-      numerator = {104'b0, fp_mantissa(a)} << 63;
-      divisor = fp_mantissa(b);
-      quotient = numerator / divisor;
-      remainder_nonzero = (numerator % divisor) != 0;
-      result_exponent = fp_lsb_exponent(a) - fp_lsb_exponent(b) - 63;
-      result = pack_finite(sign, quotient, result_exponent, rm,
-                           remainder_nonzero);
-    end
-    return result;
-  endfunction
-
-  function automatic logic [63:0] integer_sqrt128(
-    input logic [127:0] radicand
-  );
-    logic [129:0] remainder;
-    logic [63:0] root;
-    logic [65:0] trial;
-    remainder = '0;
-    root = '0;
-    for (integer pair = 63; pair >= 0; pair--) begin
-      remainder = (remainder << 2) | ((radicand >> (pair*2)) & 2'b11);
-      trial = {root, 2'b01};
-      if (remainder >= trial) begin
-        remainder = remainder - trial;
-        root = (root << 1) | 1'b1;
-      end else begin
-        root = root << 1;
-      end
-    end
-    return root;
-  endfunction
-
-  function automatic fp_calc_t fp_square_root(
-    input logic [31:0] a,
-    input logic [2:0] rm
-  );
-    fp_calc_t result;
-    logic [127:0] radicand;
-    logic [63:0] root;
-    logic remainder_nonzero;
-    integer exponent_value;
-    result = '0;
-    if (fp_is_nan(a)) begin
-      result.data[31:0] = CANONICAL_NAN;
-      if (fp_is_snan(a)) result.flags = FFLAG_NV;
-    end else if (a[31] && !fp_is_zero(a)) begin
-      result.data[31:0] = CANONICAL_NAN;
-      result.flags = FFLAG_NV;
-    end else if (fp_is_inf(a) || fp_is_zero(a)) begin
-      result.data[31:0] = a;
-    end else begin
-      exponent_value = fp_lsb_exponent(a);
-      radicand = {104'b0, fp_mantissa(a)};
-      if (exponent_value & 1) begin
-        radicand = radicand << 1;
-        exponent_value = exponent_value - 1;
-      end
-      radicand = radicand << 80;
-      root = integer_sqrt128(radicand);
-      remainder_nonzero = ({64'b0, root} * {64'b0, root}) != radicand;
-      result = pack_finite(1'b0, {64'b0, root},
-                           (exponent_value / 2) - 40, rm,
-                           remainder_nonzero);
-    end
-    return result;
-  endfunction
-
   function automatic fp_calc_t fp_min_max(
     input logic [31:0] a,
     input logic [31:0] b,
@@ -745,8 +692,12 @@ module rv_fpu #(
           7'b0000000: result = fp_add_sub(a, b, 1'b0, rm);
           7'b0000100: result = fp_add_sub(a, b, 1'b1, rm);
           7'b0001000: result = fp_multiply(a, b, rm);
-          7'b0001100: result = fp_divide(a, b, rm);
-          7'b0101100: result = fp_square_root(a, rm);
+          // FDIV.S and FSQRT.S are handled by the iterative slow path below.
+          // Keeping them out of this function prevents a combinational divider
+          // and 64-step square-root network from being inferred in the fast
+          // FPU request path.
+          7'b0001100: result = '0;
+          7'b0101100: result = '0;
           7'b0010000: begin
             case (funct3)
               3'b000: result.data[31:0] = {b[31], a[30:0]};
@@ -793,25 +744,125 @@ module rv_fpu #(
     return result;
   endfunction
 
-  always_comb begin
+  always @* begin
     effective_rm = (rounding_mode_i == 3'b111) ? frm_i : rounding_mode_i;
     request_illegal_rm = effective_rm > 3'b100;
     request_calc = execute_fp(instruction_i, operand_a_i, operand_b_i,
                               operand_c_i, effective_rm);
+
+    request_is_divide = (instruction_i[6:0] == 7'b1010011) &&
+                        (instruction_i[31:25] == 7'b0001100);
+    request_is_sqrt = (instruction_i[6:0] == 7'b1010011) &&
+                      (instruction_i[31:25] == 7'b0101100);
+    request_is_slow = (request_is_divide || request_is_sqrt) &&
+                      !request_illegal_rm;
+
+    slow_special_calc = '0;
+    slow_special_case = 1'b0;
+    if (request_is_divide) begin
+      slow_special_calc.data[31] = operand_a_i[31] ^ operand_b_i[31];
+      if (fp_is_nan(operand_a_i[31:0]) || fp_is_nan(operand_b_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = CANONICAL_NAN;
+        if (fp_is_snan(operand_a_i[31:0]) ||
+            fp_is_snan(operand_b_i[31:0]))
+          slow_special_calc.flags = FFLAG_NV;
+      end else if ((fp_is_zero(operand_a_i[31:0]) &&
+                    fp_is_zero(operand_b_i[31:0])) ||
+                   (fp_is_inf(operand_a_i[31:0]) &&
+                    fp_is_inf(operand_b_i[31:0]))) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = CANONICAL_NAN;
+        slow_special_calc.flags = FFLAG_NV;
+      end else if (fp_is_inf(operand_a_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = {
+          operand_a_i[31] ^ operand_b_i[31], 8'hff, 23'h0
+        };
+      end else if (fp_is_inf(operand_b_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = {
+          operand_a_i[31] ^ operand_b_i[31], 31'h0
+        };
+      end else if (fp_is_zero(operand_b_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = {
+          operand_a_i[31] ^ operand_b_i[31], 8'hff, 23'h0
+        };
+        slow_special_calc.flags = FFLAG_DZ;
+      end else if (fp_is_zero(operand_a_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = {
+          operand_a_i[31] ^ operand_b_i[31], 31'h0
+        };
+      end
+    end else if (request_is_sqrt) begin
+      if (fp_is_nan(operand_a_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = CANONICAL_NAN;
+        if (fp_is_snan(operand_a_i[31:0]))
+          slow_special_calc.flags = FFLAG_NV;
+      end else if (operand_a_i[31] && !fp_is_zero(operand_a_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = CANONICAL_NAN;
+        slow_special_calc.flags = FFLAG_NV;
+      end else if (fp_is_inf(operand_a_i[31:0]) ||
+                   fp_is_zero(operand_a_i[31:0])) begin
+        slow_special_case = 1'b1;
+        slow_special_calc.data[31:0] = operand_a_i[31:0];
+      end
+    end
+  end
+
+  always @* begin
+    div_shifted_remainder = {div_remainder_q[23:0], div_numerator_q[87]};
+    div_quotient_bit = div_shifted_remainder >= {1'b0, div_divisor_q};
+    div_next_remainder = div_quotient_bit ?
+      div_shifted_remainder - {1'b0, div_divisor_q} :
+      div_shifted_remainder;
+    div_next_quotient = {div_quotient_q[86:0], div_quotient_bit};
+
+    sqrt_shifted_remainder = (sqrt_remainder_q << 2) |
+                             {{128{1'b0}}, sqrt_radicand_q[127:126]};
+    sqrt_trial = {{64{1'b0}}, sqrt_root_q, 2'b01};
+    sqrt_root_bit = sqrt_shifted_remainder >= sqrt_trial;
+    sqrt_next_remainder = sqrt_root_bit ?
+      sqrt_shifted_remainder - sqrt_trial : sqrt_shifted_remainder;
+    sqrt_next_root = {sqrt_root_q[62:0], sqrt_root_bit};
+
+    div_pack_calc = pack_finite(
+      div_sign_q, {40'b0, div_quotient_q}, div_exponent_q,
+      div_rm_q, div_remainder_q != 0);
+    sqrt_pack_calc = pack_finite(
+      1'b0, {64'b0, sqrt_root_q}, sqrt_exponent_q,
+      sqrt_rm_q, sqrt_remainder_q != 0);
   end
 
   // Keep the elastic-ready cone independent from the request arithmetic.
   // This prevents a false issue->request-data->ready combinational loop when
   // the FPU is connected to the global issue and writeback arbiters.
-  always_comb begin
-    stage_ready[PIPE_STAGES-1] = !valid_q[PIPE_STAGES-1] || result_ready_i;
+  always @* begin
+    stage_ready[PIPE_STAGES-1] = !valid_q[PIPE_STAGES-1] ||
+      (!slow_result_valid_q && result_ready_i);
     for (integer stage = PIPE_STAGES-2; stage >= 0; stage--)
       stage_ready[stage] = !valid_q[stage] || stage_ready[stage+1];
-    request_ready_o = stage_ready[0];
+    fast_pipe_empty = !(|valid_q);
+    if (request_is_slow)
+      request_ready_o = !flush_valid_i && fast_pipe_empty &&
+                        (slow_state_q == SLOW_IDLE) &&
+                        !slow_result_valid_q;
+    else
+      request_ready_o = !flush_valid_i && stage_ready[0] &&
+                        (slow_state_q == SLOW_IDLE) &&
+                        !slow_result_valid_q;
+    request_accept = request_valid_i && request_ready_o;
+    slow_request_accept = request_accept && request_is_slow;
+    fast_request_accept = request_accept && !request_is_slow;
   end
 
-  assign result_payload = payload_q[PIPE_STAGES-1];
-  assign result_valid_o = valid_q[PIPE_STAGES-1];
+  assign result_payload = slow_result_valid_q ? slow_payload_q :
+                                                payload_q[PIPE_STAGES-1];
+  assign result_valid_o = slow_result_valid_q || valid_q[PIPE_STAGES-1];
   assign result_sequence_o = result_payload.sequence_id;
   assign result_destination_valid_o = result_payload.destination_valid;
   assign result_destination_class_o = result_payload.destination_class;
@@ -825,13 +876,38 @@ module rv_fpu #(
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       valid_q <= '0;
+      slow_state_q <= SLOW_IDLE;
+      slow_payload_q <= '0;
+      slow_result_valid_q <= 1'b0;
+      div_sign_q <= 1'b0;
+      div_rm_q <= '0;
+      div_exponent_q <= '0;
+      div_divisor_q <= '0;
+      div_numerator_q <= '0;
+      div_remainder_q <= '0;
+      div_quotient_q <= '0;
+      div_count_q <= '0;
+      sqrt_rm_q <= '0;
+      sqrt_exponent_q <= '0;
+      sqrt_radicand_q <= '0;
+      sqrt_remainder_q <= '0;
+      sqrt_root_q <= '0;
+      sqrt_count_q <= '0;
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         payload_q[stage] <= '0;
     end else if (flush_valid_i) begin
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         if (valid_q[stage] && killed_by_flush(payload_q[stage].sequence_id))
           valid_q[stage] <= 1'b0;
+      if (((slow_state_q != SLOW_IDLE) || slow_result_valid_q) &&
+          killed_by_flush(slow_payload_q.sequence_id)) begin
+        slow_state_q <= SLOW_IDLE;
+        slow_result_valid_q <= 1'b0;
+      end
     end else begin
+      if (slow_result_valid_q && result_ready_i)
+        slow_result_valid_q <= 1'b0;
+
       for (integer stage = PIPE_STAGES-1; stage > 0; stage--) begin
         if (stage_ready[stage]) begin
           valid_q[stage] <= valid_q[stage-1];
@@ -840,8 +916,8 @@ module rv_fpu #(
         end
       end
       if (stage_ready[0]) begin
-        valid_q[0] <= request_valid_i;
-        if (request_valid_i) begin
+        valid_q[0] <= fast_request_accept;
+        if (fast_request_accept) begin
           payload_q[0].sequence_id <= sequence_i;
           payload_q[0].destination_valid <= destination_valid_i;
           payload_q[0].destination_class <= destination_class_i;
@@ -852,6 +928,85 @@ module rv_fpu #(
           payload_q[0].exception_cause <= EXC_ILLEGAL_INSTRUCTION;
           payload_q[0].exception_tval <= XLEN'(instruction_i);
         end
+      end
+
+      if (slow_request_accept) begin
+        slow_payload_q.sequence_id <= sequence_i;
+        slow_payload_q.destination_valid <= destination_valid_i;
+        slow_payload_q.destination_class <= destination_class_i;
+        slow_payload_q.destination_phys <= destination_phys_i;
+        slow_payload_q.data <= slow_special_calc.data;
+        slow_payload_q.flags <= slow_special_calc.flags;
+        slow_payload_q.exception_valid <= 1'b0;
+        slow_payload_q.exception_cause <= EXC_ILLEGAL_INSTRUCTION;
+        slow_payload_q.exception_tval <= '0;
+
+        if (slow_special_case) begin
+          slow_result_valid_q <= 1'b1;
+        end else if (request_is_divide) begin
+          div_sign_q <= operand_a_i[31] ^ operand_b_i[31];
+          div_rm_q <= effective_rm;
+          div_exponent_q <= fp_lsb_exponent(operand_a_i[31:0]) -
+                            fp_lsb_exponent(operand_b_i[31:0]) - 63;
+          div_divisor_q <= fp_mantissa(operand_b_i[31:0]);
+          div_numerator_q <= {1'b0, fp_mantissa(operand_a_i[31:0]), 63'b0};
+          div_remainder_q <= '0;
+          div_quotient_q <= '0;
+          div_count_q <= '0;
+          slow_state_q <= SLOW_DIVIDE;
+        end else begin
+          sqrt_rm_q <= effective_rm;
+          if (fp_lsb_exponent(operand_a_i[31:0]) & 1) begin
+            sqrt_exponent_q <=
+              ((fp_lsb_exponent(operand_a_i[31:0]) - 1) / 2) - 40;
+            sqrt_radicand_q <=
+              ({104'b0, fp_mantissa(operand_a_i[31:0])} << 81);
+          end else begin
+            sqrt_exponent_q <=
+              (fp_lsb_exponent(operand_a_i[31:0]) / 2) - 40;
+            sqrt_radicand_q <=
+              ({104'b0, fp_mantissa(operand_a_i[31:0])} << 80);
+          end
+          sqrt_remainder_q <= '0;
+          sqrt_root_q <= '0;
+          sqrt_count_q <= '0;
+          slow_state_q <= SLOW_SQRT;
+        end
+      end else begin
+        case (slow_state_q)
+          SLOW_DIVIDE: begin
+            div_numerator_q <= {div_numerator_q[86:0], 1'b0};
+            div_remainder_q <= div_next_remainder;
+            div_quotient_q <= div_next_quotient;
+            if (div_count_q == 7'd87)
+              slow_state_q <= SLOW_DIV_PACK;
+            else
+              div_count_q <= div_count_q + 1'b1;
+          end
+          SLOW_DIV_PACK: begin
+            slow_payload_q.data <= div_pack_calc.data;
+            slow_payload_q.flags <= div_pack_calc.flags;
+            slow_result_valid_q <= 1'b1;
+            slow_state_q <= SLOW_IDLE;
+          end
+          SLOW_SQRT: begin
+            sqrt_radicand_q <= {sqrt_radicand_q[125:0], 2'b0};
+            sqrt_remainder_q <= sqrt_next_remainder;
+            sqrt_root_q <= sqrt_next_root;
+            if (sqrt_count_q == 6'd63)
+              slow_state_q <= SLOW_SQRT_PACK;
+            else
+              sqrt_count_q <= sqrt_count_q + 1'b1;
+          end
+          SLOW_SQRT_PACK: begin
+            slow_payload_q.data <= sqrt_pack_calc.data;
+            slow_payload_q.flags <= sqrt_pack_calc.flags;
+            slow_result_valid_q <= 1'b1;
+            slow_state_q <= SLOW_IDLE;
+          end
+          default: begin
+          end
+        endcase
       end
     end
   end

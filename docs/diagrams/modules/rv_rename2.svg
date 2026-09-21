@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">2-wide source/destination;</tspan><tspan x="60" dy="25">commit; checkpoint</tspan><tspan x="60" dy="25">restore/release</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">RAT/RRAT lookup</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">INT/FP free-list allocation</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">same-pair bypass/checkpoint</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">RAT/RRAT lookup</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">8-bit group free-list encoder</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">same-pair bypass/checkpoint</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">physical source/new</tspan><tspan x="990" dy="25">destination/stale tag;</tspan><tspan x="990" dy="25">resource ready</tspan></text>

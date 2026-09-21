@@ -77,6 +77,9 @@ module rv_lsq_tb;
 
   logic [LQ_INDEX_WIDTH-1:0] saved_lq0;
   logic [LQ_INDEX_WIDTH-1:0] saved_lq1;
+  logic [LQ_INDEX_WIDTH-1:0] stalled_lq_old;
+  logic [LQ_INDEX_WIDTH-1:0] stalled_lq_young0;
+  logic [LQ_INDEX_WIDTH-1:0] stalled_lq_young1;
   logic [SQ_INDEX_WIDTH-1:0] saved_sq0;
   logic [SQ_INDEX_WIDTH-1:0] saved_sq1;
 
@@ -239,6 +242,10 @@ module rv_lsq_tb;
     agu_valid = '0;
     agu_lq_valid = '0;
     agu_sq_valid = '0;
+    // Candidate selection is intentionally registered before the wide
+    // store-order/forwarding check.
+    @(posedge clk);
+    @(negedge clk);
   endtask
 
   task automatic dispatch_single_load(input logic [7:0] seq_value);
@@ -275,6 +282,8 @@ module rv_lsq_tb;
     @(negedge clk);
     agu_valid = '0;
     agu_lq_valid = '0;
+    @(posedge clk);
+    @(negedge clk);
   endtask
 
   initial begin : p_lsq_test
@@ -376,6 +385,8 @@ module rv_lsq_tb;
     @(negedge clk);
     agu_valid = '0;
     agu_lq_valid = '0;
+    @(posedge clk);
+    @(negedge clk);
     #1;
     if (!load_candidate_present[0] || load_candidate_valid[0] ||
         (load_stall_reason[0] != LSQ_STALL_UNKNOWN_ADDR) ||
@@ -420,6 +431,77 @@ module rv_lsq_tb;
         load_memory_read[0] ||
         (load_forward_data[0] != 64'h0000_0000_dead_beef))
       $fatal(1, "Split store data phase lost SQ address or forwarding state");
+
+    // Regression for a registered-candidate circular stall: two younger
+    // loads can become address-ready while an older load address is still
+    // unknown.  Once the older address arrives it must replace one of the
+    // stalled candidate identities instead of being excluded forever.
+    reset_dut();
+    dispatch_single_load(8'd84);
+    stalled_lq_old = saved_lq1;
+    @(negedge clk);
+    dispatch_valid = 2'b11;
+    dispatch_is_load = 2'b11;
+    dispatch_sequence[0] = 8'd94;
+    dispatch_sequence[1] = 8'd101;
+    dispatch_destination_valid = 2'b11;
+    dispatch_destination_phys[0] = 7'd20;
+    dispatch_destination_phys[1] = 7'd21;
+    dispatch_size[0] = 3'd2;
+    dispatch_size[1] = 3'd2;
+    #1;
+    if (!dispatch_ready || (dispatch_lq_valid != 2'b11))
+      $fatal(1, "Younger stalled-load pair allocation failed");
+    stalled_lq_young0 = dispatch_lq_index[0];
+    stalled_lq_young1 = dispatch_lq_index[1];
+    @(posedge clk);
+    @(negedge clk);
+    dispatch_valid = '0;
+    dispatch_is_load = '0;
+
+    agu_valid = 2'b11;
+    agu_sequence[0] = 8'd94;
+    agu_sequence[1] = 8'd101;
+    agu_lq_valid = 2'b11;
+    agu_lq_index[0] = stalled_lq_young0;
+    agu_lq_index[1] = stalled_lq_young1;
+    agu_address[0] = 32'h8002_0080;
+    agu_address[1] = 32'h8002_00c0;
+    agu_mask[0] = 8'h0f;
+    agu_mask[1] = 8'h0f;
+    agu_address_valid = 2'b11;
+    @(posedge clk);
+    @(negedge clk);
+    agu_valid = '0;
+    agu_lq_valid = '0;
+    @(posedge clk);
+    @(negedge clk);
+    #1;
+    if ((load_candidate_present != 2'b11) ||
+        (load_candidate_valid != 2'b00) ||
+        (load_stall_reason[0] != LSQ_STALL_UNKNOWN_ADDR) ||
+        (load_stall_reason[1] != LSQ_STALL_UNKNOWN_ADDR))
+      $fatal(1, "Younger candidates did not wait for older load address");
+
+    agu_valid = 2'b01;
+    agu_sequence[0] = 8'd84;
+    agu_lq_valid = 2'b01;
+    agu_lq_index[0] = stalled_lq_old;
+    agu_address[0] = 32'h8002_0040;
+    agu_mask[0] = 8'h0f;
+    agu_address_valid[0] = 1'b1;
+    @(posedge clk);
+    @(negedge clk);
+    agu_valid = '0;
+    agu_lq_valid = '0;
+    @(posedge clk);
+    @(negedge clk);
+    #1;
+    if (!(((load_candidate_sequence[0] == 8'd84) &&
+           load_candidate_valid[0] && load_memory_read[0]) ||
+          ((load_candidate_sequence[1] == 8'd84) &&
+           load_candidate_valid[1] && load_memory_read[1])))
+      $fatal(1, "Newly-ready older load could not preempt stalled candidates");
 
     reset_dut();
     dispatch_single_load(8'd30);

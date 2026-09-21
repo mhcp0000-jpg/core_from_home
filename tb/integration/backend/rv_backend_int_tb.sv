@@ -356,8 +356,13 @@ module rv_backend_int_tb;
       $display("Server 08c8 sequence: aligned SH and following LBU PASS");
     end
 
-    // Exercise the complete FP backend path, including same-pair rename
-    // dependency, FP PRF wakeup, FPU writeback and in-order ROB retirement.
+    // FP instructions are legal only when mstatus.FS is not Off.  Enable the
+    // Initial state through the architectural CSR path before exercising the
+    // complete FP backend path, including same-pair rename dependency, FP PRF
+    // wakeup, FPU writeback and in-order ROB retirement.
+    send_pair(32'h27f8, 32'h0000_2537, 1'b1,
+              32'h27fc, 32'h3005_2073); // lui x10,0x2; csrrs x0,mstatus,x10
+
     // IEEE-754 requires +0 + +0 to remain +0 even under RDN.
     send_pair(32'h2800, 32'hf000_00d3, 1'b1,
               32'h2804, 32'h0010_a153); // fmv.w.x f1,x0; fadd.s f2,f1,f1,rdn
@@ -372,7 +377,9 @@ module rv_backend_int_tb;
     if ((fp_write_count != 2) || (fp_write_rd[0] != 1) ||
         (fp_write_data[0] != 32'h0000_0000) || (fp_write_rd[1] != 2) ||
         (fp_write_data[1] != 32'h0000_0000))
-      $fatal(1, "Integrated FADD.S +0 + +0 RDN sign result failed");
+      $fatal(1, "Integrated FADD.S +0 + +0 RDN failed: count=%0d rd=%0d/%0d data=%08x/%08x",
+             fp_write_count, fp_write_rd[0], fp_write_rd[1],
+             fp_write_data[0], fp_write_data[1]);
 
     // Commit-time CSR execution: lane1 CSRRW depends on the lane0 LUI and
     // must return old mtvec while updating it only at architectural commit.
@@ -383,15 +390,15 @@ module rv_backend_int_tb;
     begin
       int unsigned timeout;
       timeout = 0;
-      while ((write_count < 18) && (timeout < 160)) begin
+      while ((write_count < 19) && (timeout < 160)) begin
         @(negedge clk);
         timeout++;
       end
     end
-    if ((write_count != 18) || (write_rd[15] != 9) ||
-        (write_data[15] != 32'h8000_0000) || (write_rd[16] != 7) ||
-        (write_data[16] != 0) || (write_rd[17] != 8) ||
-        (write_data[17] != 5))
+    if ((write_count != 19) || (write_rd[16] != 9) ||
+        (write_data[16] != 32'h8000_0000) || (write_rd[17] != 7) ||
+        (write_data[17] != 0) || (write_rd[18] != 8) ||
+        (write_data[18] != 5))
       $fatal(1, "Integrated CSR old-value/write ordering failed");
 
     // Enable MSIP locally and globally, then retire WFI. WFI first refetches

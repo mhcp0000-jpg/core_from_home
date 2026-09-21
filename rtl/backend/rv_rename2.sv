@@ -93,14 +93,38 @@ module rv_rename2 #(
   function automatic logic [PHYS_TAG_WIDTH-1:0] first_free_int(
     input logic [INT_PHYS_REGS-1:0] bitmap
   );
+    localparam int unsigned GROUP_SIZE = 8;
+    localparam int unsigned GROUP_COUNT =
+      (INT_PHYS_REGS + GROUP_SIZE - 1) / GROUP_SIZE;
     logic [PHYS_TAG_WIDTH-1:0] selected;
-    logic found;
+    logic [GROUP_COUNT-1:0] group_has_free;
+    logic group_found;
+    logic bit_found;
+    integer unsigned selected_group;
     selected = '0;
-    found    = 1'b0;
-    for (int unsigned tag = 0; tag < INT_PHYS_REGS; tag++) begin
-      if (bitmap[tag] && !found) begin
-        selected = PHYS_TAG_WIDTH'(tag);
-        found    = 1'b1;
+    group_has_free = '0;
+    group_found = 1'b0;
+    bit_found = 1'b0;
+    selected_group = 0;
+    // The reductions are parallel; only the much smaller group selector and
+    // one 8-bit local selector remain on the allocation path.
+    for (int unsigned group = 0; group < GROUP_COUNT; group++) begin
+      for (int unsigned bit_index = 0; bit_index < GROUP_SIZE; bit_index++) begin
+        if ((group * GROUP_SIZE + bit_index) < INT_PHYS_REGS)
+          group_has_free[group] |= bitmap[group * GROUP_SIZE + bit_index];
+      end
+    end
+    for (int unsigned group = 0; group < GROUP_COUNT; group++) begin
+      if (group_has_free[group] && !group_found) begin
+        selected_group = group;
+        group_found = 1'b1;
+      end
+    end
+    for (int unsigned bit_index = 0; bit_index < GROUP_SIZE; bit_index++) begin
+      if (((selected_group * GROUP_SIZE + bit_index) < INT_PHYS_REGS) &&
+          bitmap[selected_group * GROUP_SIZE + bit_index] && !bit_found) begin
+        selected = PHYS_TAG_WIDTH'(selected_group * GROUP_SIZE + bit_index);
+        bit_found = 1'b1;
       end
     end
     return selected;
@@ -109,14 +133,36 @@ module rv_rename2 #(
   function automatic logic [PHYS_TAG_WIDTH-1:0] first_free_fp(
     input logic [FP_PHYS_REGS-1:0] bitmap
   );
+    localparam int unsigned GROUP_SIZE = 8;
+    localparam int unsigned GROUP_COUNT =
+      (FP_PHYS_REGS + GROUP_SIZE - 1) / GROUP_SIZE;
     logic [PHYS_TAG_WIDTH-1:0] selected;
-    logic found;
+    logic [GROUP_COUNT-1:0] group_has_free;
+    logic group_found;
+    logic bit_found;
+    integer unsigned selected_group;
     selected = '0;
-    found    = 1'b0;
-    for (int unsigned tag = 0; tag < FP_PHYS_REGS; tag++) begin
-      if (bitmap[tag] && !found) begin
-        selected = PHYS_TAG_WIDTH'(tag);
-        found    = 1'b1;
+    group_has_free = '0;
+    group_found = 1'b0;
+    bit_found = 1'b0;
+    selected_group = 0;
+    for (int unsigned group = 0; group < GROUP_COUNT; group++) begin
+      for (int unsigned bit_index = 0; bit_index < GROUP_SIZE; bit_index++) begin
+        if ((group * GROUP_SIZE + bit_index) < FP_PHYS_REGS)
+          group_has_free[group] |= bitmap[group * GROUP_SIZE + bit_index];
+      end
+    end
+    for (int unsigned group = 0; group < GROUP_COUNT; group++) begin
+      if (group_has_free[group] && !group_found) begin
+        selected_group = group;
+        group_found = 1'b1;
+      end
+    end
+    for (int unsigned bit_index = 0; bit_index < GROUP_SIZE; bit_index++) begin
+      if (((selected_group * GROUP_SIZE + bit_index) < FP_PHYS_REGS) &&
+          bitmap[selected_group * GROUP_SIZE + bit_index] && !bit_found) begin
+        selected = PHYS_TAG_WIDTH'(selected_group * GROUP_SIZE + bit_index);
+        bit_found = 1'b1;
       end
     end
     return selected;

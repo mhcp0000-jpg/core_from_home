@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">dispatch uop; PRF/WB wakeup;</tspan><tspan x="60" dy="25">flush; candidate accept</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">56-entry unified payload</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">per-source ready scoreboard</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">wrap-aware oldest-ready select</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">56-entry unified payload</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">ready scoreboard + WB bypass</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">oldest select → port registers</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">두 candidate와 occupancy</tspan></text>
@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: dispatch edge 뒤 candidate가 보이고 WB broadcast는 dependent ready를 edge에서 갱신한다.</tspan><tspan x="60" dy="24">Throughput: 최대 두 dispatch와 두 accepted issue/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: candidate는 실행 port가 accept하기 전 제거되지 않는다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: WB는 ready를 edge에서 저장하며 tag-match bypass로 같은 cycle candidate에도 참여한다.</tspan><tspan x="60" dy="24">Throughput: 최대 두 dispatch와 두 accepted issue/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: candidate는 실행 port가 accept하기 전 제거되지 않는다.</tspan></text>
 </svg>

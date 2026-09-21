@@ -276,6 +276,39 @@ module rv_soc_dpi_tb;
                  u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_address_valid_q,
                  u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_issued_q,
                  u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.lq_completed_q);
+        $display("TIMEOUT load_candidate found=%b index=%0d/%0d sequence=%0d/%0d valid=%b ready=%b stall=%0d/%0d",
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.candidate_found,
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.candidate_index[0],
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.candidate_index[1],
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.candidate_sequence[0],
+                 u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.candidate_sequence[1],
+                 u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_valid,
+                 u_dut.u_core.u_backend.u_lsu_cluster.load_candidate_ready,
+                 u_dut.u_core.u_backend.u_lsu_cluster.load_stall_reason[0],
+                 u_dut.u_core.u_backend.u_lsu_cluster.load_stall_reason[1]);
+        for (int candidate_lane = 0; candidate_lane < 2;
+             candidate_lane++) begin
+          int candidate_lq_index;
+          candidate_lq_index =
+            u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+              .candidate_index[candidate_lane];
+          $display("TIMEOUT candidate[%0d] lq_seq=%0d lq_valid=%b killed=%b addr_valid=%b issued=%b complete=%b exception=%b",
+                   candidate_lane,
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_sequence_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_valid_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_killed_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_address_valid_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_issued_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_completed_q[candidate_lq_index],
+                   u_dut.u_core.u_backend.u_lsu_cluster.u_lsq
+                     .lq_exception_q[candidate_lq_index]);
+        end
         $display("TIMEOUT sq valid=%b addr=%b data=%b",
                  u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_valid_q,
                  u_dut.u_core.u_backend.u_lsu_cluster.u_lsq.sq_address_valid_q,
