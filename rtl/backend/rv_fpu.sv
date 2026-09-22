@@ -38,7 +38,12 @@ module rv_fpu #(
 
   import rv_ooo_pkg::*;
 
-  localparam int unsigned PIPE_STAGES = (LATENCY < 1) ? 1 : LATENCY;
+  // LATENCY>=3 uses one explicit pre-normalization stage followed by
+  // LATENCY-1 result stages.  LATENCY 1/2 keeps the compact unsplit datapath
+  // so the parameter continues to mean total elastic capacity/latency.
+  localparam bit SPLIT_PREPACK = LATENCY >= 3;
+  localparam int unsigned PIPE_STAGES = SPLIT_PREPACK ? LATENCY - 1 :
+                                                   ((LATENCY < 1) ? 1 : LATENCY);
   localparam logic [4:0] FFLAG_NX = 5'b00001;
   localparam logic [4:0] FFLAG_UF = 5'b00010;
   localparam logic [4:0] FFLAG_OF = 5'b00100;
@@ -50,6 +55,16 @@ module rv_fpu #(
     logic [XLEN-1:0] data;
     logic [4:0]      flags;
   } fp_calc_t;
+
+  typedef struct packed {
+    logic                needs_pack;
+    fp_calc_t             direct;
+    logic                sign;
+    logic [127:0]         magnitude;
+    logic signed [31:0]   lsb_exponent;
+    logic [2:0]          rounding_mode;
+    logic                extra_sticky;
+  } fp_precalc_t;
 
   typedef struct packed {
     logic [ROB_SEQ_WIDTH-1:0]  sequence_id;
@@ -65,9 +80,21 @@ module rv_fpu #(
 
   logic [PIPE_STAGES-1:0] valid_q;
   pipe_payload_t [PIPE_STAGES-1:0] payload_q;
+  logic pre_valid_q;
+  logic [ROB_SEQ_WIDTH-1:0] pre_sequence_q;
+  logic pre_destination_valid_q;
+  reg_class_e pre_destination_class_q;
+  logic [PHYS_TAG_WIDTH-1:0] pre_destination_phys_q;
+  logic pre_exception_valid_q;
+  exception_code_e pre_exception_cause_q;
+  logic [XLEN-1:0] pre_exception_tval_q;
+  fp_precalc_t pre_calc_q;
   pipe_payload_t result_payload;
   logic [PIPE_STAGES-1:0] stage_ready;
-  fp_calc_t request_calc;
+  logic pre_ready;
+  fp_precalc_t request_precalc;
+  fp_calc_t request_final_calc;
+  fp_calc_t pre_final_calc;
   logic [2:0] effective_rm;
   logic request_illegal_rm;
 
@@ -321,12 +348,13 @@ module rv_fpu #(
     return result;
   endfunction
 
-  function automatic fp_calc_t fp_add_sub(
+  function automatic fp_precalc_t fp_add_sub_pre(
     input logic [31:0] a,
     input logic [31:0] b,
     input logic subtract_b,
     input logic [2:0] rm
   );
+    fp_precalc_t pre;
     fp_calc_t result;
     logic sign_a, sign_b, sticky_a, sticky_b, result_sign;
     logic [23:0] mantissa_a, mantissa_b;
@@ -334,26 +362,32 @@ module rv_fpu #(
     logic signed [128:0] signed_a, signed_b, signed_sum;
     integer exponent_a, exponent_b, common_exponent;
 
+    pre = '0;
+    pre.rounding_mode = rm;
     result = '0;
     sign_a = a[31];
     sign_b = b[31] ^ subtract_b;
     if (fp_is_nan(a) || fp_is_nan(b)) begin
       result.data[31:0] = CANONICAL_NAN;
       if (fp_is_snan(a) || fp_is_snan(b)) result.flags = FFLAG_NV;
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if (fp_is_inf(a) && fp_is_inf(b) && (sign_a != sign_b)) begin
       result.data[31:0] = CANONICAL_NAN;
       result.flags = FFLAG_NV;
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if (fp_is_inf(a)) begin
       result.data[31:0] = {sign_a, 8'hff, 23'h0};
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if (fp_is_inf(b)) begin
       result.data[31:0] = {sign_b, 8'hff, 23'h0};
-      return result;
+      pre.direct = result;
+      return pre;
     end
 
     mantissa_a = fp_mantissa(a);
@@ -375,24 +409,31 @@ module rv_fpu #(
     if (signed_sum == 0) begin
       result.data[31] = exact_sum_zero_sign(fp_is_zero(a), sign_a,
                                             fp_is_zero(b), sign_b, rm);
-      return result;
+      pre.direct = result;
+      return pre;
     end
     result_sign = signed_sum[128];
     magnitude = result_sign ? 128'(-signed_sum) : 128'(signed_sum);
-    result = pack_finite(result_sign, magnitude, common_exponent - 32,
-                         rm, sticky_a || sticky_b);
-    return result;
+    pre.needs_pack = 1'b1;
+    pre.sign = result_sign;
+    pre.magnitude = magnitude;
+    pre.lsb_exponent = common_exponent - 32;
+    pre.extra_sticky = sticky_a || sticky_b;
+    return pre;
   endfunction
 
-  function automatic fp_calc_t fp_multiply(
+  function automatic fp_precalc_t fp_multiply_pre(
     input logic [31:0] a,
     input logic [31:0] b,
     input logic [2:0] rm
   );
+    fp_precalc_t pre;
     fp_calc_t result;
     logic sign;
     logic [47:0] product;
     integer result_exponent;
+    pre = '0;
+    pre.rounding_mode = rm;
     result = '0;
     sign = a[31] ^ b[31];
     if (fp_is_nan(a) || fp_is_nan(b)) begin
@@ -409,12 +450,16 @@ module rv_fpu #(
     end else begin
       product = fp_mantissa(a) * fp_mantissa(b);
       result_exponent = fp_lsb_exponent(a) + fp_lsb_exponent(b);
-      result = pack_finite(sign, {80'b0, product}, result_exponent, rm, 1'b0);
+      pre.needs_pack = 1'b1;
+      pre.sign = sign;
+      pre.magnitude = {80'b0, product};
+      pre.lsb_exponent = result_exponent;
     end
-    return result;
+    pre.direct = result;
+    return pre;
   endfunction
 
-  function automatic fp_calc_t fp_fused_multiply_add(
+  function automatic fp_precalc_t fp_fused_multiply_add_pre(
     input logic [31:0] a,
     input logic [31:0] b,
     input logic [31:0] c,
@@ -422,6 +467,7 @@ module rv_fpu #(
     input logic negate_c,
     input logic [2:0] rm
   );
+    fp_precalc_t pre;
     fp_calc_t result;
     logic product_sign, c_sign, result_sign, sticky_product, sticky_c;
     logic [47:0] product;
@@ -430,6 +476,8 @@ module rv_fpu #(
     logic signed [128:0] signed_product, signed_c, signed_sum;
     integer product_exponent, c_exponent, common_exponent;
 
+    pre = '0;
+    pre.rounding_mode = rm;
     result = '0;
     product_sign = a[31] ^ b[31] ^ negate_product;
     c_sign = c[31] ^ negate_c;
@@ -438,27 +486,32 @@ module rv_fpu #(
       if (fp_is_snan(a) || fp_is_snan(b) || fp_is_snan(c) ||
           ((fp_is_inf(a) && fp_is_zero(b)) ||
            (fp_is_zero(a) && fp_is_inf(b)))) result.flags = FFLAG_NV;
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if ((fp_is_inf(a) && fp_is_zero(b)) ||
         (fp_is_zero(a) && fp_is_inf(b))) begin
       result.data[31:0] = CANONICAL_NAN;
       result.flags = FFLAG_NV;
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if ((fp_is_inf(a) || fp_is_inf(b)) && fp_is_inf(c) &&
         (product_sign != c_sign)) begin
       result.data[31:0] = CANONICAL_NAN;
       result.flags = FFLAG_NV;
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if (fp_is_inf(a) || fp_is_inf(b)) begin
       result.data[31:0] = {product_sign, 8'hff, 23'h0};
-      return result;
+      pre.direct = result;
+      return pre;
     end
     if (fp_is_inf(c)) begin
       result.data[31:0] = {c_sign, 8'hff, 23'h0};
-      return result;
+      pre.direct = result;
+      return pre;
     end
     // A finite zero product contributes no magnitude.  Do not feed its
     // synthetic fp_lsb_exponent into the alignment network: for a large
@@ -472,7 +525,8 @@ module rv_fpu #(
         result.data[31] = exact_sum_zero_sign(1'b1, product_sign,
                                               1'b1, c_sign, rm);
       end
-      return result;
+      pre.direct = result;
+      return pre;
     end
 
     product = fp_mantissa(a) * fp_mantissa(b);
@@ -496,13 +550,17 @@ module rv_fpu #(
       result.data[31] = exact_sum_zero_sign(fp_is_zero(a) || fp_is_zero(b),
                                            product_sign, fp_is_zero(c), c_sign,
                                            rm);
-      return result;
+      pre.direct = result;
+      return pre;
     end
     result_sign = signed_sum[128];
     magnitude = result_sign ? 128'(-signed_sum) : 128'(signed_sum);
-    result = pack_finite(result_sign, magnitude, common_exponent - 32,
-                         rm, sticky_product || sticky_c);
-    return result;
+    pre.needs_pack = 1'b1;
+    pre.sign = result_sign;
+    pre.magnitude = magnitude;
+    pre.lsb_exponent = common_exponent - 32;
+    pre.extra_sticky = sticky_product || sticky_c;
+    return pre;
   endfunction
 
   function automatic fp_calc_t fp_min_max(
@@ -639,16 +697,18 @@ module rv_fpu #(
     return result;
   endfunction
 
-  function automatic fp_calc_t integer_to_fp(
+  function automatic fp_precalc_t integer_to_fp_pre(
     input logic [XLEN-1:0] integer_value,
     input logic [1:0] integer_kind,
     input logic [2:0] rm
   );
-    fp_calc_t result;
+    fp_precalc_t pre;
     logic source_unsigned, sign;
     logic [63:0] source_value, magnitude;
     integer source_width;
-    result = '0;
+    pre = '0;
+    pre.needs_pack = 1'b1;
+    pre.rounding_mode = rm;
     source_unsigned = integer_kind[0];
     source_width = integer_kind[1] ? 64 : 32;
     source_value = 64'(integer_value);
@@ -657,23 +717,30 @@ module rv_fpu #(
                                       64'($signed(integer_value[31:0]));
     sign = !source_unsigned && source_value[source_width-1];
     magnitude = sign ? -source_value : source_value;
-    result = pack_finite(sign, {64'b0, magnitude}, 0, rm, 1'b0);
-    return result;
+    pre.sign = sign;
+    pre.magnitude = {64'b0, magnitude};
+    pre.lsb_exponent = '0;
+    return pre;
   endfunction
 
-  function automatic fp_calc_t execute_fp(
+  function automatic fp_precalc_t execute_fp_pre(
     input logic [31:0] instruction,
     input logic [XLEN-1:0] operand_a,
     input logic [XLEN-1:0] operand_b,
     input logic [XLEN-1:0] operand_c,
     input logic [2:0] rm
   );
+    fp_precalc_t pre;
     fp_calc_t result;
+    logic use_precalc;
     logic [6:0] opcode, funct7;
     logic [2:0] funct3;
     logic [4:0] rs2;
     logic [31:0] a, b, c;
+    pre = '0;
+    pre.rounding_mode = rm;
     result = '0;
+    use_precalc = 1'b0;
     opcode = instruction[6:0];
     funct7 = instruction[31:25];
     funct3 = instruction[14:12];
@@ -683,15 +750,36 @@ module rv_fpu #(
     c = operand_c[31:0];
 
     case (opcode)
-      7'b1000011: result = fp_fused_multiply_add(a, b, c, 1'b0, 1'b0, rm);
-      7'b1000111: result = fp_fused_multiply_add(a, b, c, 1'b0, 1'b1, rm);
-      7'b1001011: result = fp_fused_multiply_add(a, b, c, 1'b1, 1'b0, rm);
-      7'b1001111: result = fp_fused_multiply_add(a, b, c, 1'b1, 1'b1, rm);
+      7'b1000011: begin
+        pre = fp_fused_multiply_add_pre(a, b, c, 1'b0, 1'b0, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1000111: begin
+        pre = fp_fused_multiply_add_pre(a, b, c, 1'b0, 1'b1, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1001011: begin
+        pre = fp_fused_multiply_add_pre(a, b, c, 1'b1, 1'b0, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1001111: begin
+        pre = fp_fused_multiply_add_pre(a, b, c, 1'b1, 1'b1, rm);
+        use_precalc = 1'b1;
+      end
       7'b1010011: begin
         case (funct7)
-          7'b0000000: result = fp_add_sub(a, b, 1'b0, rm);
-          7'b0000100: result = fp_add_sub(a, b, 1'b1, rm);
-          7'b0001000: result = fp_multiply(a, b, rm);
+          7'b0000000: begin
+            pre = fp_add_sub_pre(a, b, 1'b0, rm);
+            use_precalc = 1'b1;
+          end
+          7'b0000100: begin
+            pre = fp_add_sub_pre(a, b, 1'b1, rm);
+            use_precalc = 1'b1;
+          end
+          7'b0001000: begin
+            pre = fp_multiply_pre(a, b, rm);
+            use_precalc = 1'b1;
+          end
           // FDIV.S and FSQRT.S are handled by the iterative slow path below.
           // Keeping them out of this function prevents a combinational divider
           // and 64-step square-root network from being inferred in the fast
@@ -728,7 +816,10 @@ module rv_fpu #(
               result.data[9] = fp_is_nan(a) && !fp_is_snan(a);
             end
           end
-          7'b1101000: result = integer_to_fp(operand_a, rs2[1:0], rm);
+          7'b1101000: begin
+            pre = integer_to_fp_pre(operand_a, rs2[1:0], rm);
+            use_precalc = 1'b1;
+          end
           7'b1111000: result.data[31:0] = operand_a[31:0];
           default: begin
             result.data[31:0] = CANONICAL_NAN;
@@ -741,14 +832,25 @@ module rv_fpu #(
         result.flags = FFLAG_NV;
       end
     endcase
-    return result;
+    if (!use_precalc)
+      pre.direct = result;
+    return pre;
+  endfunction
+
+  function automatic fp_calc_t finalize_fp_pre(
+    input fp_precalc_t pre
+  );
+    if (pre.needs_pack)
+      return pack_finite(pre.sign, pre.magnitude, pre.lsb_exponent,
+                         pre.rounding_mode, pre.extra_sticky);
+    return pre.direct;
   endfunction
 
   always @* begin
     effective_rm = (rounding_mode_i == 3'b111) ? frm_i : rounding_mode_i;
     request_illegal_rm = effective_rm > 3'b100;
-    request_calc = execute_fp(instruction_i, operand_a_i, operand_b_i,
-                              operand_c_i, effective_rm);
+    request_precalc = execute_fp_pre(instruction_i, operand_a_i, operand_b_i,
+                                     operand_c_i, effective_rm);
 
     request_is_divide = (instruction_i[6:0] == 7'b1010011) &&
                         (instruction_i[31:25] == 7'b0001100);
@@ -836,6 +938,8 @@ module rv_fpu #(
     sqrt_pack_calc = pack_finite(
       1'b0, {64'b0, sqrt_root_q}, sqrt_exponent_q,
       sqrt_rm_q, sqrt_remainder_q != 0);
+    request_final_calc = finalize_fp_pre(request_precalc);
+    pre_final_calc = finalize_fp_pre(pre_calc_q);
   end
 
   // Keep the elastic-ready cone independent from the request arithmetic.
@@ -846,13 +950,15 @@ module rv_fpu #(
       (!slow_result_valid_q && result_ready_i);
     for (integer stage = PIPE_STAGES-2; stage >= 0; stage--)
       stage_ready[stage] = !valid_q[stage] || stage_ready[stage+1];
-    fast_pipe_empty = !(|valid_q);
+    pre_ready = !SPLIT_PREPACK || !pre_valid_q || stage_ready[0];
+    fast_pipe_empty = (!SPLIT_PREPACK || !pre_valid_q) && !(|valid_q);
     if (request_is_slow)
       request_ready_o = !flush_valid_i && fast_pipe_empty &&
                         (slow_state_q == SLOW_IDLE) &&
                         !slow_result_valid_q;
     else
-      request_ready_o = !flush_valid_i && stage_ready[0] &&
+      request_ready_o = !flush_valid_i &&
+                        (SPLIT_PREPACK ? pre_ready : stage_ready[0]) &&
                         (slow_state_q == SLOW_IDLE) &&
                         !slow_result_valid_q;
     request_accept = request_valid_i && request_ready_o;
@@ -876,6 +982,15 @@ module rv_fpu #(
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       valid_q <= '0;
+      pre_valid_q <= 1'b0;
+      pre_sequence_q <= '0;
+      pre_destination_valid_q <= 1'b0;
+      pre_destination_class_q <= REG_NONE;
+      pre_destination_phys_q <= '0;
+      pre_exception_valid_q <= 1'b0;
+      pre_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
+      pre_exception_tval_q <= '0;
+      pre_calc_q <= '0;
       slow_state_q <= SLOW_IDLE;
       slow_payload_q <= '0;
       slow_result_valid_q <= 1'b0;
@@ -896,6 +1011,8 @@ module rv_fpu #(
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         payload_q[stage] <= '0;
     end else if (flush_valid_i) begin
+      if (SPLIT_PREPACK && pre_valid_q && killed_by_flush(pre_sequence_q))
+        pre_valid_q <= 1'b0;
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         if (valid_q[stage] && killed_by_flush(payload_q[stage].sequence_id))
           valid_q[stage] <= 1'b0;
@@ -916,17 +1033,48 @@ module rv_fpu #(
         end
       end
       if (stage_ready[0]) begin
-        valid_q[0] <= fast_request_accept;
+        if (SPLIT_PREPACK) begin
+          valid_q[0] <= pre_valid_q;
+          if (pre_valid_q) begin
+            payload_q[0].sequence_id <= pre_sequence_q;
+            payload_q[0].destination_valid <= pre_destination_valid_q;
+            payload_q[0].destination_class <= pre_destination_class_q;
+            payload_q[0].destination_phys <= pre_destination_phys_q;
+            payload_q[0].data <= pre_final_calc.data;
+            payload_q[0].flags <= pre_exception_valid_q ? '0 :
+                                  pre_final_calc.flags;
+            payload_q[0].exception_valid <= pre_exception_valid_q;
+            payload_q[0].exception_cause <= pre_exception_cause_q;
+            payload_q[0].exception_tval <= pre_exception_tval_q;
+          end
+        end else begin
+          valid_q[0] <= fast_request_accept;
+          if (fast_request_accept) begin
+            payload_q[0].sequence_id <= sequence_i;
+            payload_q[0].destination_valid <= destination_valid_i;
+            payload_q[0].destination_class <= destination_class_i;
+            payload_q[0].destination_phys <= destination_phys_i;
+            payload_q[0].data <= request_final_calc.data;
+            payload_q[0].flags <= request_illegal_rm ? '0 :
+                                  request_final_calc.flags;
+            payload_q[0].exception_valid <= request_illegal_rm;
+            payload_q[0].exception_cause <= EXC_ILLEGAL_INSTRUCTION;
+            payload_q[0].exception_tval <= XLEN'(instruction_i);
+          end
+        end
+      end
+
+      if (SPLIT_PREPACK && pre_ready) begin
+        pre_valid_q <= fast_request_accept;
         if (fast_request_accept) begin
-          payload_q[0].sequence_id <= sequence_i;
-          payload_q[0].destination_valid <= destination_valid_i;
-          payload_q[0].destination_class <= destination_class_i;
-          payload_q[0].destination_phys <= destination_phys_i;
-          payload_q[0].data <= request_calc.data;
-          payload_q[0].flags <= request_illegal_rm ? '0 : request_calc.flags;
-          payload_q[0].exception_valid <= request_illegal_rm;
-          payload_q[0].exception_cause <= EXC_ILLEGAL_INSTRUCTION;
-          payload_q[0].exception_tval <= XLEN'(instruction_i);
+          pre_sequence_q <= sequence_i;
+          pre_destination_valid_q <= destination_valid_i;
+          pre_destination_class_q <= destination_class_i;
+          pre_destination_phys_q <= destination_phys_i;
+          pre_exception_valid_q <= request_illegal_rm;
+          pre_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
+          pre_exception_tval_q <= XLEN'(instruction_i);
+          pre_calc_q <= request_precalc;
         end
       end
 

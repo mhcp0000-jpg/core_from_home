@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="620" viewBox="0 0 1280 620" role="img" aria-labelledby="title desc">
 <title id="title">rv_fpu block diagram</title>
-<desc id="desc">RV32F arithmetic/FMA/divsqrt/convert/compare/move 결과와 fflags를 계산한다. Inputs flow left to right through three internal functions to outputs. Timing contract is shown below.</desc>
+<desc id="desc">RV32F fast path is split between pre-normalization arithmetic and normalize-round-pack while the iterative divide and square root slow path remains separate.</desc>
 <defs><marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 Z" class="arrow-head"/></marker></defs>
 <style>
   .bg { fill:#f8fafc; } .panel { fill:#ffffff; stroke:#334155; stroke-width:3; }
@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">operation/rm/frm; three</tspan><tspan x="60" dy="25">operands;</tspan><tspan x="60" dy="25">sequence/destination; flush</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">fast bit-level execute</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">3-stage elastic pipe</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">iterative FDIV88/FSQRT64</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="203" class="stage-text"><tspan x="410" dy="0">decode/special + align, product, accumulate</tspan><tspan x="410" dy="21">→ fp_precalc_t register</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="268" class="stage-text"><tspan x="410" dy="0">normalize / round / pack</tspan><tspan x="410" dy="21">→ elastic result stage</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">separate iterative FDIV88 / FSQRT64</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">FP/INT result, fflags,</tspan><tspan x="990" dy="25">exception identity</tspan></text>
@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: fast는 LATENCY=3, finite FDIV/FSQRT는 약 89/65 edge 뒤 result valid가 된다.</tspan><tspan x="60" dy="24">Throughput: stall이 없으면 한 FP operation/cycle을 받을 수 있다.</tspan><tspan x="60" dy="24">Stall/flush: 마지막 stage stall이 전 stage ready와 request ready로 전파된다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: fast LATENCY=3은 그대로이며 finite FDIV/FSQRT는 약 89/65 edge 뒤 result valid.</tspan><tspan x="60" dy="24">Throughput: stall이 없으면 1 FP operation/cycle; pre/result stage 모두 ROB-age flush 대상.</tspan><tspan x="60" dy="24">5 ns preflight: 7.293 → 5.079 ns (-30.35%); 실제 Fmax는 서버 STA로 sign-off.</tspan></text>
 </svg>

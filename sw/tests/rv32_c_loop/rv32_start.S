@@ -8,6 +8,12 @@ _start:
   lui   t0, 0x02000
   sw    zero, 0(t0)
 
+  # The architectural reset value has mstatus.FS=Off, where every F-extension
+  # instruction must trap as illegal.  This bare-metal payload has no OS/CRT
+  # to enable FP state, so opt in explicitly before main executes FMV/FMA.
+  li    t0, (3 << 13)
+  csrs  mstatus, t0
+
   # No CRT is linked.  The linker script supplies the top of the DTIM stack;
   # main does not return until all integer/FP/LSU self-checks have completed.
   la    sp, __stack_top

@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized beginner-readable baseline v1.18.1 (2026-09-22) |
+| 상태 | RTL-synchronized beginner-readable baseline v1.18.2 (2026-09-22) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -2090,7 +2090,7 @@ baseline은 한 operation만 보관하는 radix-2 iterative unit이며 새 reque
 
 FADD/FSUB/FMA의 exact-zero 결과 부호는 IEEE-754 규칙을 따른다. 유효 부호가 같은 두 zero 항의 합은 해당 부호를 보존하므로 `+0 + +0`은 RDN에서도 `+0`, `-0 + -0`은 모든 rounding mode에서 `-0`다. 부호가 다른 zero 항 또는 non-zero magnitude의 exact cancellation은 RDN에서만 `-0`이고 나머지 rounding mode에서는 `+0`다. 이 규칙은 magnitude가 0이라는 사실만으로 부호를 RDN에 고정하지 않고 operand의 zero/sign metadata를 함께 사용한다.
 
-현재 arithmetic 구현은 구조·ISA 검증을 위한 synthesizable integer/bit-level fast datapath, 3-stage elastic transport, 88-step FDIV와 64-step FSQRT recurrence다. 일반 finite FDIV result는 accept 후 약 89 edge, FSQRT는 약 65 edge 뒤 visible하며 special case는 accept 직후 slow result register에서 visible하다. 상용 PPA 단계에서는 외부 interface와 ROB precise-flag 계약을 유지하면서 fully-pipelined FMA, misc pipe, 독립 request/result queue가 있는 divsqrt cluster로 분할한다. 초기 `FLEN=32` PRF는 32-bit만 저장하며 FLEN 확장 때 NaN-boxing을 추가한다.
+현재 arithmetic 구현은 구조·ISA 검증을 위한 synthesizable integer/bit-level fast datapath, 3-stage elastic transport, 88-step FDIV와 64-step FSQRT recurrence다. 기본 `LATENCY=3`에서는 첫 stage가 decode/special-case 판정과 mantissa product 또는 exponent align/signed accumulate를 수행하고 `fp_precalc_t`에 direct-result 또는 `{sign, magnitude, lsb_exponent, rm, sticky}`를 저장한다. 둘째 stage에서 normalize/round/pack을 수행하며 마지막 elastic result stage가 writeback backpressure를 흡수한다. 따라서 기존과 같은 accept-to-result 3-edge latency와 1 uop/cycle 처리율을 유지하면서 align/accumulate와 normalize/round/pack 사이에 실제 register boundary가 생긴다. `LATENCY=1/2` parameter는 소형 단위시험·호환 구성을 위해 unsplit datapath와 해당 수의 result stage를 사용한다. flush는 pre-normalization register와 모든 result stage를 같은 ROB sequence age 규칙으로 제거한다. 일반 finite FDIV result는 accept 후 약 89 edge, FSQRT는 약 65 edge 뒤 visible하며 special case는 accept 직후 slow result register에서 visible하다. 상용 PPA 단계에서는 외부 interface와 ROB precise-flag 계약을 유지하면서 fully-pipelined FMA, misc pipe, 독립 request/result queue가 있는 divsqrt cluster로 분할한다. 초기 `FLEN=32` PRF는 32-bit만 저장하며 FLEN 확장 때 NaN-boxing을 추가한다.
 
 ### 15.33 Writeback/CDB와 branch recovery exact interface
 
@@ -2989,11 +2989,11 @@ issue된 uop이 계산되고 결과가 PRF/ROB에 돌아오는 경로다.
 
 **Step-by-step.**
 
-1. rm/frm과 operand bits로 canonical RV32F result/fflags를 계산한다.
-2. payload를 3-stage elastic pipeline으로 이동한다.
-3. WB가 결과를 ROB/PRF에 보내고 fflags는 retire 때만 FCSR에 누적한다.
+1. request accept 시 rm/frm, special case, operand sign/exponent/mantissa를 해석한다. 일반 add/FMA는 align·signed accumulate, multiply는 24×24 product를 만들고 direct result 또는 미완성 pack 정보와 ROB/destination identity를 pre-normalization register에 저장한다.
+2. 다음 stage가 가장 무거운 leading-bit 탐색, normalize, rounding, overflow/underflow/subnormal pack과 fflags 생성을 수행한다. 결과는 남은 elastic stage를 거쳐 stall 중에도 payload와 identity를 안정적으로 유지한다.
+3. WB가 결과를 ROB/PRF에 보내고 fflags는 retire 때만 FCSR에 누적한다. branch/exception flush는 pre register와 각 elastic stage의 younger sequence를 모두 제거한다.
 
-**타이밍.** fast는 LATENCY=3, finite FDIV/FSQRT는 약 89/65 edge 뒤 result valid가 된다. 처리율은 stall이 없으면 한 FP operation/cycle을 받을 수 있다. Backpressure/flush 규칙은 마지막 stage stall이 전 stage ready와 request ready로 전파된다.
+**타이밍.** 기본 fast path는 총 LATENCY=3으로 변경 전과 같고, finite FDIV/FSQRT는 약 89/65 edge 뒤 result valid가 된다. 처리율은 stall이 없으면 한 FP operation/cycle이다. 마지막 stage stall은 normalize/pack stage, pre-normalization stage, request ready 순으로 역전파된다. 5 ns ABC target의 공개 preflight에서 실제 stage 분리 전 7.293 ns/39,951.1 µm²가 분리 후 5.079 ns/34,531.1 µm²로 바뀌었다. 이는 배치·배선 전 상대 비교 수치이며 서버 STA sign-off를 대체하지 않는다.
 
 **코너케이스.** NaN/sNaN, signed zero, subnormal, rounding, flush된 fflags를 다룬다.
 
@@ -3907,17 +3907,21 @@ ROB/IQ/LSQ는 `$mem_v2` macro boundary를 유지하므로 표의 area에는 memo
 | Issue arbiter, 실제 2 candidates × 5 ports | 1.093 ns | 235.4 µm² | global 2-wide grant 자체는 병목 아님 |
 
 표의 10 ns target은 첫 screening 조건이므로 각 숫자가 절대 최소 delay는 아니다.
-ABC target을 5 ns로 낮춘 추가 mapping에서 FPU는 7.293 ns/39,951.1 µm²,
-56-entry IQ는 6.397 ns/24,535.8 µm²였다. cell sizing/mapping만으로 일부 개선되지만
-FPU는 여전히 가장 길다. 다음 Fmax 단계는 add/FMA의 align/accumulate와
-normalize/round/pack 사이를 실제 register로 나누는 구조 변경이며 FP latency와
-flush/backpressure 계약을 다시 검증해야 하므로 서버 STA가 같은 경로를 확인한 뒤
-적용한다.
+ABC target을 5 ns로 낮춘 추가 mapping에서 구조 변경 전 FPU는
+7.293 ns/39,951.1 µm², 56-entry IQ는 6.397 ns/24,535.8 µm²였다. 이에
+add/FMA의 align/accumulate와 normalize/round/pack 사이를 실제 register로 나눴다.
+같은 5 ns target에서 FPU는 **5.079 ns/34,531.1 µm²**가 되어 delay 30.35%,
+mapped area 13.57%가 감소했다. 기본 fast latency는 여전히 3 edge이고 처리율도
+1 request/cycle이므로 이 최적화는 architecture-visible cycle 수를 추가하지 않는다.
+공개 cell library에서는 FPU와 IQ가 다음 후보지만, 서버 STA에서 start/end point와
+실제 SRAM/library 조건을 재확인한 뒤 추가 pipeline 또는 구조 변경을 결정한다.
 
-WB와 LSQ 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration과
-CoreMark를 재실행했다. CoreMark는 468,930 cycles, 576,450 instret, IPC 1.229288,
-CRC/exit PASS로 변경 전과 bit/cycle 수준에서 같다. 서버 library 비교가 최종 채택
-gate다. 특히 LSQ는 delay 개선과 면적 증가를 함께
+WB/LSQ/FPU 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration과
+CoreMark를 재실행했다. FPU differential 6,470 vectors는 `LATENCY=3` split 경로에서
+PASS했고 실제 GCC C/FP/INT/LSU ELF도 FP commit 68건, trap 0건, exit(0)을 기록했다.
+CoreMark는 468,930 cycles, 576,450 instret, IPC 1.229288, CRC/exit PASS로 변경 전과
+bit/cycle 수준에서 같다. 서버 library 비교가 최종 채택 gate다. 특히 LSQ는 delay
+개선과 면적 증가를 함께
 평가하여, 서버 합성에서 area 또는 routing이 악화되면 banked tournament selector로
 바꾸는 후속 선택지를 유지한다.
 
@@ -4285,3 +4289,4 @@ interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
 | v1.17.0 | 초보자가 RTL 없이도 request→state→response 흐름을 따라갈 수 있도록 48개 합성 module 각각에 block diagram, 목적, 3-step 동작, accept-edge 기준 latency/throughput/backpressure와 corner case를 추가. ROB OoO 완료/in-order dual commit, same-bundle rename, branch recovery, LSQ forwarding, precise trap, AXI burst, dual-bank LSU를 cycle-by-cycle timing diagram으로 보강하고 generator/check flow를 추가 |
 | v1.18.0 | 합성에서 관측된 LSQ→ROB/WB→IQ select→FPU 장거리 경로를 단계별로 절단. registered LSQ load candidate와 P4 FP issue/operand register를 추가했다. rename first-free를 8-bit group encoder로, PMP range 계산을 shared predecode로 바꾸고 FDIV/FSQRT를 88/64-step iterative unit으로 이동했다. registered load candidate가 stalled younger identity를 고정해 newly-ready older load를 막는 순환 stall을 CoreMark가 발견하여 stalled slot reselect 규칙과 directed regression을 추가했다. 성능 재측정에서 P0~P3 issue register, LSU completion register와 registered-only IQ wakeup이 과도한 load-use/producer-consumer bubble을 만든 것을 확인해 제거하고, global WB와 same-cycle wakeup은 IPC를 위해 조합으로 유지했다. 최종 CoreMark 2-iteration run은 CRC/exit PASS, 468,930 cycles, 576,450 instret, IPC 1.229288, 추정 4.265029 CoreMark/MHz를 기록했다. unit 18종, block 17종, backend integration, RV32/RV64/map변형 elaboration을 재실행해 PASS했으며 실제 Fmax는 사용자 합성 환경에서 재측정한다. |
 | v1.18.1 | Slang/Yosys+Nangate45 기반 공개 합성 preflight를 Windows/Linux script로 추가하고 `rv_ooo_core` 구조 check와 8개 주요 block timing을 재현 가능하게 했다. 11-source writeback의 네 번 직렬 oldest scan을 parallel INT/FP/completion age-rank로 바꿔 15.936→2.347 ns, 24-entry LQ oldest-two scan을 parallel load age-rank로 바꿔 9.993→6.379 ns를 기록했다. WB wrap-around directed test와 CSR PMP cfg loop의 synthesis-front-end-safe constant indexing을 추가했다. 두 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration, CoreMark CRC/exit를 통과했고 CoreMark는 468,930 cycles/IPC 1.229288로 불변이다. LSQ는 64.7% area 증가가 있어 서버 library 결과를 최종 채택 gate로 명시한다. |
+| v1.18.2 | `rv_fpu` 기본 fast path를 decode/special/align·product·accumulate pre-stage와 normalize/round/pack stage로 실제 분할하되 총 LATENCY=3과 1 request/cycle 계약은 유지했다. pre-stage에도 ROB identity/exception/flush/backpressure를 적용하고 LATENCY 1/2는 호환용 unsplit 경로로 유지했다. 5 ns 공개 preflight에서 FPU가 7.293→5.079 ns, mapped area가 39,951.1→34,531.1 µm²로 감소했다. differential 6,470 vectors, unit 18종, block 17종, backend integration과 GCC C/FP ELF를 통과했고, C payload startup은 architectural FS=Off reset 뒤 `mstatus.FS=Dirty`를 명시한다. CoreMark는 468,930 cycles/IPC 1.229288로 정확히 불변이다. |

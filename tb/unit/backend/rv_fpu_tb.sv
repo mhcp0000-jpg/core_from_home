@@ -236,7 +236,9 @@ module rv_fpu_tb;
     @(posedge clk); @(negedge clk);
     flush_valid = 0;
     #1;
-    if (result_valid) $fatal(1, "FPU sequence-wrap flush failed");
+    if (result_valid)
+      $fatal(1, "FPU sequence-wrap flush failed: result_seq=%h pre=%b pipe=%b",
+             result_sequence, u_dut.pre_valid_q, u_dut.valid_q);
     // Full flush discards all occupied stages under output backpressure.
     sequence_id = 8'h10; request_valid = 1;
     @(posedge clk); @(negedge clk);
