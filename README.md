@@ -5,6 +5,11 @@ RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 S
 
 초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark IPC 1.2 목표 달성, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현하며 store 주소는 데이터 operand보다 먼저 SQ에 확정할 수 있습니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. IFU는 16-byte ITIM transport bandwidth를 유지하면서 PMP를 8개의 2-byte instruction parcel로 판정하고, 실제 16/32-bit instruction이 사용하는 parcel의 fault만 합성합니다. 따라서 TOR 경계와 같은 fetch block 안의 허용/비허용 영역이 섞여도 이웃 instruction 때문에 정상 instruction이 거부되지 않습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff하며 target-buffer hit는 redirect edge에 fetch queue를 바로 채웁니다. predictor resolve에는 compressed branch의 canonical expansion이 아니라 raw 16-bit encoding을 보존해 C.Bxx/C.J/C.JR/C.JALR 학습과 history/RAS recovery를 유지합니다. D-Fabric도 이전 response를 소비하는 cycle에 다음 request를 받아 synchronous TIM의 불필요한 turnaround bubble을 제거하며, outstanding 깊이는 1로 유지합니다. v1.18 timing-boundary RTL의 공식 source 기반 CoreMark 2-iteration short run은 CRC/exit(0), 468,930 cycles, 576,450 instret, IPC 1.229288, 비공식 추정 4.265029 CoreMark/MHz를 기록했습니다. parse/elaboration, unit 18종, block 17종, backend/SoC 회귀와 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했습니다. RV32F 전체 연산군은 host FP를 사용하지 않는 exact-rational oracle의 6,470개 deterministic vector로 5개 rounding mode와 특수값/subnormal/overflow를 비교하지만, C/CSR/FENCE의 모든 조합과 random long-run, 외부 Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
 
+> 최신 timing checkpoint(v1.18.3): IQ/LSQ selection tree와 resource-return
+> 경로를 재구성하고 FPU 기본 fast latency를 4 cycle로 분할했습니다. CoreMark
+> 2-iteration은 CRC/exit PASS, 468,408 cycles, 576,450 instret, IPC 1.230658,
+> 추정 4.269782 CoreMark/MHz입니다. 위 v1.18 수치는 이전 비교 기준입니다.
+
 ## Linux 서버에서 ELF 바로 실행
 
 Xcelium을 `verilog_sub` 명령으로 제출하는 서버에서는 아래 파일의 `BINARY=` 한 줄만
@@ -165,6 +170,11 @@ SRAM macro와 배치·배선을 포함하지 않는 상대 비교용이며 서�
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_open_timing.ps1 -Mode All
 ```
+
+`-Mode All`은 구조 check와 leaf block timing을 실행합니다. 매우 오래 걸리는
+`rv_backend`/`rv_ooo_core` 전체 flatten은 필요할 때만 `-IncludeWholeTop`을 추가합니다.
+각 block 폴더에는 `pre_abc.rtlil`, `mapped.v`, `synth.log`가 생성되고
+`timing_summary.csv`에는 critical start/end point가 함께 기록됩니다.
 
 ```bash
 export NANGATE45_LIBERTY=/path/to/NangateOpenCellLibrary_typical.lib

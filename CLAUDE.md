@@ -5,7 +5,9 @@
 ## 현재 기준
 
 - Branch: `main`
-- v1.18.2 작업 시작 기준: `10a7713 Reduce backend arbitration timing depth`
+- 마지막 RTL commit: `8ae5e24 Cut backend selection and forwarding timing paths` (v1.18.3)
+- v1.18.3 서버 STA checkpoint는 IQ/LQ/SQ selector, rename resource-return,
+  FPU 4-stage 경계를 포함한다.
 - Core top: `rv_ooo_core` (`rtl/rv_ooo_core.sv`)
 - SoC top: `rv_soc_top` (`rtl/soc/rv_soc_top.sv`)
 - Core source list: `sim/xcelium/sources_core.f`
@@ -27,13 +29,50 @@
 - [x] FPU 변경 뒤 CoreMark cycle/IPC가 정확히 동일함을 확인
 - [x] HDD v1.18.2와 `docs/diagrams/modules/rv_fpu.svg`를 최신 FPU RTL에 맞춰 완료
 - [x] `git diff --check`, 최종 회귀 결과 확인 후 FPU 변경만 선별 commit/push
-- [ ] 다음 병목 후보인 56-entry IQ(5 ns target 약 6.397 ns) 구조 검토
-- [ ] 서버 library/constraint로 `rv_ooo_core` STA 재측정 후 다음 수정 우선순위 결정
+- [x] 56-entry IQ 구조 검토: 균형 tournament tree + resource-return 경로 분리로 1 ns preflight 6,180.63 → 3,309.81 ps
+- [x] LQ oldest-two tournament tree와 SQ 4-level youngest-match reduction tree: 5,785.50 → 2,472.17 ps, area 41,782.2 → 23,994.8 um^2
+- [x] v1.18.3 회귀: block 17종 PASS, backend integration PASS, FPU differential 6,470 vectors PASS, GCC C/FP ELF PASS(event 0x009e00b9, exit 0, FP commit 68, payload trap 0)
+- [x] v1.18.3 CoreMark: 468,408 cycles, 576,450 instret, IPC 1.230658, CRC/exit PASS (baseline 468,930 / 1.229288 대비 522 cycles 감소)
+- [x] `rv_backend.sv`와 differential TB를 `rv_fpu.LATENCY=4`로 통일
+- [x] `docs/diagrams/modules/rv_fpu.svg`를 v1.18.3 FPU 내부 구조에 맞춰 갱신
+- [x] v1.18.3 변경분 선별 commit/push (사용자 소유 untracked 파일 제외)
+- [ ] 서버 library/constraint로 `rv_ooo_core` STA 재측정 후 다음 수정 우선순위 결정 (공개 preflight의 다음 critical block 후보는 FPU 4,828.67 ps)
+
+## v1.18.3 변경/검증 요약
+
+- `rtl/backend/rv_issue_queue.sv`: oldest-two 선택을 균형 tournament tree로 교체하고,
+  issue로 해방된 slot을 같은 cycle에 재할당하지 않도록 바꿨다. full IQ는 다음 cycle에
+  재사용한다. `tb/unit/backend/rv_issue_queue_tb.sv`가 이 새 계약을 검사한다.
+- `rtl/backend/rv_lsq.sv`: LQ oldest-two tournament tree와 SQ 16-entry forwarding의
+  4-level youngest-match reduction tree.
+- `rtl/backend/rv_rename2.sv`: commit이 반환한 stale physical tag를 same-cycle
+  allocation에 노출하지 않고 registered free list에서만 할당한다. checkpoint payload에는
+  반환 bit가 반영된다.
+- `rtl/backend/rv_fpu.sv`: pre-pack 경계 추가 분할 및 module/backend 기본 `LATENCY` 3 → 4.
+- `scripts/run_open_timing.ps1`: `pre_abc.rtlil`/`mapped.v` 저장, critical start/end
+  point를 `timing_summary.csv`에 기록, `-IncludeWholeTop`으로 rv_backend/rv_ooo_core 옵션 추가.
+
+공개 1 ns preflight (Nangate45 typical, wire-load 없음, memory macro 제외):
+
+| Block | v1.18.2 | v1.18.3 | area v1.18.2 → v1.18.3 |
+|---|---:|---:|---|
+| Issue queue 56 | 6,180.63 ps | 3,309.81 ps | 24,502.6 → 32,082.8 um^2 (+30.9%) |
+| LSQ | 5,785.50 ps | 2,472.17 ps | 41,782.2 → 23,994.8 um^2 (-42.6%) |
+| FPU (LATENCY=4) | 5,079.32 ps | 4,828.67 ps | 34,531.1 → 33,600.9 um^2 |
+| Rename2 | 1,899.51 ps | 1,783.48 ps | 69,771.3 → 70,444.0 um^2 |
+
+최장 block이 IQ → FPU로 이동했다(6,180.63 → 4,828.67 ps, -21.9%). WB arbiter, ROB,
+PMP, issue arbiter는 변화 없다. 상세 표와 검증 로그는 HDD 18.6.3의 v1.18.3 절에 있다.
+
+검증은 Yosys 0.69+77 / ABC 1.01 / Verilator 5.053에서 재실행했다. Windows 정규
+Icarus unit 18종, Verilator block 17종과 backend integration은 모두 PASS다. 별도
+Verilator 실행의 `rv_fetch_queue_tb` 한 건은 baseline `f634128`과 동일한 simulator
+환경 차이로 분류했다.
 
 ## v1.18.2 FPU 변경 요약
 
 - `rtl/backend/rv_fpu.sv`: `LATENCY>=3`에서 pre-normalization register 추가. `LATENCY=1/2`는 호환용 unsplit 경로.
-- `tb/unit/backend/rv_fpu_diff_tb.sv`: 6,470 vectors가 `LATENCY=3` split 경로를 검사하도록 변경.
+- `tb/unit/backend/rv_fpu_diff_tb.sv`: 당시 6,470 vectors가 `LATENCY=3` split 경로를 검사하도록 변경했으며 v1.18.3부터는 `LATENCY=4`를 검사한다.
 - `tb/unit/backend/rv_fpu_tb.sv`: sequence-wrap flush 실패 진단 강화.
 - `sw/tests/rv32_c_loop/rv32_start.S`: reset의 `mstatus.FS=Off` 뒤 FP payload 실행 전에 FS=Dirty 설정.
 - HDD v1.18.2와 FPU block diagram까지 RTL과 동기화했다. 최신 commit은 `git log -1 --oneline`으로 확인한다.
@@ -41,6 +80,7 @@
 다음 사용자 소유 untracked 파일/폴더는 명시적 요청 없이 수정·삭제·stage하지 않는다.
 
 - `Claude 피드백/`
+- `debug.txt`
 - `scripts/compare_spike_retire.py`
 - `scripts/generate_internal_diagrams.py`
 - `scripts/test_compare_spike_retire.py`
