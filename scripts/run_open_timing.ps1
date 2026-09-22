@@ -5,7 +5,8 @@ param(
   [string]$Liberty = "",
   [string]$BuildRoot = "",
   [string]$BlockFilter = "",
-  [int]$TargetDelayPs = 10000
+  [int]$TargetDelayPs = 10000,
+  [switch]$IncludeWholeTop
 )
 
 $ErrorActionPreference = "Stop"
@@ -112,6 +113,15 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     @{ Name = "rv_issue_arbiter"; Top = "rv_issue_arbiter";
        Args = "-G CANDIDATE_COUNT=2"; Flow = "full" }
   )
+  if ($IncludeWholeTop) {
+    # Whole-backend/core runs retain inferred memories as macro boundaries.
+    # They can expand to hundreds of thousands of cells and take far longer
+    # than leaf screening, so require an explicit opt-in.
+    $blocks += @(
+      @{ Name = "rv_backend"; Top = "rv_backend"; Args = ""; Flow = "macro" },
+      @{ Name = "rv_ooo_core"; Top = "rv_ooo_core"; Args = ""; Flow = "macro" }
+    )
+  }
   if ($BlockFilter) {
     $blocks = @($blocks | Where-Object { $_.Name -eq $BlockFilter })
     if ($blocks.Count -eq 0) {
@@ -120,6 +130,10 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
   }
 
   foreach ($block in $blocks) {
+    $mappedNetlist = To-YosysPath (
+      (Join-Path (Join-Path $BuildRoot $block.Name) "mapped.v"))
+    $preAbcRtlil = To-YosysPath (
+      (Join-Path (Join-Path $BuildRoot $block.Name) "pre_abc.rtlil"))
     $front =
       "read_slang --std 1800-2017 --single-unit --ignore-assertions " +
       "--ignore-initial --top $($block.Top) $($block.Args) -f $sourceList; " +
@@ -131,14 +145,18 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     }
     $command = $front + $lowering +
       "dfflibmap -liberty $libertyPath; " +
+      "write_rtlil $preAbcRtlil; " +
       "abc -exe $abcPath -liberty $libertyPath -constr $constraint " +
       "-D $TargetDelayPs; clean; read_liberty -lib $libertyPath; " +
-      "check; stat -liberty $libertyPath"
+      "check; stat -liberty $libertyPath; " +
+      "write_verilog -noattr -noexpr $mappedNetlist"
     $logPath = Invoke-YosysRun $block.Name $command
     $text = Get-Content -LiteralPath $logPath -Raw
     $delayMatch = [regex]::Match($text, "Delay\s*=\s*([0-9.]+)\s*ps")
     $areaMatch = [regex]::Match(
       $text, "Chip area for module '[^']+':\s*([0-9.]+)")
+    $pathMatch = [regex]::Match(
+      $text, "Start-point\s*=\s*([^\r\n]+)")
     $delay = if ($delayMatch.Success) { [double]$delayMatch.Groups[1].Value } else { $null }
     $area = if ($areaMatch.Success) { [double]$areaMatch.Groups[1].Value } else { $null }
     $results += [pscustomobject]@{
@@ -146,6 +164,9 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
       Flow = $block.Flow
       DelayPs = $delay
       AreaUm2ExcludingMemories = $area
+      CriticalPath = if ($pathMatch.Success) {
+        $pathMatch.Groups[1].Value.Trim()
+      } else { $null }
       Log = $logPath
     }
     Write-Host ("PASS {0,-24} delay={1,10} ps area={2,12} um^2" -f

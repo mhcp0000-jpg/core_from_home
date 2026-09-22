@@ -81,7 +81,7 @@ module rv_fpu_diff_tb;
   endfunction
 
   rv_fpu #(
-    .XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(3)
+    .XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(4)
   ) u_dut (
     .clk_i(clk), .rst_ni(rst_n),
     .request_valid_i(request_valid), .request_ready_o(request_ready),

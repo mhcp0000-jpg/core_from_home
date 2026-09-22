@@ -2,7 +2,7 @@ module rv_fpu #(
   parameter int unsigned XLEN = 32,
   parameter int unsigned ROB_SEQ_WIDTH = rv_ooo_pkg::ROB_SEQ_WIDTH,
   parameter int unsigned PHYS_TAG_WIDTH = 7,
-  parameter int unsigned LATENCY = 3
+  parameter int unsigned LATENCY = 4
 ) (
   input  logic                                      clk_i,
   input  logic                                      rst_ni,
@@ -38,12 +38,15 @@ module rv_fpu #(
 
   import rv_ooo_pkg::*;
 
-  // LATENCY>=3 uses one explicit pre-normalization stage followed by
-  // LATENCY-1 result stages.  LATENCY 1/2 keeps the compact unsplit datapath
-  // so the parameter continues to mean total elastic capacity/latency.
+  // LATENCY>=3 uses an explicit arithmetic/pre-normalization stage.  The
+  // default LATENCY=4 also separates leading-bit normalization/barrel shift
+  // from rounding/packing; this is the timing-safe 1 GHz-oriented pipeline.
+  // LATENCY 1/2 keeps the compact unsplit datapath.
   localparam bit SPLIT_PREPACK = LATENCY >= 3;
-  localparam int unsigned PIPE_STAGES = SPLIT_PREPACK ? LATENCY - 1 :
-                                                   ((LATENCY < 1) ? 1 : LATENCY);
+  localparam bit SPLIT_NORMALIZE = LATENCY >= 4;
+  localparam int unsigned PIPE_STAGES = SPLIT_NORMALIZE ? LATENCY - 2 :
+                                           (SPLIT_PREPACK ? LATENCY - 1 :
+                                                   ((LATENCY < 1) ? 1 : LATENCY));
   localparam logic [4:0] FFLAG_NX = 5'b00001;
   localparam logic [4:0] FFLAG_UF = 5'b00010;
   localparam logic [4:0] FFLAG_OF = 5'b00100;
@@ -65,6 +68,18 @@ module rv_fpu #(
     logic [2:0]          rounding_mode;
     logic                extra_sticky;
   } fp_precalc_t;
+
+  typedef struct packed {
+    logic                direct_valid;
+    fp_calc_t             direct;
+    logic                sign;
+    logic [23:0]         retained;
+    logic                guard_bit;
+    logic                sticky_bit;
+    logic signed [31:0]  unbiased_exponent;
+    logic [2:0]          rounding_mode;
+    logic                subnormal;
+  } fp_normalized_t;
 
   typedef struct packed {
     logic [ROB_SEQ_WIDTH-1:0]  sequence_id;
@@ -89,12 +104,24 @@ module rv_fpu #(
   exception_code_e pre_exception_cause_q;
   logic [XLEN-1:0] pre_exception_tval_q;
   fp_precalc_t pre_calc_q;
+  logic norm_valid_q;
+  logic [ROB_SEQ_WIDTH-1:0] norm_sequence_q;
+  logic norm_destination_valid_q;
+  reg_class_e norm_destination_class_q;
+  logic [PHYS_TAG_WIDTH-1:0] norm_destination_phys_q;
+  logic norm_exception_valid_q;
+  exception_code_e norm_exception_cause_q;
+  logic [XLEN-1:0] norm_exception_tval_q;
+  fp_normalized_t norm_calc_q;
   pipe_payload_t result_payload;
   logic [PIPE_STAGES-1:0] stage_ready;
   logic pre_ready;
+  logic norm_ready;
   fp_precalc_t request_precalc;
+  fp_normalized_t pre_norm_calc;
   fp_calc_t request_final_calc;
   fp_calc_t pre_final_calc;
+  fp_calc_t norm_final_calc;
   logic [2:0] effective_rm;
   logic request_illegal_rm;
 
@@ -339,6 +366,142 @@ module rv_fpu #(
         result.data[31:0] = {sign, 8'h01, 23'h0};
       end else begin
         result.data[31:0] = {sign, 8'h00, rounded[22:0]};
+        if (inexact)
+          result.flags |= FFLAG_UF;
+      end
+      if (inexact)
+        result.flags |= FFLAG_NX;
+    end
+    return result;
+  endfunction
+
+  // Stage 1 of the timing-oriented packer: leading-one detection, exponent
+  // classification and the 128-bit alignment/sticky shift.  The registered
+  // output leaves only a 25-bit round/add and final field assembly for stage 2.
+  function automatic fp_normalized_t normalize_fp_pre(
+    input fp_precalc_t pre
+  );
+    fp_normalized_t norm;
+    fp_calc_t direct;
+    logic [127:0] magnitude;
+    logic [127:0] retained_wide;
+    logic sticky;
+    integer highest_bit;
+    integer unbiased_exponent;
+    integer shift_amount;
+
+    norm = '0;
+    magnitude = pre.magnitude;
+    if (!pre.needs_pack) begin
+      norm.direct_valid = 1'b1;
+      norm.direct = pre.direct;
+      return norm;
+    end
+
+    if (magnitude == 0) begin
+      norm.direct_valid = 1'b1;
+      norm.direct.data[31] = pre.sign;
+      return norm;
+    end
+
+    highest_bit = -1;
+    for (integer bit_index = 127; bit_index >= 0; bit_index--)
+      if ((highest_bit < 0) && magnitude[bit_index])
+        highest_bit = bit_index;
+    unbiased_exponent = highest_bit + $signed(pre.lsb_exponent);
+
+    if (unbiased_exponent > 127) begin
+      direct = '0;
+      direct.flags = FFLAG_OF | FFLAG_NX;
+      if ((pre.rounding_mode == 3'b001) ||
+          (pre.rounding_mode == 3'b010 && !pre.sign) ||
+          (pre.rounding_mode == 3'b011 && pre.sign))
+        direct.data[31:0] = {pre.sign, 8'hfe, 23'h7f_ffff};
+      else
+        direct.data[31:0] = {pre.sign, 8'hff, 23'h0};
+      norm.direct_valid = 1'b1;
+      norm.direct = direct;
+      return norm;
+    end
+
+    norm.sign = pre.sign;
+    norm.unbiased_exponent = 32'(unbiased_exponent);
+    norm.rounding_mode = pre.rounding_mode;
+    retained_wide = '0;
+    norm.guard_bit = 1'b0;
+    sticky = pre.extra_sticky;
+
+    if (unbiased_exponent >= -126) begin
+      norm.subnormal = 1'b0;
+      shift_amount = highest_bit - 23;
+    end else begin
+      norm.subnormal = 1'b1;
+      shift_amount = -($signed(pre.lsb_exponent) + 149);
+    end
+
+    if (shift_amount > 0) begin
+      if (shift_amount < 128) begin
+        retained_wide = magnitude >> shift_amount;
+        norm.guard_bit = magnitude[shift_amount-1];
+        for (integer bit_index = 0; bit_index < 128; bit_index++)
+          if (bit_index < (shift_amount-1))
+            sticky |= magnitude[bit_index];
+      end else begin
+        sticky |= |magnitude;
+      end
+    end else if (-shift_amount < 128) begin
+      retained_wide = magnitude << (-shift_amount);
+    end
+
+    norm.retained = retained_wide[23:0];
+    norm.sticky_bit = sticky;
+    return norm;
+  endfunction
+
+  function automatic fp_calc_t finalize_fp_normalized(
+    input fp_normalized_t norm
+  );
+    fp_calc_t result;
+    logic [24:0] rounded;
+    logic increment;
+    logic inexact;
+    logic [7:0] exponent_field;
+    integer unbiased_exponent;
+
+    if (norm.direct_valid)
+      return norm.direct;
+
+    result = '0;
+    inexact = norm.guard_bit || norm.sticky_bit;
+    increment = round_up(norm.sign, norm.rounding_mode, norm.retained[0],
+                         norm.guard_bit, norm.sticky_bit);
+    rounded = {1'b0, norm.retained} + increment;
+    unbiased_exponent = $signed(norm.unbiased_exponent);
+
+    if (!norm.subnormal) begin
+      if (rounded[24]) begin
+        rounded = rounded >> 1;
+        unbiased_exponent = unbiased_exponent + 1;
+      end
+      if (unbiased_exponent > 127) begin
+        result.flags = FFLAG_OF | FFLAG_NX;
+        if ((norm.rounding_mode == 3'b001) ||
+            (norm.rounding_mode == 3'b010 && !norm.sign) ||
+            (norm.rounding_mode == 3'b011 && norm.sign))
+          result.data[31:0] = {norm.sign, 8'hfe, 23'h7f_ffff};
+        else
+          result.data[31:0] = {norm.sign, 8'hff, 23'h0};
+      end else begin
+        exponent_field = 8'(unbiased_exponent + 127);
+        result.data[31:0] = {norm.sign, exponent_field, rounded[22:0]};
+        if (inexact)
+          result.flags |= FFLAG_NX;
+      end
+    end else begin
+      if (rounded[23])
+        result.data[31:0] = {norm.sign, 8'h01, 23'h0};
+      else begin
+        result.data[31:0] = {norm.sign, 8'h00, rounded[22:0]};
         if (inexact)
           result.flags |= FFLAG_UF;
       end
@@ -939,7 +1102,9 @@ module rv_fpu #(
       1'b0, {64'b0, sqrt_root_q}, sqrt_exponent_q,
       sqrt_rm_q, sqrt_remainder_q != 0);
     request_final_calc = finalize_fp_pre(request_precalc);
+    pre_norm_calc = normalize_fp_pre(pre_calc_q);
     pre_final_calc = finalize_fp_pre(pre_calc_q);
+    norm_final_calc = finalize_fp_normalized(norm_calc_q);
   end
 
   // Keep the elastic-ready cone independent from the request arithmetic.
@@ -950,8 +1115,11 @@ module rv_fpu #(
       (!slow_result_valid_q && result_ready_i);
     for (integer stage = PIPE_STAGES-2; stage >= 0; stage--)
       stage_ready[stage] = !valid_q[stage] || stage_ready[stage+1];
-    pre_ready = !SPLIT_PREPACK || !pre_valid_q || stage_ready[0];
-    fast_pipe_empty = (!SPLIT_PREPACK || !pre_valid_q) && !(|valid_q);
+    norm_ready = !SPLIT_NORMALIZE || !norm_valid_q || stage_ready[0];
+    pre_ready = !SPLIT_PREPACK || !pre_valid_q ||
+                (SPLIT_NORMALIZE ? norm_ready : stage_ready[0]);
+    fast_pipe_empty = (!SPLIT_PREPACK || !pre_valid_q) &&
+                      (!SPLIT_NORMALIZE || !norm_valid_q) && !(|valid_q);
     if (request_is_slow)
       request_ready_o = !flush_valid_i && fast_pipe_empty &&
                         (slow_state_q == SLOW_IDLE) &&
@@ -991,6 +1159,15 @@ module rv_fpu #(
       pre_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
       pre_exception_tval_q <= '0;
       pre_calc_q <= '0;
+      norm_valid_q <= 1'b0;
+      norm_sequence_q <= '0;
+      norm_destination_valid_q <= 1'b0;
+      norm_destination_class_q <= REG_NONE;
+      norm_destination_phys_q <= '0;
+      norm_exception_valid_q <= 1'b0;
+      norm_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
+      norm_exception_tval_q <= '0;
+      norm_calc_q <= '0;
       slow_state_q <= SLOW_IDLE;
       slow_payload_q <= '0;
       slow_result_valid_q <= 1'b0;
@@ -1013,6 +1190,9 @@ module rv_fpu #(
     end else if (flush_valid_i) begin
       if (SPLIT_PREPACK && pre_valid_q && killed_by_flush(pre_sequence_q))
         pre_valid_q <= 1'b0;
+      if (SPLIT_NORMALIZE && norm_valid_q &&
+          killed_by_flush(norm_sequence_q))
+        norm_valid_q <= 1'b0;
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         if (valid_q[stage] && killed_by_flush(payload_q[stage].sequence_id))
           valid_q[stage] <= 1'b0;
@@ -1034,8 +1214,19 @@ module rv_fpu #(
       end
       if (stage_ready[0]) begin
         if (SPLIT_PREPACK) begin
-          valid_q[0] <= pre_valid_q;
-          if (pre_valid_q) begin
+          valid_q[0] <= SPLIT_NORMALIZE ? norm_valid_q : pre_valid_q;
+          if (SPLIT_NORMALIZE && norm_valid_q) begin
+            payload_q[0].sequence_id <= norm_sequence_q;
+            payload_q[0].destination_valid <= norm_destination_valid_q;
+            payload_q[0].destination_class <= norm_destination_class_q;
+            payload_q[0].destination_phys <= norm_destination_phys_q;
+            payload_q[0].data <= norm_final_calc.data;
+            payload_q[0].flags <= norm_exception_valid_q ? '0 :
+                                  norm_final_calc.flags;
+            payload_q[0].exception_valid <= norm_exception_valid_q;
+            payload_q[0].exception_cause <= norm_exception_cause_q;
+            payload_q[0].exception_tval <= norm_exception_tval_q;
+          end else if (!SPLIT_NORMALIZE && pre_valid_q) begin
             payload_q[0].sequence_id <= pre_sequence_q;
             payload_q[0].destination_valid <= pre_destination_valid_q;
             payload_q[0].destination_class <= pre_destination_class_q;
@@ -1061,6 +1252,20 @@ module rv_fpu #(
             payload_q[0].exception_cause <= EXC_ILLEGAL_INSTRUCTION;
             payload_q[0].exception_tval <= XLEN'(instruction_i);
           end
+        end
+      end
+
+      if (SPLIT_NORMALIZE && norm_ready) begin
+        norm_valid_q <= pre_valid_q;
+        if (pre_valid_q) begin
+          norm_sequence_q <= pre_sequence_q;
+          norm_destination_valid_q <= pre_destination_valid_q;
+          norm_destination_class_q <= pre_destination_class_q;
+          norm_destination_phys_q <= pre_destination_phys_q;
+          norm_exception_valid_q <= pre_exception_valid_q;
+          norm_exception_cause_q <= pre_exception_cause_q;
+          norm_exception_tval_q <= pre_exception_tval_q;
+          norm_calc_q <= pre_norm_calc;
         end
       end
 

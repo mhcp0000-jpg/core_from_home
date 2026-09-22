@@ -895,7 +895,7 @@ module rv_backend #(
   exception_code_e fpu_result_cause;
   rv_fpu #(
     .XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
-    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(3)
+    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(4)
   ) u_fpu (
     .clk_i, .rst_ni,
     .request_valid_i(port_valid[4] && (port_fu[4] == FU_FP)),

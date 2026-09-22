@@ -108,6 +108,15 @@ module rv_issue_queue #(
 
   import rv_ooo_pkg::*;
 
+  localparam int unsigned SELECT_TREE_LEVELS = $clog2(ENTRIES);
+  localparam int unsigned SELECT_TREE_LEAVES = 1 << SELECT_TREE_LEVELS;
+
+  typedef struct packed {
+    logic                         valid;
+    logic [ROB_SEQ_WIDTH-1:0]     sequence_id;
+    logic [INDEX_WIDTH-1:0]       index;
+  } select_node_t;
+
   // Parallel arrays avoid tool-specific limitations around variable indexing
   // of packed structs while retaining the same physical entry semantics.
   logic valid_q [0:ENTRIES-1];
@@ -151,6 +160,8 @@ module rv_issue_queue #(
   logic [SELECT_WIDTH-1:0] candidate_final_phase;
   logic [2:0] requested_dispatch_count;
   logic dispatch_fire;
+  select_node_t select_tree [0:SELECT_TREE_LEVELS]
+                                [0:SELECT_TREE_LEAVES-1][0:1];
 
   function automatic logic sequence_before(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
@@ -168,6 +179,26 @@ module rv_issue_queue #(
     logic signed [ROB_SEQ_WIDTH-1:0] difference;
     difference = $signed(lhs - rhs);
     return difference > 0;
+  endfunction
+
+  function automatic logic select_before(
+    input select_node_t lhs,
+    input select_node_t rhs
+  );
+    if (!lhs.valid)
+      return 1'b0;
+    if (!rhs.valid)
+      return 1'b1;
+    if (lhs.sequence_id == rhs.sequence_id)
+      return lhs.index < rhs.index;
+    return sequence_before(lhs.sequence_id, rhs.sequence_id);
+  endfunction
+
+  function automatic select_node_t select_older(
+    input select_node_t lhs,
+    input select_node_t rhs
+  );
+    return select_before(lhs, rhs) ? lhs : rhs;
   endfunction
 
   function automatic logic tag_wakes(
@@ -208,11 +239,46 @@ module rv_issue_queue #(
     end
   end
 
+  // Balanced oldest-two tournament.  Every subtree carries its two oldest
+  // ready entries.  Merging two already-sorted pairs takes only two compare
+  // levels, avoiding the previous 56-entry serial priority/mux chain.
   always_comb begin
-    logic [ENTRIES-1:0] selected_mask_work;
-    logic [SELECT_WIDTH-1:0] select_found_work;
-    logic [SELECT_WIDTH-1:0][INDEX_WIDTH-1:0] selected_index_work;
+    for (int unsigned level = 0; level <= SELECT_TREE_LEVELS; level++)
+      for (int unsigned node = 0; node < SELECT_TREE_LEAVES; node++)
+        for (int unsigned rank = 0; rank < 2; rank++)
+          select_tree[level][node][rank] = '0;
 
+    for (int unsigned leaf = 0; leaf < SELECT_TREE_LEAVES; leaf++) begin
+      if (leaf < ENTRIES) begin
+        select_tree[0][leaf][0].valid = ready_now[leaf];
+        select_tree[0][leaf][0].sequence_id = sequence_q[leaf];
+        select_tree[0][leaf][0].index = INDEX_WIDTH'(leaf);
+      end
+    end
+
+    for (int unsigned level = 1; level <= SELECT_TREE_LEVELS; level++) begin
+      for (int unsigned node = 0; node < SELECT_TREE_LEAVES; node++) begin
+        if (node < (SELECT_TREE_LEAVES >> level)) begin
+          if (select_before(select_tree[level-1][node*2][0],
+                            select_tree[level-1][node*2+1][0])) begin
+            select_tree[level][node][0] =
+              select_tree[level-1][node*2][0];
+            select_tree[level][node][1] = select_older(
+              select_tree[level-1][node*2][1],
+              select_tree[level-1][node*2+1][0]);
+          end else begin
+            select_tree[level][node][0] =
+              select_tree[level-1][node*2+1][0];
+            select_tree[level][node][1] = select_older(
+              select_tree[level-1][node*2][0],
+              select_tree[level-1][node*2+1][1]);
+          end
+        end
+      end
+    end
+  end
+
+  always_comb begin
     candidate_valid_o             = '0;
     candidate_index_o             = '0;
     candidate_sequence_o          = '0;
@@ -242,84 +308,71 @@ module rv_issue_queue #(
     candidate_store_address_valid_o = '0;
     candidate_store_data_valid_o  = '0;
     candidate_final_phase         = '0;
-    selected_mask_work            = '0;
-    select_found_work             = '0;
-    selected_index_work           = '0;
-
     if (!flush_all_i && !flush_younger_i) begin
       for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-        for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-          if (ready_now[entry] && !selected_mask_work[entry] &&
-              (!select_found_work[slot] ||
-               sequence_before(sequence_q[entry],
-                               sequence_q[selected_index_work[slot]]))) begin
-            selected_index_work[slot] = INDEX_WIDTH'(entry);
-            select_found_work[slot] = 1'b1;
-          end
-        end
-        if (select_found_work[slot]) begin
-          candidate_index_o[slot] = selected_index_work[slot];
-          selected_mask_work[selected_index_work[slot]] = 1'b1;
+        if (select_tree[SELECT_TREE_LEVELS][0][slot].valid) begin
+          candidate_index_o[slot] =
+            select_tree[SELECT_TREE_LEVELS][0][slot].index;
           candidate_valid_o[slot] = 1'b1;
           candidate_sequence_o[slot] =
-            sequence_q[selected_index_work[slot]];
-          candidate_fu_o[slot] = fu_q[selected_index_work[slot]];
+            select_tree[SELECT_TREE_LEVELS][0][slot].sequence_id;
+          candidate_fu_o[slot] = fu_q[candidate_index_o[slot]];
           candidate_port_mask_o[slot] =
-            port_mask_q[selected_index_work[slot]];
+            port_mask_q[candidate_index_o[slot]];
           candidate_src_phys_o[slot] =
-            src_phys_q[selected_index_work[slot]];
+            src_phys_q[candidate_index_o[slot]];
           candidate_src_class_o[slot][0] =
-            src0_class_q[selected_index_work[slot]];
+            src0_class_q[candidate_index_o[slot]];
           candidate_src_class_o[slot][1] =
-            src1_class_q[selected_index_work[slot]];
+            src1_class_q[candidate_index_o[slot]];
           candidate_src_class_o[slot][2] =
-            src2_class_q[selected_index_work[slot]];
+            src2_class_q[candidate_index_o[slot]];
           candidate_destination_valid_o[slot] =
-            destination_valid_q[selected_index_work[slot]];
+            destination_valid_q[candidate_index_o[slot]];
           candidate_destination_class_o[slot] =
-            destination_class_q[selected_index_work[slot]];
+            destination_class_q[candidate_index_o[slot]];
           candidate_destination_phys_o[slot] =
-            destination_phys_q[selected_index_work[slot]];
-          candidate_pc_o[slot] = pc_q[selected_index_work[slot]];
+            destination_phys_q[candidate_index_o[slot]];
+          candidate_pc_o[slot] = pc_q[candidate_index_o[slot]];
           candidate_instruction_o[slot] =
-            instruction_q[selected_index_work[slot]];
+            instruction_q[candidate_index_o[slot]];
           candidate_inst_len_o[slot] =
-            inst_len_q[selected_index_work[slot]];
+            inst_len_q[candidate_index_o[slot]];
           candidate_prediction_o[slot] =
-            prediction_q[selected_index_work[slot]];
+            prediction_q[candidate_index_o[slot]];
           candidate_immediate_o[slot] =
-            immediate_q[selected_index_work[slot]];
+            immediate_q[candidate_index_o[slot]];
           candidate_operation_o[slot] =
-            operation_q[selected_index_work[slot]];
+            operation_q[candidate_index_o[slot]];
           candidate_use_pc_o[slot] =
-            use_pc_q[selected_index_work[slot]];
+            use_pc_q[candidate_index_o[slot]];
           candidate_use_immediate_o[slot] =
-            use_immediate_q[selected_index_work[slot]];
+            use_immediate_q[candidate_index_o[slot]];
           candidate_word_operation_o[slot] =
-            word_operation_q[selected_index_work[slot]];
+            word_operation_q[candidate_index_o[slot]];
           candidate_mem_size_o[slot] =
-            mem_size_q[selected_index_work[slot]];
+            mem_size_q[candidate_index_o[slot]];
           candidate_mem_unsigned_o[slot] =
-            mem_unsigned_q[selected_index_work[slot]];
+            mem_unsigned_q[candidate_index_o[slot]];
           candidate_rounding_mode_o[slot] =
-            rounding_mode_q[selected_index_work[slot]];
+            rounding_mode_q[candidate_index_o[slot]];
           candidate_checkpoint_valid_o[slot] =
-            checkpoint_valid_q[selected_index_work[slot]];
+            checkpoint_valid_q[candidate_index_o[slot]];
           candidate_checkpoint_id_o[slot] =
-            checkpoint_id_q[selected_index_work[slot]];
+            checkpoint_id_q[candidate_index_o[slot]];
           candidate_lq_index_o[slot] =
-            lq_index_q[selected_index_work[slot]];
+            lq_index_q[candidate_index_o[slot]];
           candidate_sq_index_o[slot] =
-            sq_index_q[selected_index_work[slot]];
+            sq_index_q[candidate_index_o[slot]];
           candidate_store_address_valid_o[slot] =
-            (fu_q[selected_index_work[slot]] == FU_STORE) &&
-            !store_address_issued_q[selected_index_work[slot]];
+            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
+            !store_address_issued_q[candidate_index_o[slot]];
           candidate_store_data_valid_o[slot] =
-            (fu_q[selected_index_work[slot]] == FU_STORE) &&
-            source_ready_now[selected_index_work[slot]][1];
+            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
+            source_ready_now[candidate_index_o[slot]][1];
           candidate_final_phase[slot] =
-            (fu_q[selected_index_work[slot]] != FU_STORE) ||
-            source_ready_now[selected_index_work[slot]][1];
+            (fu_q[candidate_index_o[slot]] != FU_STORE) ||
+            source_ready_now[candidate_index_o[slot]][1];
         end
       end
     end
@@ -328,12 +381,14 @@ module rv_issue_queue #(
   always_comb begin
     for (int unsigned entry = 0; entry < ENTRIES; entry++)
       available_slots[entry] = !valid_q[entry];
-    for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-      if (candidate_valid_o[slot] && candidate_accept_i[slot] &&
-          candidate_final_phase[slot])
-        available_slots[candidate_index_o[slot]] = 1'b1;
-    end
 
+    // Do not recycle an entry accepted for issue until the following cycle.
+    // Same-cycle recycling connected execution-result backpressure through
+    // WB arbitration, issue selection and the 56-entry allocation scan all
+    // the way to every IQ payload D input.  Using only registered valid state
+    // makes dispatch allocation independent of candidate_accept_i.  A full IQ
+    // may therefore pause dispatch for one cycle while accepted entries are
+    // released; normal non-full operation and issue throughput are unchanged.
     allocation_slots_work = available_slots;
     allocation_found      = '0;
     dispatch_index_o      = '0;

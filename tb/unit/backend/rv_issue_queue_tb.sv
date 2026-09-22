@@ -271,15 +271,27 @@ module rv_issue_queue_tb;
         (candidate_sequence[1] != 8'd21))
       $fatal(1, "Issue queue full/oldest state is wrong");
 
-    // Reuse the two entries accepted this cycle for a new dispatch pair.
+    // A full queue does not recycle accepted issue entries combinationally.
+    // This intentionally breaks the WB-ready -> issue -> allocation -> IQ-D
+    // timing path.  The released entries become dispatchable next cycle.
     candidate_accept       = 2'b11;
     dispatch_valid         = 2'b11;
     dispatch_sequence[0]   = 8'd24;
     dispatch_sequence[1]   = 8'd25;
     dispatch_src_ready     = '1;
     #1;
+    if (dispatch_ready)
+      $fatal(1, "Full IQ unexpectedly recycled an issue slot combinationally");
+    @(posedge clk);
+    @(negedge clk);
+    clear_inputs();
+    dispatch_valid         = 2'b11;
+    dispatch_sequence[0]   = 8'd24;
+    dispatch_sequence[1]   = 8'd25;
+    dispatch_src_ready     = '1;
+    #1;
     if (!dispatch_ready)
-      $fatal(1, "Issue+dispatch same-cycle slot reuse failed");
+      $fatal(1, "Released IQ slots were not reusable on the following cycle");
     @(posedge clk);
     @(negedge clk);
     clear_inputs();

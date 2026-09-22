@@ -177,8 +177,11 @@ module rv_rename2 #(
       committed_fp_free[fp_rrat_q[arch]] = 1'b0;
   end
 
-  // Commit is logically older than same-cycle rename, so a stale physical
-  // register released at commit may be allocated immediately by lane0/lane1.
+  // Commit releases are accumulated for the sequential next state.  Rename
+  // intentionally allocates only from the registered free list: exposing a
+  // same-cycle retired tag to allocation connected LSU/store commit-ready,
+  // ROB retire, the free-list encoder and every dispatch payload D input in
+  // one backend-wide timing path.
   always_comb begin
     int_free_base = int_free_q;
     fp_free_base  = fp_free_q;
@@ -198,8 +201,8 @@ module rv_rename2 #(
       int_rat_work[arch] = int_rat_q[arch];
     for (int unsigned arch = 0; arch < ARCH_FP_REGS; arch++)
       fp_rat_work[arch] = fp_rat_q[arch];
-    int_free_work = int_free_base;
-    fp_free_work  = fp_free_base;
+    int_free_work = int_free_q;
+    fp_free_work  = fp_free_q;
 
     src0_phys_o            = '0;
     src1_phys_o            = '0;
@@ -266,6 +269,21 @@ module rv_rename2 #(
         checkpoint_fp_rat_after_lane[lane][arch] = fp_rat_work[arch];
       checkpoint_int_free_after_lane[lane] = int_free_work;
       checkpoint_fp_free_after_lane[lane]  = fp_free_work;
+      // A newly saved checkpoint still includes tags released by older
+      // commits on this edge.  These bits affect only checkpoint payload D;
+      // they do not feed rename_can_accept_o or the allocation encoder.
+      for (int unsigned commit_lane = 0; commit_lane < 2; commit_lane++) begin
+        if (commit_valid_i[commit_lane] &&
+            commit_writes_destination_i[commit_lane]) begin
+          case (commit_destination_class_i[commit_lane])
+            REG_INT: checkpoint_int_free_after_lane[lane]
+              [commit_stale_phys_i[commit_lane]] = 1'b1;
+            REG_FP: checkpoint_fp_free_after_lane[lane]
+              [commit_stale_phys_i[commit_lane]] = 1'b1;
+            default: begin end
+          endcase
+        end
+      end
     end
 
     rename_can_accept_o = allocation_ok && lane_shape_ok &&
@@ -386,6 +404,19 @@ module rv_rename2 #(
               checkpoint_fp_rat_q[checkpoint_save_id_i[lane]][arch] <=
                 checkpoint_fp_rat_after_lane[lane][arch];
           end
+        end
+      end
+
+      // Commit wins only on its released stale tag.  Because same-cycle
+      // allocation cannot see that tag, this cannot collide with a newly
+      // allocated destination and preserves the combined next-state update.
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (commit_valid_i[lane] && commit_writes_destination_i[lane]) begin
+          case (commit_destination_class_i[lane])
+            REG_INT: int_free_q[commit_stale_phys_i[lane]] <= 1'b1;
+            REG_FP:  fp_free_q[commit_stale_phys_i[lane]] <= 1'b1;
+            default: begin end
+          endcase
         end
       end
     end
