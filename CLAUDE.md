@@ -5,17 +5,9 @@
 ## 현재 기준
 
 - Branch: `main`
-- 마지막 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
-- **미커밋 작업 트리: v1.18.9 (2026-09-24).** `rv_store_buffer`, `rv_rob`, `rv_lsq`,
-  `rv_issue_queue`, `rv_multiplier`, `rv_fpu`, `rv_backend`(FPU `LATENCY=5`,
-  producer-side wakeup, decode→dispatch register), `rv_exec_result_buffer`, `rv_phys_regfile`,
-  `rv_lsu_cluster`, `rv_rename2`, `rv_lsu_pipe`, `rv_issue_arbiter`, `rtl/soc/rv_d_fabric.sv`,
-  `tb/unit/backend/rv_fpu_diff_tb.sv`, `tb/integration/backend/rv_backend_int_tb.sv`,
-  신규 `tb/unit/backend/rv_exec_result_buffer_depth2_tb.sv`, 신규 `tb/unit/backend/rv_lsu_pipe_depth2_tb.sv`,
-  신규 `tb/unit/backend/rv_issue_arbiter_age_tb.sv`, 신규 `scripts/trace_named_path.py`, 신규 `scripts/run_analysis_netlist.sh`,
-  `scripts/run_unit_tests.ps1`, 신규 `scripts/find_comb_chains.py`, `scripts/run_open_timing.ps1`,
-  `scripts/run_open_timing.sh`, `CLAUDE.md`,
-  `docs/HDD_Core_Architecture.md`가 수정돼 있고 아직 commit하지 않았다.
+- 마지막 RTL commit: `1fef3ae Cut cross-module timing paths and fix D-fabric request stability (v1.18.4-v1.18.9)` (v1.18.9, 2026-09-29, 아직 push 안 함)
+- 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
+- 미커밋 작업 트리: 없음(아래 사용자 소유 untracked 파일과 `debug.txt` 제외)
 - v1.18.3 서버 STA checkpoint는 IQ/LQ/SQ selector, rename resource-return,
   FPU 4-stage 경계를 포함한다.
 - Core top: `rv_ooo_core` (`rtl/rv_ooo_core.sv`)
