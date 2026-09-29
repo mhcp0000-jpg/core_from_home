@@ -163,6 +163,26 @@ module rv_store_buffer #(
     end
   end
 
+  localparam int unsigned QTREE_LEVELS = $clog2(ENTRIES);
+  localparam int unsigned QTREE_LEAVES = 1 << QTREE_LEVELS;
+  typedef struct packed {
+    logic                    valid;
+    logic [SEQ_WIDTH-1:0]    seq;
+    logic [DATA_BYTES-1:0]   ovl;
+    logic [DATA_WIDTH-1:0]   data;
+    logic [INDEX_WIDTH-1:0]  idx;
+  } query_cand_t;
+  query_cand_t qtree [0:1][0:QTREE_LEVELS][0:QTREE_LEAVES-1];
+
+  function automatic query_cand_t query_younger(
+    input query_cand_t lhs,
+    input query_cand_t rhs
+  );
+    if (!lhs.valid) return rhs;
+    if (!rhs.valid) return lhs;
+    return sequence_after(lhs.seq, rhs.seq) ? lhs : rhs;
+  endfunction
+
   for (genvar lane = 0; lane < 2; lane++) begin : g_query
     always_comb begin
       logic found;
@@ -181,20 +201,37 @@ module rv_store_buffer #(
       selected_data = '0;
       selected_index = '0;
 
-      for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-        if (query_valid_i[lane] && valid_q[entry] &&
-            (address_q[entry][PADDR_WIDTH-1:BANK_BIT] ==
+      // PROTOTYPE: balanced youngest-match reduction tree.  The previous
+      // ENTRIES-deep first/younger ripple sat directly on the
+      // LSQ candidate -> store buffer -> writeback -> issue path.
+      for (int unsigned level = 0; level <= QTREE_LEVELS; level++)
+        for (int unsigned node = 0; node < QTREE_LEAVES; node++)
+          qtree[lane][level][node] = '0;
+      for (int unsigned leaf = 0; leaf < QTREE_LEAVES; leaf++) begin
+        if (leaf < ENTRIES) begin
+          qtree[lane][0][leaf].valid =
+            query_valid_i[lane] && valid_q[leaf] &&
+            (address_q[leaf][PADDR_WIDTH-1:BANK_BIT] ==
              query_address_i[lane][PADDR_WIDTH-1:BANK_BIT]) &&
-            ((mask_q[entry] & query_mask_i[lane]) != '0) &&
-            (!found || sequence_after(sequence_q[entry],
-                                      selected_sequence))) begin
-          found = 1'b1;
-          selected_sequence = sequence_q[entry];
-          selected_overlap = mask_q[entry] & query_mask_i[lane];
-          selected_data = data_q[entry];
-          selected_index = INDEX_WIDTH'(entry);
+            ((mask_q[leaf] & query_mask_i[lane]) != '0);
+          qtree[lane][0][leaf].seq  = sequence_q[leaf];
+          qtree[lane][0][leaf].ovl  = mask_q[leaf] & query_mask_i[lane];
+          qtree[lane][0][leaf].data = data_q[leaf];
+          qtree[lane][0][leaf].idx  = INDEX_WIDTH'(leaf);
         end
       end
+      for (int unsigned level = 1; level <= QTREE_LEVELS; level++)
+        for (int unsigned node = 0; node < QTREE_LEAVES; node++)
+          if (node < (QTREE_LEAVES >> level))
+            qtree[lane][level][node] =
+              query_younger(qtree[lane][level-1][2*node],
+                            qtree[lane][level-1][2*node+1]);
+
+      found             = qtree[lane][QTREE_LEVELS][0].valid;
+      selected_sequence = qtree[lane][QTREE_LEVELS][0].seq;
+      selected_overlap  = qtree[lane][QTREE_LEVELS][0].ovl;
+      selected_data     = qtree[lane][QTREE_LEVELS][0].data;
+      selected_index    = qtree[lane][QTREE_LEVELS][0].idx;
 
       if (found) begin
         full_cover =

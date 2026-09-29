@@ -101,6 +101,12 @@ module rv_d_fabric #(
   logic outbound_grant;
   logic [1:0] outbound_selected;
   logic [1:0] outbound_owner_q;
+  // A presented CLINT/outbound request that is not accepted stays selected
+  // until it is accepted (local-bus contract: request stable while stalled).
+  // Without the lock an older request from the other LSU could replace a
+  // stalled younger one on the same target port.
+  logic clint_lock_q, outbound_lock_q;
+  logic [1:0] clint_lock_master_q, outbound_lock_master_q;
 
   logic [MASTER_COUNT-1:0] error_accept;
   logic [MASTER_COUNT-1:0] error_valid_q;
@@ -320,6 +326,10 @@ module rv_d_fabric #(
   always_comb begin
     clint_grant    = 1'b0;
     clint_selected = MASTER_LSU0;
+    if (clint_lock_q) begin
+      clint_grant    = clint_candidate[clint_lock_master_q];
+      clint_selected = clint_lock_master_q;
+    end else
     case (clint_rr_q)
       2'd0: begin
         if (clint_candidate[0]) begin clint_grant = 1'b1; clint_selected = 0; end
@@ -340,7 +350,10 @@ module rv_d_fabric #(
 
     outbound_grant    = 1'b0;
     outbound_selected = MASTER_LSU0;
-    if (outbound_candidate[0] && outbound_candidate[1]) begin
+    if (outbound_lock_q) begin
+      outbound_grant    = outbound_candidate[outbound_lock_master_q];
+      outbound_selected = outbound_lock_master_q;
+    end else if (outbound_candidate[0] && outbound_candidate[1]) begin
       outbound_grant = 1'b1;
       outbound_selected = seq_before(req_rob_seq[0], req_rob_seq[1]) ?
                           MASTER_LSU0 : MASTER_LSU1;
@@ -524,6 +537,10 @@ module rv_d_fabric #(
       clint_owner_q        <= '0;
       clint_rr_q           <= '0;
       outbound_owner_q     <= '0;
+      clint_lock_q         <= 1'b0;
+      clint_lock_master_q  <= '0;
+      outbound_lock_q      <= 1'b0;
+      outbound_lock_master_q <= '0;
       error_valid_q        <= '0;
       rsp_buffer_valid_q   <= '0;
       rsp_buffer_id_q      <= '0;
@@ -564,6 +581,13 @@ module rv_d_fabric #(
       end
       if (outbound_grant && outbound_bus.req_ready)
         outbound_owner_q <= outbound_selected;
+
+      clint_lock_q <= clint_grant && !clint_bus.req_ready;
+      if (clint_grant && !clint_bus.req_ready)
+        clint_lock_master_q <= clint_selected;
+      outbound_lock_q <= outbound_grant && !outbound_bus.req_ready;
+      if (outbound_grant && !outbound_bus.req_ready)
+        outbound_lock_master_q <= outbound_selected;
 
       for (int unsigned master = 0; master < MASTER_COUNT; master++) begin
         if (pulse_valid[master] && !rsp_buffer_valid_q[master]) begin
@@ -641,6 +665,20 @@ module rv_d_fabric #(
     endproperty
     assert property (p_handoff_retains_new_request_busy);
   end
+
+  // The locked requester keeps presenting (the per-requester bus carries
+  // the same stability contract), so a lock never waits on a vanished request.
+  property p_outbound_lock_holds_candidate;
+    @(posedge clk_i) disable iff (!rst_ni)
+      outbound_lock_q |-> outbound_candidate[outbound_lock_master_q];
+  endproperty
+  assert property (p_outbound_lock_holds_candidate);
+
+  property p_clint_lock_holds_candidate;
+    @(posedge clk_i) disable iff (!rst_ni)
+      clint_lock_q |-> clint_candidate[clint_lock_master_q];
+  endproperty
+  assert property (p_clint_lock_holds_candidate);
 
   property p_xbar_inbound_never_loops_outbound;
     @(posedge clk_i) disable iff (!rst_ni)

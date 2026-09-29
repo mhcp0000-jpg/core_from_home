@@ -302,14 +302,30 @@ module rv_rob #(
       entries_q[head_q].source0_phys : '0;
   end
 
+  localparam int unsigned KEEP_LEVELS = $clog2(ROB_ENTRIES);
+  localparam int unsigned KEEP_LEAVES = 1 << KEEP_LEVELS;
+  logic [ROB_COUNT_WIDTH-1:0] keep_tree [0:KEEP_LEVELS][0:KEEP_LEAVES-1];
+
   always_comb begin
     flush_boundary_found = 1'b0;
     flush_tail           = tail_q;
-    flush_kept_count     = '0;
+    // PROTOTYPE: balanced popcount tree.  The previous sequential increment
+    // over ROB_ENTRIES synthesized as a 48-deep carry chain.
+    for (int unsigned level = 0; level <= KEEP_LEVELS; level++)
+      for (int unsigned node = 0; node < KEEP_LEAVES; node++)
+        keep_tree[level][node] = '0;
+    for (int unsigned leaf = 0; leaf < KEEP_LEAVES; leaf++)
+      keep_tree[0][leaf] =
+        ((leaf < ROB_ENTRIES) && entries_q[leaf].valid &&
+         !sequence_after(entries_q[leaf].sequence_id, flush_sequence_i)) ?
+          ROB_COUNT_WIDTH'(1) : ROB_COUNT_WIDTH'(0);
+    for (int unsigned level = 1; level <= KEEP_LEVELS; level++)
+      for (int unsigned node = 0; node < KEEP_LEAVES; node++)
+        if (node < (KEEP_LEAVES >> level))
+          keep_tree[level][node] = keep_tree[level-1][2*node] +
+                                   keep_tree[level-1][2*node+1];
+    flush_kept_count = keep_tree[KEEP_LEVELS][0];
     for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
-      if (entries_q[entry].valid &&
-          !sequence_after(entries_q[entry].sequence_id, flush_sequence_i))
-        flush_kept_count = flush_kept_count + 1'b1;
       if (entries_q[entry].valid &&
           (entries_q[entry].sequence_id == flush_sequence_i)) begin
         flush_boundary_found = 1'b1;

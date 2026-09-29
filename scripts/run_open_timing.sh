@@ -46,17 +46,51 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
     "rv_rename2|rv_rename2||full"
     "rv_pmp|rv_pmp|-G CHECK_PORTS=8|full"
     "rv_issue_arbiter|rv_issue_arbiter|-G CANDIDATE_COUNT=2|full"
+    # 아래 6개는 원래 screening list에 없었다.  실제 최장 block이었던
+    # rv_store_buffer / rv_lsu_cluster가 그 때문에 보이지 않았다.
+    "rv_store_buffer|rv_store_buffer||full"
+    "rv_lsu_cluster|rv_lsu_cluster||macro"
+    "rv_multiplier|rv_multiplier||full"
+    "rv_divider|rv_divider||full"
+    "rv_fetch_queue|rv_fetch_queue||full"
+    "rv_csr_file|rv_csr_file||full"
   )
+  # Whole-backend / whole-core는 block 단위 측정이 볼 수 없는 cross-module
+  # 경로(LSQ -> store_buffer -> writeback -> IQ -> mul)를 잡는다.  단, yosys
+  # 기본 ABC script의 scorr/dc2/retime은 60만 cell 네트워크에서 사실상
+  # 끝나지 않으므로 delay 중심으로 다듬은 script를 쓴다.
+  if [[ "${INCLUDE_WHOLE_TOP:-0}" == "1" ]]; then
+    blocks+=(
+      "rv_backend|rv_backend||macro|trim"
+      "rv_ooo_core|rv_ooo_core||macro|trim"
+    )
+  fi
   printf 'block,flow,delay_ps,area_um2_excluding_memories,log\n' \
     >"$build_root/timing_summary.csv"
   for spec in "${blocks[@]}"; do
-    IFS='|' read -r name top args flow <<<"$spec"
+    IFS='|' read -r name top args flow abc_mode <<<"$spec"
+    abc_option=""
+    if [[ "$abc_mode" == "trim" ]]; then
+      mkdir -p "$build_root/$name"
+      cat >"$build_root/$name/abc_trim.scr" <<SCR
+strash
+&get -n
+&dch -f
+&nf -D $target_delay_ps
+&put
+buffer
+upsize -D $target_delay_ps
+dnsize -D $target_delay_ps
+stime -p
+SCR
+      abc_option="-script $build_root/$name/abc_trim.scr "
+    fi
     if [[ "$flow" == "macro" ]]; then
       lowering="proc; flatten; opt -fast; memory_collect; techmap; opt -fast"
     else
       lowering="synth -top $top -flatten -noshare -noabc"
     fi
-    command="read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top $top $args -f $sources; hierarchy -check -top $top; $lowering; dfflibmap -liberty $liberty; abc -liberty $liberty -constr $constraint -D $target_delay_ps; clean; read_liberty -lib $liberty; check; stat -liberty $liberty"
+    command="read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top $top $args -f $sources; hierarchy -check -top $top; $lowering; dfflibmap -liberty $liberty; abc ${abc_option}-liberty $liberty -constr $constraint -D $target_delay_ps; clean; read_liberty -lib $liberty; check; stat -liberty $liberty"
     run_yosys "$name" "$command"
     log="$build_root/$name/synth.log"
     delay="$(grep -Eo 'Delay[[:space:]]*=[[:space:]]*[0-9.]+[[:space:]]*ps' "$log" | tail -1 | grep -Eo '[0-9.]+' || true)"

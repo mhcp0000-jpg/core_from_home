@@ -8,6 +8,9 @@ module rv_lsu_cluster #(
   parameter int unsigned SQ_ENTRIES           = 16,
   parameter int unsigned STORE_BUFFER_ENTRIES = 16,
   parameter int unsigned PMP_ENTRIES          = 8,
+  // rv_lsu_pipe DEPTH (1 = original single register, 2 = registered issue
+  // ready; see rv_lsu_pipe).
+  parameter int unsigned AGU_DEPTH            = 1,
   parameter logic [PADDR_WIDTH-1:0] ITIM_BASE_ADDR = 'h8000_0000,
   parameter int unsigned ITIM_SIZE_KB         = 128,
   parameter logic [PADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,
@@ -173,6 +176,14 @@ module rv_lsu_cluster #(
   logic [PADDR_WIDTH-1:0] load_meta_address_q [0:LQ_ENTRIES-1];
   logic [2:0] load_meta_size_q [0:LQ_ENTRIES-1];
   logic load_meta_unsigned_q [0:LQ_ENTRIES-1];
+  // Registered liveness of an outstanding load request.  A branch or trap
+  // recovery that squashes the load while its request is outstanding clears
+  // it; the response still arrives later and completes the LQ entry, but it
+  // no longer claims its destination.  The backend's producer-side wakeup
+  // uses the destination claim directly, so this keeps a late response from
+  // waking a consumer of the reallocated physical tag without putting a ROB
+  // liveness CAM in front of issue selection.
+  logic load_meta_live_q [0:LQ_ENTRIES-1];
 
   logic [1:0] agu_update_valid, agu_update_ready;
   logic [1:0][ROB_SEQ_WIDTH-1:0] agu_update_sequence;
@@ -202,7 +213,8 @@ module rv_lsu_cluster #(
     rv_lsu_pipe #(
       .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH),
       .MEM_DATA_WIDTH(MEM_DATA_WIDTH), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
-      .LQ_INDEX_WIDTH(LQ_INDEX_WIDTH), .SQ_INDEX_WIDTH(SQ_INDEX_WIDTH)
+      .LQ_INDEX_WIDTH(LQ_INDEX_WIDTH), .SQ_INDEX_WIDTH(SQ_INDEX_WIDTH),
+      .DEPTH(AGU_DEPTH)
     ) u_pipe (
       .clk_i, .rst_ni, .issue_valid_i(issue_valid_i[lane]),
       .issue_ready_o(issue_ready_o[lane]),
@@ -252,6 +264,22 @@ module rv_lsu_cluster #(
 
   logic [1:0] load_candidate_present, load_candidate_valid;
   logic [1:0] load_candidate_ready;
+  // A store-to-load forward completes one cycle after the forwarding
+  // decision, from this register.  The forwarding decision is the tail of
+  // LQ candidate -> SQ/SB CAM -> youngest match, and presenting it
+  // combinationally put that whole chain in front of the backend's
+  // producer-side wakeup and issue selection.  Memory responses keep their
+  // same-cycle completion.  Forwarded loads are ~1% of CoreMark loads.
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0]  sequence_id;
+    logic                      destination_valid;
+    rv_ooo_pkg::reg_class_e    destination_class;
+    logic [PHYS_TAG_WIDTH-1:0] destination_phys;
+    logic [XLEN-1:0]           data;
+  } forward_completion_t;
+  logic [1:0] forward_valid_q;
+  forward_completion_t [1:0] forward_q;
+  logic [1:0] forward_capture, forward_slot_free;
   logic [1:0][LQ_INDEX_WIDTH-1:0] load_candidate_index;
   logic [1:0][ROB_SEQ_WIDTH-1:0] load_candidate_sequence;
   logic [1:0][PADDR_WIDTH-1:0] load_candidate_address;
@@ -492,13 +520,24 @@ module rv_lsu_cluster #(
       completion_exception_cause_o[lane] = agu_effective_cause[lane];
       completion_exception_tval_o[lane] = agu_effective_tval[lane];
 
-      if (dmem_rsp_valid_i[lane] && response_is_load[lane] &&
+      if (forward_valid_q[lane]) begin
+        completion_valid_o[2+lane] = 1'b1;
+        completion_sequence_o[2+lane] = forward_q[lane].sequence_id;
+        completion_destination_valid_o[2+lane] =
+          forward_q[lane].destination_valid;
+        completion_destination_class_o[2+lane] =
+          forward_q[lane].destination_class;
+        completion_destination_phys_o[2+lane] =
+          forward_q[lane].destination_phys;
+        completion_data_o[2+lane] = forward_q[lane].data;
+      end else if (dmem_rsp_valid_i[lane] && response_is_load[lane] &&
           (dmem_rsp_replay_i[lane] == 0)) begin
         completion_valid_o[2+lane] = 1'b1;
         completion_sequence_o[2+lane] =
           load_meta_sequence_q[response_lq_index[lane]];
         completion_destination_valid_o[2+lane] =
-          load_meta_destination_valid_q[response_lq_index[lane]];
+          load_meta_destination_valid_q[response_lq_index[lane]] &&
+          load_meta_live_q[response_lq_index[lane]];
         completion_destination_class_o[2+lane] =
           load_meta_class_q[response_lq_index[lane]];
         completion_destination_phys_o[2+lane] =
@@ -513,17 +552,6 @@ module rv_lsu_cluster #(
         completion_exception_cause_o[2+lane] = EXC_LOAD_ACCESS_FAULT;
         completion_exception_tval_o[2+lane] =
           XLEN'(load_meta_address_q[response_lq_index[lane]]);
-      end else if (load_candidate_valid[lane] &&
-                   load_forward_valid[lane]) begin
-        completion_valid_o[2+lane] = 1'b1;
-        completion_sequence_o[2+lane] = load_candidate_sequence[lane];
-        completion_destination_valid_o[2+lane] = load_destination_valid[lane];
-        completion_destination_class_o[2+lane] =
-          lq_destination_class_q[load_candidate_index[lane]];
-        completion_destination_phys_o[2+lane] = load_destination_phys[lane];
-        completion_data_o[2+lane] = format_load_data(
-          load_forward_data[lane], load_candidate_address[lane],
-          load_candidate_size[lane], load_candidate_unsigned[lane]);
       end
     end
 
@@ -596,10 +624,14 @@ module rv_lsu_cluster #(
         load_candidate_ready[lane] = dmem_req_ready_i[lane];
       end
 
+      forward_slot_free[lane] = !forward_valid_q[lane] ||
+                                completion_ready_i[2+lane];
+      forward_capture[lane] = !flush_valid_i && load_candidate_valid[lane] &&
+                              load_forward_valid[lane] &&
+                              forward_slot_free[lane];
       if (!flush_valid_i && load_candidate_valid[lane] &&
-          load_forward_valid[lane] &&
-          !(dmem_rsp_valid_i[lane] && response_is_load[lane]))
-        load_candidate_ready[lane] = completion_ready_i[2+lane];
+          load_forward_valid[lane])
+        load_candidate_ready[lane] = forward_slot_free[lane];
     end
   end
 
@@ -624,7 +656,7 @@ module rv_lsu_cluster #(
     for (int unsigned lane = 0; lane < 2; lane++) begin
       if (dmem_rsp_valid_i[lane] && response_is_load[lane]) begin
         dmem_rsp_ready_o[lane] = (dmem_rsp_replay_i[lane] != 0) ?
-          1'b1 : completion_ready_i[2+lane];
+          1'b1 : (completion_ready_i[2+lane] && !forward_valid_q[lane]);
         if (dmem_rsp_ready_o[lane]) begin
           lsq_load_response_valid[lane] = 1'b1;
           lsq_load_response_index[lane] = response_lq_index[lane];
@@ -661,8 +693,20 @@ module rv_lsu_cluster #(
         load_meta_address_q[entry] <= '0;
         load_meta_size_q[entry] <= '0;
         load_meta_unsigned_q[entry] <= 1'b0;
+        load_meta_live_q[entry] <= 1'b0;
       end
+      forward_valid_q <= '0;
+      forward_q <= '0;
     end else begin
+      // Liveness is updated independently of the metadata capture below: a
+      // request accepted in a flush cycle is never speculative (the request
+      // mux blocks speculative loads while flush_valid is high), and a
+      // capture always follows the kill in program order.
+      for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++)
+        if (flush_valid_i && load_meta_live_q[entry] &&
+            (flush_all_i ||
+             sequence_after(load_meta_sequence_q[entry], flush_sequence_i)))
+          load_meta_live_q[entry] <= 1'b0;
       // A direct device store is issued only when its store owns the ROB
       // head.  A younger branch recovery must therefore leave the accepted
       // transaction alive; dropping it would allow the same MMIO write to be
@@ -689,6 +733,25 @@ module rv_lsu_cluster #(
       end
 
       for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (flush_valid_i) begin
+          // No capture in a flush cycle; a presented survivor may still drain.
+          if (forward_valid_q[lane] &&
+              (flush_all_i || completion_ready_i[2+lane] ||
+               sequence_after(forward_q[lane].sequence_id, flush_sequence_i)))
+            forward_valid_q[lane] <= 1'b0;
+        end else if (forward_capture[lane]) begin
+          forward_valid_q[lane] <= 1'b1;
+          forward_q[lane].sequence_id <= load_candidate_sequence[lane];
+          forward_q[lane].destination_valid <= load_destination_valid[lane];
+          forward_q[lane].destination_class <=
+            lq_destination_class_q[load_candidate_index[lane]];
+          forward_q[lane].destination_phys <= load_destination_phys[lane];
+          forward_q[lane].data <= format_load_data(
+            load_forward_data[lane], load_candidate_address[lane],
+            load_candidate_size[lane], load_candidate_unsigned[lane]);
+        end else if (forward_valid_q[lane] && completion_ready_i[2+lane]) begin
+          forward_valid_q[lane] <= 1'b0;
+        end
         if (dispatch_lq_valid_o[lane])
           lq_destination_class_q[dispatch_lq_index_o[lane]] <=
             dispatch_destination_class_i[lane];
@@ -707,6 +770,7 @@ module rv_lsu_cluster #(
             load_candidate_size[lane];
           load_meta_unsigned_q[load_candidate_index[lane]] <=
             load_candidate_unsigned[lane];
+          load_meta_live_q[load_candidate_index[lane]] <= 1'b1;
         end
       end
     end

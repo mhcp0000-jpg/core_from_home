@@ -568,11 +568,14 @@ module rv_backend_int_tb;
     begin
       int unsigned timeout;
       timeout = 0;
-      while (!u_dut.rob_empty && (timeout < 120)) begin
+      // Accepted bundles pass the decode->dispatch register (dec_valid)
+      // before they reach the ROB, so wait for both to drain.
+      while ((!u_dut.rob_empty || (|u_dut.dec_valid)) && (timeout < 120)) begin
         @(negedge clk);
         timeout++;
       end
-      if (!u_dut.rob_empty || (u_dut.csr_mstatus != 32'b0))
+      if (!u_dut.rob_empty || (|u_dut.dec_valid) ||
+          (u_dut.csr_mstatus != 32'b0))
         $fatal(1, "Failed to restore normal M-mode data privilege");
     end
 

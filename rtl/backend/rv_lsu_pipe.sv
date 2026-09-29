@@ -5,6 +5,12 @@ module rv_lsu_pipe #(
   parameter int unsigned ROB_SEQ_WIDTH  = rv_ooo_pkg::ROB_SEQ_WIDTH,
   parameter int unsigned LQ_INDEX_WIDTH = 5,
   parameter int unsigned SQ_INDEX_WIDTH = 4,
+  // DEPTH=1: single update register; issue_ready follows update_ready
+  //          combinationally (original behaviour).
+  // DEPTH=2: two-entry in-order buffer; issue_ready depends only on
+  //          registered occupancy (and flush), so the downstream PMP /
+  //          completion-port decision no longer reaches issue selection.
+  parameter int unsigned DEPTH          = 1,
   localparam int unsigned MEM_BYTES     = MEM_DATA_WIDTH / 8,
   localparam int unsigned BYTE_OFFSET_WIDTH = $clog2(MEM_BYTES)
 ) (
@@ -125,77 +131,191 @@ module rv_lsu_pipe #(
     generated_store_data = store_data_extended << (byte_offset_integer * 8);
   end
 
-  assign issue_ready_o = (!update_valid_q || update_ready_i) && !flush_valid_i;
-  assign update_valid_o = update_valid_q;
-  assign update_rob_sequence_o = update_rob_sequence_q;
-  assign update_is_load_o = update_is_load_q;
-  assign update_is_store_o = update_is_store_q;
-  assign update_lq_valid_o = update_lq_valid_q;
-  assign update_lq_index_o = update_lq_index_q;
-  assign update_sq_valid_o = update_sq_valid_q;
-  assign update_sq_index_o = update_sq_index_q;
-  assign update_address_o = update_address_q;
-  assign update_memory_size_o = update_memory_size_q;
-  assign update_byte_mask_o = update_byte_mask_q;
-  assign update_store_data_o = update_store_data_q;
-  assign update_address_valid_o = update_address_valid_q;
-  assign update_store_data_valid_o = update_store_data_valid_q;
-  assign update_exception_valid_o = update_exception_valid_q;
-  assign update_exception_cause_o = update_exception_cause_q;
-  assign update_exception_tval_o = update_exception_tval_q;
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0]  rob_sequence;
+    logic                      is_load;
+    logic                      is_store;
+    logic                      lq_valid;
+    logic [LQ_INDEX_WIDTH-1:0] lq_index;
+    logic                      sq_valid;
+    logic [SQ_INDEX_WIDTH-1:0] sq_index;
+    logic [PADDR_WIDTH-1:0]    address;
+    logic [2:0]                memory_size;
+    logic [MEM_BYTES-1:0]      byte_mask;
+    logic [MEM_DATA_WIDTH-1:0] store_data;
+    logic                      address_valid;
+    logic                      store_data_valid;
+    logic                      exception_valid;
+    exception_code_e           exception_cause;
+    logic [XLEN-1:0]           exception_tval;
+  } update_payload_t;
 
-  always_ff @(posedge clk_i) begin
-    if (!rst_ni) begin
-      update_valid_q <= 1'b0;
-      update_rob_sequence_q <= '0;
-      update_is_load_q <= 1'b0;
-      update_is_store_q <= 1'b0;
-      update_lq_valid_q <= 1'b0;
-      update_lq_index_q <= '0;
-      update_sq_valid_q <= 1'b0;
-      update_sq_index_q <= '0;
-      update_address_q <= '0;
-      update_memory_size_q <= '0;
-      update_byte_mask_q <= '0;
-      update_store_data_q <= '0;
-      update_address_valid_q <= 1'b0;
-      update_store_data_valid_q <= 1'b0;
-      update_exception_valid_q <= 1'b0;
-      update_exception_cause_q <= EXC_LOAD_ADDR_MISALIGNED;
-      update_exception_tval_q <= '0;
-    end else begin
-      if (update_valid_q && update_ready_i)
+  if (DEPTH == 1) begin : g_depth1
+    assign issue_ready_o = (!update_valid_q || update_ready_i) && !flush_valid_i;
+    assign update_valid_o = update_valid_q;
+    assign update_rob_sequence_o = update_rob_sequence_q;
+    assign update_is_load_o = update_is_load_q;
+    assign update_is_store_o = update_is_store_q;
+    assign update_lq_valid_o = update_lq_valid_q;
+    assign update_lq_index_o = update_lq_index_q;
+    assign update_sq_valid_o = update_sq_valid_q;
+    assign update_sq_index_o = update_sq_index_q;
+    assign update_address_o = update_address_q;
+    assign update_memory_size_o = update_memory_size_q;
+    assign update_byte_mask_o = update_byte_mask_q;
+    assign update_store_data_o = update_store_data_q;
+    assign update_address_valid_o = update_address_valid_q;
+    assign update_store_data_valid_o = update_store_data_valid_q;
+    assign update_exception_valid_o = update_exception_valid_q;
+    assign update_exception_cause_o = update_exception_cause_q;
+    assign update_exception_tval_o = update_exception_tval_q;
+
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
         update_valid_q <= 1'b0;
+        update_rob_sequence_q <= '0;
+        update_is_load_q <= 1'b0;
+        update_is_store_q <= 1'b0;
+        update_lq_valid_q <= 1'b0;
+        update_lq_index_q <= '0;
+        update_sq_valid_q <= 1'b0;
+        update_sq_index_q <= '0;
+        update_address_q <= '0;
+        update_memory_size_q <= '0;
+        update_byte_mask_q <= '0;
+        update_store_data_q <= '0;
+        update_address_valid_q <= 1'b0;
+        update_store_data_valid_q <= 1'b0;
+        update_exception_valid_q <= 1'b0;
+        update_exception_cause_q <= EXC_LOAD_ADDR_MISALIGNED;
+        update_exception_tval_q <= '0;
+      end else begin
+        if (update_valid_q && update_ready_i)
+          update_valid_q <= 1'b0;
 
-      if (flush_valid_i &&
-          (flush_all_i ||
-           (update_valid_q &&
-            sequence_is_younger(update_rob_sequence_q, flush_sequence_i)))) begin
-        update_valid_q <= 1'b0;
-      end
+        if (flush_valid_i &&
+            (flush_all_i ||
+             (update_valid_q &&
+              sequence_is_younger(update_rob_sequence_q, flush_sequence_i)))) begin
+          update_valid_q <= 1'b0;
+        end
 
-      if (issue_valid_i && issue_ready_o) begin
-        update_valid_q <= 1'b1;
-        update_rob_sequence_q <= issue_rob_sequence_i;
-        update_is_load_q <= issue_is_load_i;
-        update_is_store_q <= issue_is_store_i;
-        update_lq_valid_q <= issue_lq_valid_i;
-        update_lq_index_q <= issue_lq_index_i;
-        update_sq_valid_q <= issue_sq_valid_i;
-        update_sq_index_q <= issue_sq_index_i;
-        update_address_q <= physical_address;
-        update_memory_size_q <= memory_size_i;
-        update_byte_mask_q <= generated_mask;
-        update_store_data_q <= generated_store_data;
-        update_address_valid_q <= issue_address_valid_i;
-        update_store_data_valid_q <= issue_is_store_i &&
-                                     issue_store_data_valid_i;
-        update_exception_valid_q <= misaligned;
-        update_exception_cause_q <= issue_is_store_i ?
-          EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
-        update_exception_tval_q <= effective_address;
+        if (issue_valid_i && issue_ready_o) begin
+          update_valid_q <= 1'b1;
+          update_rob_sequence_q <= issue_rob_sequence_i;
+          update_is_load_q <= issue_is_load_i;
+          update_is_store_q <= issue_is_store_i;
+          update_lq_valid_q <= issue_lq_valid_i;
+          update_lq_index_q <= issue_lq_index_i;
+          update_sq_valid_q <= issue_sq_valid_i;
+          update_sq_index_q <= issue_sq_index_i;
+          update_address_q <= physical_address;
+          update_memory_size_q <= memory_size_i;
+          update_byte_mask_q <= generated_mask;
+          update_store_data_q <= generated_store_data;
+          update_address_valid_q <= issue_address_valid_i;
+          update_store_data_valid_q <= issue_is_store_i &&
+                                       issue_store_data_valid_i;
+          update_exception_valid_q <= misaligned;
+          update_exception_cause_q <= issue_is_store_i ?
+            EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
+          update_exception_tval_q <= effective_address;
+        end
       end
     end
+  end else begin : g_depth2
+    // Entry 0 is the head presented on update_*.  Entries stay in issue
+    // order; a flush removes the killed ones and compacts the survivor.
+    logic valid1_q;
+    update_payload_t head_q, tail_q, issue_payload;
+    logic pop, push, kill0, kill1;
+    logic keep0, keep1;
+
+    always_comb begin
+      issue_payload.rob_sequence     = issue_rob_sequence_i;
+      issue_payload.is_load          = issue_is_load_i;
+      issue_payload.is_store         = issue_is_store_i;
+      issue_payload.lq_valid         = issue_lq_valid_i;
+      issue_payload.lq_index         = issue_lq_index_i;
+      issue_payload.sq_valid         = issue_sq_valid_i;
+      issue_payload.sq_index         = issue_sq_index_i;
+      issue_payload.address          = physical_address;
+      issue_payload.memory_size      = memory_size_i;
+      issue_payload.byte_mask        = generated_mask;
+      issue_payload.store_data       = generated_store_data;
+      issue_payload.address_valid    = issue_address_valid_i;
+      issue_payload.store_data_valid = issue_is_store_i &&
+                                       issue_store_data_valid_i;
+      issue_payload.exception_valid  = misaligned;
+      issue_payload.exception_cause  = issue_is_store_i ?
+        EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
+      issue_payload.exception_tval   = effective_address;
+    end
+
+    assign issue_ready_o = !(update_valid_q && valid1_q) && !flush_valid_i;
+    assign pop  = update_valid_q && update_ready_i && !flush_valid_i;
+    assign push = issue_valid_i && issue_ready_o;
+    assign kill0 = flush_valid_i && update_valid_q &&
+      (flush_all_i || sequence_is_younger(head_q.rob_sequence, flush_sequence_i));
+    assign kill1 = flush_valid_i && valid1_q &&
+      (flush_all_i || sequence_is_younger(tail_q.rob_sequence, flush_sequence_i));
+    assign keep0 = update_valid_q && !kill0;
+    assign keep1 = valid1_q && !kill1;
+
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
+        update_valid_q <= 1'b0;
+        valid1_q <= 1'b0;
+        head_q <= '0;
+        tail_q <= '0;
+      end else if (flush_valid_i) begin
+        // No push or pop in a flush cycle (issue_ready_o is low).
+        update_valid_q <= keep0 || keep1;
+        valid1_q <= keep0 && keep1;
+        if (!keep0 && keep1) head_q <= tail_q;
+      end else begin
+        case ({push, pop})
+          2'b10: begin
+            if (!update_valid_q) begin
+              update_valid_q <= 1'b1;
+              head_q <= issue_payload;
+            end else begin
+              valid1_q <= 1'b1;
+              tail_q <= issue_payload;
+            end
+          end
+          2'b01: begin
+            update_valid_q <= valid1_q;
+            valid1_q <= 1'b0;
+            head_q <= tail_q;
+          end
+          2'b11: begin
+            // push requires !full, so only the head was occupied: it leaves
+            // and the new entry becomes the head.
+            head_q <= issue_payload;
+          end
+          default: begin end
+        endcase
+      end
+    end
+
+    assign update_valid_o            = update_valid_q;
+    assign update_rob_sequence_o     = head_q.rob_sequence;
+    assign update_is_load_o          = head_q.is_load;
+    assign update_is_store_o         = head_q.is_store;
+    assign update_lq_valid_o         = head_q.lq_valid;
+    assign update_lq_index_o         = head_q.lq_index;
+    assign update_sq_valid_o         = head_q.sq_valid;
+    assign update_sq_index_o         = head_q.sq_index;
+    assign update_address_o          = head_q.address;
+    assign update_memory_size_o      = head_q.memory_size;
+    assign update_byte_mask_o        = head_q.byte_mask;
+    assign update_store_data_o       = head_q.store_data;
+    assign update_address_valid_o    = head_q.address_valid;
+    assign update_store_data_valid_o = head_q.store_data_valid;
+    assign update_exception_valid_o  = head_q.exception_valid;
+    assign update_exception_cause_o  = head_q.exception_cause;
+    assign update_exception_tval_o   = head_q.exception_tval;
   end
 
 `ifndef SYNTHESIS
@@ -229,6 +349,8 @@ module rv_lsu_pipe #(
       $fatal(1, "LSU pipe memory beat must be a power-of-two byte width covering XLEN");
     if (ROB_SEQ_WIDTH < 2)
       $fatal(1, "LSU pipe needs a wrap-aware ROB sequence");
+    if ((DEPTH != 1) && (DEPTH != 2))
+      $fatal(1, "LSU pipe DEPTH must be 1 or 2");
   end
 
 endmodule

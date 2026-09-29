@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$IverilogPath = ""
 )
 
@@ -112,6 +112,22 @@ $tests = @(
     )
   },
   @{
+    Top = "rv_lsu_pipe_depth2_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_lsu_pipe.sv",
+      "tb/unit/backend/rv_lsu_pipe_depth2_tb.sv"
+    )
+  },
+  @{
+    Top = "rv_issue_arbiter_age_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_issue_arbiter.sv",
+      "tb/unit/backend/rv_issue_arbiter_age_tb.sv"
+    )
+  },
+  @{
     Top = "rv_store_buffer_tb"
     Files = @(
       "rtl/rv_ooo_pkg.sv",
@@ -157,6 +173,14 @@ $tests = @(
       "rtl/rv_ooo_pkg.sv",
       "rtl/backend/rv_exec_result_buffer.sv",
       "tb/unit/backend/rv_exec_result_buffer_tb.sv"
+    )
+  },
+  @{
+    Top = "rv_exec_result_buffer_depth2_tb"
+    Files = @(
+      "rtl/rv_ooo_pkg.sv",
+      "rtl/backend/rv_exec_result_buffer.sv",
+      "tb/unit/backend/rv_exec_result_buffer_depth2_tb.sv"
     )
   },
   @{

@@ -8,7 +8,13 @@ module rv_phys_regfile #(
   parameter int unsigned ALLOC_PORTS = 2,
   parameter int unsigned INITIAL_MAPPED_REGS = 32,
   parameter bit ZERO_REGISTER = 1'b0,
-  parameter logic [TAG_WIDTH-1:0] ZERO_TAG = '0
+  parameter logic [TAG_WIDTH-1:0] ZERO_TAG = '0,
+  // 1: a same-cycle write is visible to reads/queries (original behavior).
+  // 0: reads/queries see only the registered array.  Valid when every
+  //    consumer of a not-yet-written value is served by an external bypass
+  //    and woken by the producer itself, which removes the writeback
+  //    arbiter -> PRF -> operand combinational path.
+  parameter bit WRITE_BYPASS = 1'b1
 ) (
   input  logic                                  clk_i,
   input  logic                                  rst_ni,
@@ -57,7 +63,7 @@ module rv_phys_regfile #(
       // in the baseline, but deterministic priority avoids X propagation.
       for (int unsigned write_port = 0;
            write_port < WRITE_PORTS; write_port++) begin
-        if (write_valid_i[write_port] &&
+        if (WRITE_BYPASS && write_valid_i[write_port] &&
             (write_addr_i[write_port] == read_addr_i[read_port])) begin
           read_data_o[read_port]  = write_data_i[write_port];
           read_ready_o[read_port] = 1'b1;
@@ -80,7 +86,7 @@ module rv_phys_regfile #(
       query_ready_o[query_port] = ready_q[query_addr_i[query_port]];
       for (int unsigned write_port = 0;
            write_port < WRITE_PORTS; write_port++) begin
-        if (write_valid_i[write_port] &&
+        if (WRITE_BYPASS && write_valid_i[write_port] &&
             (write_addr_i[write_port] == query_addr_i[query_port]))
           query_ready_o[query_port] = 1'b1;
       end
@@ -93,7 +99,8 @@ module rv_phys_regfile #(
     probe_ready_o = ready_q[probe_addr_i];
     for (int unsigned write_port = 0;
          write_port < WRITE_PORTS; write_port++) begin
-      if (write_valid_i[write_port] && (write_addr_i[write_port] == probe_addr_i))
+      if (WRITE_BYPASS && write_valid_i[write_port] &&
+          (write_addr_i[write_port] == probe_addr_i))
         probe_ready_o = 1'b1;
     end
     if (tag_is_allocated_this_cycle(probe_addr_i))

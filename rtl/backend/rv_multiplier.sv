@@ -38,9 +38,24 @@ module rv_multiplier #(
     logic [PHYS_TAG_WIDTH-1:0] destination_phys;
   } multiply_result_t;
 
+  // PROTOTYPE: stage0 now captures the request operands instead of the
+  // finished product.  The 2*XLEN multiply moves into stage0 -> stage1, which
+  // previously was a pure register copy.  Total latency stays 2 cycles and
+  // throughput stays 1/cycle, but issue -> multiplier stage0 is now just
+  // operand transport instead of a full 32x32 multiply.
+  typedef struct packed {
+    logic [XLEN-1:0]              operand_a;
+    logic [XLEN-1:0]              operand_b;
+    rv_ooo_pkg::multiply_op_e     operation;
+    logic                         word_operation;
+    logic [ROB_SEQ_WIDTH-1:0]     sequence_id;
+    logic                         destination_valid;
+    logic [PHYS_TAG_WIDTH-1:0]    destination_phys;
+  } multiply_request_t;
+
   logic stage0_valid_q;
   logic stage1_valid_q;
-  multiply_result_t stage0_q;
+  multiply_request_t stage0_q;
   multiply_result_t stage1_q;
   logic stage1_advance;
 
@@ -64,15 +79,15 @@ module rv_multiplier #(
   endfunction
 
   always_comb begin
-    signed_a_ext = $signed({{XLEN{operand_a_i[XLEN-1]}}, operand_a_i});
-    signed_b_ext = $signed({{XLEN{operand_b_i[XLEN-1]}}, operand_b_i});
-    unsigned_a_as_signed = $signed({{XLEN{1'b0}}, operand_a_i});
-    unsigned_b_as_signed = $signed({{XLEN{1'b0}}, operand_b_i});
+    signed_a_ext = $signed({{XLEN{stage0_q.operand_a[XLEN-1]}}, stage0_q.operand_a});
+    signed_b_ext = $signed({{XLEN{stage0_q.operand_b[XLEN-1]}}, stage0_q.operand_b});
+    unsigned_a_as_signed = $signed({{XLEN{1'b0}}, stage0_q.operand_a});
+    unsigned_b_as_signed = $signed({{XLEN{1'b0}}, stage0_q.operand_b});
     product_ss = $unsigned(signed_a_ext * signed_b_ext);
     product_su = $unsigned(signed_a_ext * unsigned_b_as_signed);
     product_uu = $unsigned(unsigned_a_as_signed * unsigned_b_as_signed);
 
-    case (operation_i)
+    case (stage0_q.operation)
       MUL_LOW:     selected_result = product_uu[XLEN-1:0];
       MUL_HIGH_SS: selected_result = product_ss[PRODUCT_WIDTH-1:XLEN];
       MUL_HIGH_SU: selected_result = product_su[PRODUCT_WIDTH-1:XLEN];
@@ -80,7 +95,7 @@ module rv_multiplier #(
       default:     selected_result = '0;
     endcase
     word_result = product_uu[31:0];
-    if ((XLEN == 64) && word_operation_i)
+    if ((XLEN == 64) && stage0_q.word_operation)
       selected_result = {{(XLEN-32){word_result[31]}}, word_result};
   end
 
@@ -111,14 +126,21 @@ module rv_multiplier #(
     end else begin
       if (stage1_advance) begin
         stage1_valid_q <= stage0_valid_q;
-        if (stage0_valid_q)
-          stage1_q <= stage0_q;
+        if (stage0_valid_q) begin
+          stage1_q.result            <= selected_result;
+          stage1_q.sequence_id       <= stage0_q.sequence_id;
+          stage1_q.destination_valid <= stage0_q.destination_valid;
+          stage1_q.destination_phys  <= stage0_q.destination_phys;
+        end
       end
 
       if (request_ready_o) begin
         stage0_valid_q <= request_valid_i;
         if (request_valid_i) begin
-          stage0_q.result            <= selected_result;
+          stage0_q.operand_a         <= operand_a_i;
+          stage0_q.operand_b         <= operand_b_i;
+          stage0_q.operation         <= operation_i;
+          stage0_q.word_operation    <= word_operation_i;
           stage0_q.sequence_id       <= sequence_i;
           stage0_q.destination_valid <= destination_valid_i;
           stage0_q.destination_phys  <= destination_phys_i;

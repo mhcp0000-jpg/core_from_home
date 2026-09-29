@@ -1,4 +1,4 @@
-param(
+﻿param(
   [ValidateSet("Check", "Blocks", "All")]
   [string]$Mode = "All",
   [string]$ToolRoot = "",
@@ -111,15 +111,34 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     @{ Name = "rv_rename2"; Top = "rv_rename2"; Args = ""; Flow = "full" },
     @{ Name = "rv_pmp"; Top = "rv_pmp"; Args = "-G CHECK_PORTS=8"; Flow = "full" },
     @{ Name = "rv_issue_arbiter"; Top = "rv_issue_arbiter";
-       Args = "-G CANDIDATE_COUNT=2"; Flow = "full" }
+       Args = "-G CANDIDATE_COUNT=2"; Flow = "full" },
+    # These leaves were missing from the screening list, which is how
+    # rv_store_buffer (6,014 ps) and rv_lsu_cluster (6,198 ps) stayed
+    # invisible while shorter blocks were being optimized.
+    @{ Name = "rv_store_buffer"; Top = "rv_store_buffer"; Args = ""; Flow = "full" },
+    @{ Name = "rv_lsu_cluster"; Top = "rv_lsu_cluster"; Args = ""; Flow = "macro" },
+    @{ Name = "rv_multiplier"; Top = "rv_multiplier"; Args = ""; Flow = "full" },
+    @{ Name = "rv_divider"; Top = "rv_divider"; Args = ""; Flow = "full" },
+    @{ Name = "rv_fetch_queue"; Top = "rv_fetch_queue"; Args = ""; Flow = "full" },
+    @{ Name = "rv_csr_file"; Top = "rv_csr_file"; Args = ""; Flow = "full" }
   )
   if ($IncludeWholeTop) {
     # Whole-backend/core runs retain inferred memories as macro boundaries.
     # They can expand to hundreds of thousands of cells and take far longer
     # than leaf screening, so require an explicit opt-in.
+    #
+    # They are also the ONLY runs that see the cross-module critical path
+    # (LSQ -> store_buffer -> writeback_arbiter -> IQ -> multiplier has no
+    # register between the two ends), which is what the server STA reports.
+    # yosys's default ABC script runs scorr/dc2/dretime/retime; on a ~610k
+    # cell network those do not finish in any practical time -- that is the
+    # "hang" seen earlier, not a tool failure.  AbcScript = "trim" swaps in a
+    # delay-oriented script that completes in roughly half an hour.
     $blocks += @(
-      @{ Name = "rv_backend"; Top = "rv_backend"; Args = ""; Flow = "macro" },
-      @{ Name = "rv_ooo_core"; Top = "rv_ooo_core"; Args = ""; Flow = "macro" }
+      @{ Name = "rv_backend"; Top = "rv_backend"; Args = ""; Flow = "macro";
+         AbcScript = "trim" },
+      @{ Name = "rv_ooo_core"; Top = "rv_ooo_core"; Args = ""; Flow = "macro";
+         AbcScript = "trim" }
     )
   }
   if ($BlockFilter) {
@@ -143,10 +162,30 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     } else {
       "synth -top $($block.Top) -flatten -noshare -noabc; "
     }
+    $abcOption = ""
+    if ($block.AbcScript -eq "trim") {
+      $blockDir = Join-Path $BuildRoot $block.Name
+      New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
+      $abcScriptFile = Join-Path $blockDir "abc_trim.scr"
+      # The delay target is written literally: ABC's own `source` does not
+      # expand yosys placeholders such as {D}.
+      Set-Content -LiteralPath $abcScriptFile -Encoding ASCII -Value @(
+        "strash",
+        "&get -n",
+        "&dch -f",
+        "&nf -D $TargetDelayPs",
+        "&put",
+        "buffer",
+        "upsize -D $TargetDelayPs",
+        "dnsize -D $TargetDelayPs",
+        "stime -p")
+      $abcOption = "-script " + (To-YosysPath $abcScriptFile) + " "
+    }
     $command = $front + $lowering +
       "dfflibmap -liberty $libertyPath; " +
       "write_rtlil $preAbcRtlil; " +
-      "abc -exe $abcPath -liberty $libertyPath -constr $constraint " +
+      "abc -exe $abcPath " + $abcOption +
+      "-liberty $libertyPath -constr $constraint " +
       "-D $TargetDelayPs; clean; read_liberty -lib $libertyPath; " +
       "check; stat -liberty $libertyPath; " +
       "write_verilog -noattr -noexpr $mappedNetlist"

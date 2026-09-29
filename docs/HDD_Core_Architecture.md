@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized beginner-readable baseline v1.18.3 (2026-09-22) |
+| 상태 | RTL-synchronized beginner-readable baseline v1.18.9 (2026-09-24) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -1475,7 +1475,7 @@ SoC의 기본 firmware contract를 바꾸지 않는다.
 | `rv_phys_regfile` | Implemented standalone | core clock/reset | data/tag width, backend instance 8R+6Q+2W+2A, zero-tag option |
 | `rv_issue_queue`, `rv_issue_arbiter` | Implemented standalone | core clock/reset / 조합 | entries, wakeup/select/port/global issue width |
 | `rv_int_alu`, `rv_branch_unit`, `rv_multiplier` | Implemented standalone | 조합 / core clock-reset | XLEN, ROB sequence/tag metadata |
-| `rv_lsu_pipe` | Implemented standalone | core clock/reset | XLEN/PADDR/data/queue-index/ROB sequence 폭 |
+| `rv_lsu_pipe` | Implemented standalone | core clock/reset | XLEN/PADDR/data/queue-index/ROB sequence 폭, `DEPTH`(1/2) |
 | `rv_store_buffer` | Implemented standalone | core clock/reset | PADDR/data/entry/ROB sequence 폭 |
 | `rv_lsq`, `rv_lsu_cluster` | Implemented and backend-integrated | core clock/reset | LQ/SQ/PADDR/data/tag/ROB sequence 폭 |
 | `rv_fpu` | Implemented/verified: unified RV32F bit-level execute + 3-stage elastic transport, 6,470-vector fast 및 227,200-comparison extended exact-oracle PASS; 외부 Spike/SoftFloat random/exhaustive sign-off pending | core clock/reset | XLEN, latency, ROB sequence/tag 폭 |
@@ -1553,7 +1553,7 @@ Timing/ordering contract:
 - DTIM synchronous read, write ack, local error response는 accept 다음 cycle 발생한다. requester가 ready가 아니면 per-master one-entry response skid에 보관한다.
 - response/request 동시 handoff에서는 combinational response가 반드시 기존 transaction의 ID/data/source를 유지한다. clock edge에서 기존 busy를 retire한 뒤 새 request metadata를 설치하므로 edge 이후 outstanding 수는 여전히 정확히 1이다. `busy && request_accept -> response_fire`와 handoff 다음 cycle `busy` 유지 assertion으로 이를 고정한다.
 - misaligned/8-byte 초과 DTIM access는 SLVERR이며 memory side effect가 없다. uncommitted write도 SLVERR로 차단한다.
-- CLINT는 한 request씩 round-robin하고 non-local LSU request는 outbound port 하나에서 older-first로 serialize한다.
+- CLINT는 한 request씩 round-robin하고 non-local LSU request는 outbound port 하나에서 older-first로 serialize한다. 단 CLINT/outbound에 grant했지만 target이 `req_ready=0`이면 그 requester를 accept될 때까지 계속 선택한다(`clint_lock_q`/`outbound_lock_q`, v1.18.8). 그 사이 older request가 나타나도 stall 중인 request를 바꾸지 않아 `rv_local_mem_if`의 "stall 중 request 유지" 계약을 target 쪽에서도 지킨다.
 
 이 최적화는 transport turnaround만 줄인다. load issue의 `flush_valid` 차단, LSQ generation/tombstone, store의 `req_committed` 조건과 ROB-head commit 경계는 변경하지 않는다. 따라서 trap/branch flush cycle에 새 speculative load side effect가 생기지 않고, committed store는 recovery와 독립적으로 drain될 수 있다.
 
@@ -2033,6 +2033,8 @@ MEM0/MEM1에 같은 module을 두 개 둔다. 각 instance는 `issue_valid_i/iss
 
 effective address는 `base+immediate`이며 natural alignment를 요구한다. misaligned request는 D-Fabric으로 보내지 않고 load/store misaligned exception을 기록한다. store address와 data가 함께 준비되면 두 valid를 한 update에 세운다. 주소-only phase는 address valid만, 후속 data phase는 data valid만 세운다. 후속 phase에서도 주소를 재계산해 PMP/exception 판정을 반복하지만 LSQ는 valid가 0인 address field로 기존 SQ address/mask/device 상태를 덮어쓰지 않는다. store completion은 data-valid phase에서만 허용한다.
 
+`DEPTH` parameter(기본 1)는 update 저장 깊이다. `DEPTH=1`은 단일 register이고 `issue_ready_o = (!update_valid || update_ready_i) && !flush_valid_i`다. `DEPTH=2`는 issue 순서를 유지하는 2-entry buffer이고 `issue_ready_o = !(두 entry 점유) && !flush_valid_i`로 등록된 점유만 본다. flush는 killed entry를 지우고 남은 entry를 head로 당기며 flush cycle에는 push/pop이 없다. `rv_lsu_cluster`의 `AGU_DEPTH`(기본 1)로 전달되고 `rv_backend`는 2를 쓴다(v1.18.8).
+
 #### `rv_lsq`
 
 | Port group | exact signal | 계약 |
@@ -2252,7 +2254,7 @@ resource/map parameter를 전달받는다. 외부 port는 다음과 같다.
 
 | Group | exact signal | 계약 |
 |---|---|---|
-| fetch input | `fetch_valid_i[1:0]/fetch_ready_o[1:0]`, PC, raw instruction, `inst_len_e`, `prediction_meta_t`, fetch fault | prefix handshake; successful dispatch가 ready를 결정 |
+| fetch input | `fetch_valid_i[1:0]/fetch_ready_o[1:0]`, PC, raw instruction, `inst_len_e`, `prediction_meta_t`, fetch fault | prefix handshake; decode 결과는 1-bundle decode→dispatch register(`uq_q`)에 받는다. ready는 그 register가 비었거나 이번 cycle dispatch되고, older serializing op가 in-flight가 아닐 때 선다(v1.18.8) |
 | redirect | `redirect_valid_o`, `redirect_pc_o` | branch recovery 또는 architectural trap/return/fence/PMP refetch 중 하나 |
 | D-memory | `rv_ooo_core`와 동일한 flattened dual lane request/response | `rv_lsu_cluster`로 직접 전달 |
 | async control | software/timer/external IRQ, debug halt, `mtime[63:0]` | interrupt는 retire boundary, halt는 dispatch quiesce |
@@ -2270,8 +2272,8 @@ writeback arbiter는 이 11개 중 최대 4 completion을 선택하되 INT/FP wr
 
 #### `rv_lsu_cluster`
 
-parameter는 XLEN/PADDR/data/ROB-sequence/tag 폭, LQ/SQ/SB/PMP entry 수와
-ITIM/DTIM map이다. 다음 group을 모두 연결해야 standalone LSU가 동작한다.
+parameter는 XLEN/PADDR/data/ROB-sequence/tag 폭, LQ/SQ/SB/PMP entry 수,
+`AGU_DEPTH`(`rv_lsu_pipe DEPTH`, 기본 1)와 ITIM/DTIM map이다. 다음 group을 모두 연결해야 standalone LSU가 동작한다.
 
 | Group | exact signal과 폭 | 계약 |
 |---|---|---|
@@ -2637,7 +2639,7 @@ target/window/4-KiB 검사는 첫 local beat 전에 끝나므로 invalid burst�
 
 **Step-by-step.**
 
-1. decode 결과가 모든 resource ready일 때 원자적으로 rename/allocate된다.
+1. decode 결과를 decode→dispatch register에 받고, 다음 cycle부터 모든 resource ready일 때 원자적으로 rename/allocate한다. flush는 이 register를 비우고, older serializing op가 끝날 때까지 새 bundle을 받지 않는다.
 2. IQ가 oldest-ready 두 uop을 실행 port에 보내고 결과를 WB arbitration한다.
 3. ROB head만 commit하며 exception/interrupt/branch가 recovery를 요청한다.
 
@@ -2789,7 +2791,7 @@ architectural instruction이 physical identity와 ROB sequence를 얻고 실행�
 2. operand class, immediate, FU와 memory/CSR 속성을 만든다.
 3. unsupported/reserved encoding을 drop하지 않고 exception uop로 표시한다.
 
-**타이밍.** 순수 조합 decode이며 등록은 rename/ROB accept edge에서 일어난다. 처리율은 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 downstream resource stall이면 입력 bundle이 상위에서 유지된다.
+**타이밍.** 순수 조합 decode이며 결과는 `rv_backend`의 decode→dispatch register(`uq_q`)에 등록된다(v1.18.8; 이전에는 rename/ROB accept edge). 처리율은 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 downstream resource stall이면 입력 bundle이 상위에서 유지된다.
 
 **코너케이스.** lane0 illegal이어도 lane1 순서는 유지되고 trap 때 younger가 제거된다.
 
@@ -2809,7 +2811,7 @@ architectural instruction이 physical identity와 ROB sequence를 얻고 실행�
 2. lane 순서로 새 destination tag를 예약하고 RAW/WAW bypass를 적용한다.
 3. dispatch edge에서 RAT/free-list/checkpoint를 원자적으로 갱신한다.
 
-**타이밍.** rename 결과는 조합으로 계산되고 dispatch fire edge에서 RAT/free-list가 갱신된다. 처리율은 자원이 충분하면 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 한 lane이라도 필요한 tag/checkpoint가 부족하면 bundle 전체를 수락하지 않는다.
+**타이밍.** rename 결과는 등록된 decode bundle에서 조합으로 계산되고 dispatch fire edge에서 RAT/free-list가 갱신된다. 수락 판정(`rename_can_accept_o`)은 tag 선택 encoder를 기다리지 않고 free bitmap의 `{any, ≥2}` 균형 tree와 class별 필요 tag 수 비교로 구한다(v1.18.8). 처리율은 자원이 충분하면 최대 두 instruction/cycle이다. Backpressure/flush 규칙은 한 lane이라도 필요한 tag/checkpoint가 부족하면 bundle 전체를 수락하지 않는다.
 
 **코너케이스.** lane1 RAW/WAW, x0 no-allocation, commit과 recovery 동시 우선순위가 핵심이다.
 
@@ -2892,6 +2894,8 @@ architectural instruction이 physical identity와 ROB sequence를 얻고 실행�
 **타이밍.** 순수 조합 경로이며 grant는 같은 edge의 issue handshake에 사용된다. 처리율은 전체 실행 cluster 합산 최대 두 uop/cycle이다. Backpressure/flush 규칙은 port ready가 아니면 candidate를 accept하지 않는다.
 
 **코너케이스.** 같은 entry/port 이중 grant와 younger가 older를 부당하게 추월하는 경우를 금지한다.
+
+`AGE_ORDERED`(기본 0): candidate 0이 항상 older라는 호출 측 보장 아래 sequence 비교 없이 5-bit 병렬 port 선택을 쓴다. backend는 IQ oldest/second-oldest 출력이라 1로 둔다. 일반 탐색과의 일치는 simulation에서 매 cycle 확인한다(v1.18.9).
 
 **RTL 위치.** [`rtl/backend/rv_issue_arbiter.sv`](../rtl/backend/rv_issue_arbiter.sv)
 
@@ -3077,7 +3081,7 @@ issue된 uop이 계산되고 결과가 PRF/ROB에 돌아오는 경로다.
 2. size/alignment를 검사하고 beat mask와 shifted data를 만든다.
 3. LQ/SQ index와 함께 registered update로 전달한다.
 
-**타이밍.** issue accept 다음 cycle에 update valid가 보인다. 처리율은 lane마다 한 update/cycle이며 두 instance가 병렬 동작한다. Backpressure/flush 규칙은 update stall 시 payload 고정, flush cycle에는 새 issue를 받지 않는다.
+**타이밍.** issue accept 다음 cycle에 update valid가 보인다. 처리율은 lane마다 한 update/cycle이며 두 instance가 병렬 동작한다. Backpressure/flush 규칙은 update stall 시 payload 고정, flush cycle에는 새 issue를 받지 않는다. `DEPTH=2`(backend 사용값)는 head가 막혀도 한 개를 더 받고, issue ready가 downstream PMP/completion 판정과 무관한 등록 신호가 된다.
 
 **코너케이스.** unsupported size, beat boundary, store address-only/data-only phase와 flush를 다룬다.
 
@@ -3347,7 +3351,7 @@ Core/Host 요청이 TIM, peripheral 또는 error target까지 이동하고 반�
 
 **타이밍.** DTIM synchronous read와 response handoff, CLINT/AXI target latency에 따라 가변이다. 처리율은 서로 다른 bank는 두 LSU가 병행하며 inbound Host가 세 번째 경쟁자가 된다. Backpressure/flush 규칙은 same-bank loser는 ready=0으로 payload를 유지하고 old response+next request handoff를 지원한다.
 
-**코너케이스.** same-bank dual load/store, Host race, old response ID와 next metadata 분리를 다룬다.
+**코너케이스.** same-bank dual load/store, Host race, old response ID와 next metadata 분리, stall 중인 CLINT/outbound request를 older request가 가로채지 않도록 하는 선택 고정(v1.18.8)을 다룬다.
 
 **RTL 위치.** [`rtl/soc/rv_d_fabric.sv`](../rtl/soc/rv_d_fabric.sv)
 
@@ -3968,6 +3972,819 @@ CoreMark 2-iteration은 CRC chain(`0xe9f5/0xe714/0x1fd7/0x8e3a/0x72be`)과 statu
 같은 환경에서 `f634128`은 468,930 cycles / IPC 1.229288로 재현되므로 v1.18.3은
 522 cycles(0.11%) 적고 IPC가 떨어지지 않았다.
 
+표의 FPU v1.18.2 열 5,079.32 ns/34,531.1 µm²는 v1.18.1 절의 5 ns target 측정값을
+그대로 옮긴 것이다. 같은 `-D 1000` 조건으로 v1.18.2 `rv_fpu.sv`를 코어가 쓰던
+`LATENCY=3`으로 다시 매핑하면 4,994.26 ps / 34,743.1 µm²이고, 이 값을 기준으로 한
+v1.18.3(`LATENCY=4`, 4,803.52 ps / 33,646.3 µm²)의 개선은 delay 3.8%, area 3.2%다.
+Windows ABC와 Linux ABC 사이의 0.5% 내외 차이가 있어 두 측정 모두 같은 결론이다.
+
+###### FPU critical path는 FMA가 아니라 iterative FDIV/FSQRT pack이다
+
+`LATENCY`만 바꿔 같은 조건으로 매핑하면 delay와 critical start point가 다음과 같다.
+
+| FPU `LATENCY` | preflight delay | mapped area | critical start point |
+|---:|---:|---:|---|
+| 3 (v1.18.2 RTL) | 4,994.26 ps | 34,743.1 µm² | `pre_calc_q[150]` — fast pre-pack |
+| 3 (v1.18.3 RTL) | 4,859.21 ps | 34,664.9 µm² | `operand_b_i[1]` — request → fast path |
+| **4 (현재 구성)** | **4,803.52 ps** | **33,646.3 µm²** | `div_quotient_q[85]` — slow path |
+| 5 | 4,709.85 ps | 34,131.5 µm² | `div_quotient_q[83]` — slow path |
+| 6 | 4,789.56 ps | 35,030.3 µm² | `div_quotient_q[86]` — slow path |
+
+`LATENCY=4`부터 critical path가 fast pipe를 떠나 iterative slow path로 고정되고
+delay가 4.7~4.8 ns에서 평탄해진다. 해당 경로는 `div_quotient_q`(88-bit)와
+`sqrt_root_q`를 받아 한 cycle 안에 normalize/round/pack을 수행하는 `pack_finite`
+조합망이며, sqrt recurrence의 128-bit shift/compare/subtract도 같은 영역에 있다.
+따라서 **add/FMA는 더 이상 FPU 병목이 아니다.** align·product·accumulate와
+normalize/round/pack 사이는 v1.18.2에서 register로 나뉘었고 v1.18.3에서 한 단 더
+분리됐다. fast pipe를 5, 6단으로 더 쪼개도 이득이 없으므로 다음 FPU 작업은
+FDIV/FSQRT 결과 packing을 별도 stage로 분리하거나 sqrt recurrence의 비교 폭을
+줄이는 방향이다.
+
+###### CoreMark로는 FP latency 변경을 검증할 수 없다
+
+CoreMark ELF는 `rv32imc_zicsr_zifencei` / soft-float ABI로 빌드되므로
+FP instruction을 포함하지 않는다(`readelf` Flags: `RVC, soft-float ABI`).
+실제로 `LATENCY=3`과 `LATENCY=4`가 **468,408 cycles / 576,450 instret /
+IPC 1.230658**로 bit/cycle 수준에서 동일하다. 즉 CoreMark 불변은 FP latency가
+무해하다는 증거가 아니라 FP를 쓰지 않는다는 뜻이다. FP 경로 판정은 6,470-vector
+differential(`LATENCY=4` PASS)과 GCC C/FP ELF가 담당한다. C/FP ELF는 두 구성
+모두 host event `0x009e00b9`, exit 0, payload commit 359건, FP register commit
+68건, payload trap 0건이고 마지막 commit cycle만 910 → 911로 1 cycle 늘어난다.
+FP-sensitive cycle 지표가 필요하면 hard-float benchmark를 별도로 준비해야 한다.
+
+##### v1.18.4 공개 flow 타이밍 재구성 (store-buffer/ROB/LSQ/IQ/multiplier + FPU 4단계)
+
+###### 0. 측정 blind spot이 먼저 있었다
+
+`scripts/run_open_timing.ps1`의 `$blocks`에 `rv_store_buffer`, `rv_lsu_cluster`,
+`rv_multiplier`, `rv_divider`, `rv_fetch_queue`, `rv_csr_file`이 빠져 있었다.
+그 결과 실제 최장 block인 `rv_store_buffer`(6,027.28 ps)와
+`rv_lsu_cluster`(6,270.32 ps)가 한 번도 화면에 나타나지 않은 채 더 짧은 block을
+최적화하고 있었다. 이번 작업에서 6개 leaf를 screening list에 추가했다.
+**타이밍 작업의 첫 단계는 "무엇이 측정되고 있지 않은가"를 확인하는 것이다.**
+
+###### 1. 공개 flow 전후 비교 (동일 조건)
+
+Yosys 0.69+77 / `read_slang` / ABC 1.01, Nangate45 typical, `INV_X1` 구동,
+5 fF load, wire load 없음, `abc -D 1000`, `synth -flatten -noshare -noabc`,
+메모리 매크로는 면적에서 제외. baseline은 `be78fec`.
+
+| Block | baseline delay | v1.18.4 delay | Δdelay | baseline area | v1.18.4 area | Δarea |
+| --- | --- | --- | --- | --- | --- | --- |
+| `rv_lsu_cluster` | 6,270.32 ps | 2,456.02 ps | **−60.8%** | 121,134.0 µm² | 128,266.5 µm² | +5.9% |
+| `rv_store_buffer` | 6,027.28 ps | 1,616.02 ps | **−73.2%** | 30,951.5 µm² | 29,623.9 µm² | −4.3% |
+| `rv_fpu` (L=5) | 4,709.85 ps | 2,906.45 ps | **−38.3%** | 34,131.5 µm² | 26,913.9 µm² | −21.1% |
+| `rv_issue_queue` | 3,493.28 ps | 2,945.19 ps | −15.7% | 238,496.1 µm² | 277,138.2 µm² | +16.2% |
+| `rv_rob` | 3,036.22 ps | 1,243.73 ps | **−59.0%** | 176,883.9 µm² | 177,976.1 µm² | +0.6% |
+| `rv_multiplier` | 2,720.65 ps | 2,675.43 ps | −1.7% | 17,195.3 µm² | 17,534.7 µm² | +2.0% |
+| `rv_divider` | 2,254.94 ps | 2,254.94 ps | 0 | 2,776.5 µm² | 2,776.5 µm² | 0 |
+| `rv_lsq` | 2,240.83 ps | 2,227.08 ps | −0.6% | 62,691.4 µm² | 62,604.2 µm² | −0.1% |
+| `rv_rename2` | 1,783.48 ps | 1,783.48 ps | 0 | 70,444.0 µm² | 70,444.0 µm² | 0 |
+| `rv_writeback_arbiter` | 1,658.73 ps | 1,658.73 ps | 0 | 8,195.7 µm² | 8,195.7 µm² | 0 |
+
+설계 전체 최장 block은 **6,270.32 → 2,945.19 ps (−53.0%)** 이고 이제
+`rv_issue_queue`가 최장이다. `rv_fpu`는 유일하게 delay와 area가 함께 줄었다.
+
+###### 2. 구조 수정 5건 (store-buffer / ROB / LSQ / IQ / multiplier)
+
+- `rv_store_buffer`: 16-entry youngest-match 선형 탐색을 4-level reduction
+  tree(`query_cand_t` / `query_younger`)로 교체. ABC가 재구성할 수 없던 것은
+  1-bit OR/priority 축약이 아니라 **loop-carried 산술(캐리 체인)과 넓은
+  sequence 비교**다.
+- `rv_rob`: `flush_kept_count = flush_kept_count + 1'b1`의 48단 직렬 캐리
+  체인을 균형 popcount tree(`KEEP_LEVELS` / `keep_tree`)로 교체.
+- `rv_lsq`: `first_free_lq` / `first_free_sq`의 선형 first-match를
+  binary-search priority encoder(`any_tree`)로 교체.
+- `rv_issue_queue`: (a) `count_o`의 56단 직렬 증가를 popcount tree로,
+  `empty_o` / `full_o`를 별도 저가 경로로 분리. (b) oldest-two 선택을
+  tournament tree에서 age-ordering matrix로 교체. area는 늘지만 1차 목표가
+  timing이므로 채택했다.
+- `rv_multiplier`: `stage0_q.result <= selected_result` 때문에 32×32 곱이
+  stage0 **이전**에 끝나 있고 stage0→stage1이 단순 복사였다.
+  `multiply_request_t`를 도입해 stage0은 피연산자만 잡고 곱셈을
+  stage0→stage1에서 수행한다. latency 2 cycle은 그대로이고 critical 시작점이
+  `operand_b_i`에서 `stage0_q`로 이동한다.
+
+###### 3. FPU 4단계 (4,709.85 → 2,906.45 ps, area −21.1%)
+
+| 단계 | 변경 | delay | area | ABC start-point |
+| --- | --- | --- | --- | --- |
+| baseline | `LATENCY=4`, MAGW=128 | 4,709.85 ps | 34,131.5 µm² | fast path |
+| a | align/accumulate 분리 + negate folding, `LATENCY=5` | 3,657.69 ps | 35,297.9 µm² | `align_calc_q` |
+| b | `MAGW` 128 → 80 | 3,711.15 ps | 31,653.2 µm² | `pre_calc_q` |
+| c | dual-adder magnitude + `DIV_FRAC` 52 → 28 | 3,649.36 ps | 31,885.2 µm² | `pre_calc_q` |
+| d | `normalize_fp_pre` 지수 산술 재구성 | 3,324.35 ps | 30,576.2 µm² | `div_quotient_q` |
+| e | `pack_finite` 지수 산술 재구성 | 3,075.83 ps | 29,338.7 µm² | `sqrt_remainder_q` |
+| f | FSQRT 피연산자 정규화 + 폭 축소 | **2,906.45 ps** | **26,913.9 µm²** | `align_calc_q` |
+
+스테이지별 예산(동일 probe harness, 상대 비교용):
+
+| 스테이지 | 이전 | 이후 |
+| --- | --- | --- |
+| `execute_fp_align` (곱 + 정렬) | 3,535.53 ps | 3,535.53 ps |
+| `fp_align_finish` (누산) | 3,317.03 ps | 2,350.21 ps |
+| `normalize_fp_pre` (LZC + barrel shift) | 2,702.58 ps | 1,842.49 ps |
+| `finalize_fp_normalized` (round/pack) | 991.45 ps | 991.45 ps |
+
+###### 4. 왜 128-bit 가산이 필요했나 — IEEE-754 요구사항이 아니다
+
+IEEE-754가 요구하는 것은 **무한정밀도 결과를 한 번만 올바르게 반올림한 값**
+뿐이고, 그에 필요한 정보는 significand(24) + guard + round + sticky = 27 bit다.
+sticky 1 bit가 그 아래 전부를 대표하므로 잘린 bit를 물리적으로 들고 있을 필요가
+없다. 128-bit은 규격이 아니라 **모든 연산을 하나의 공통 exact fixed-point 필드에
+정렬해 넣고 마지막에 한 번 반올림하는 구현 스타일**의 부산물이다.
+연산별 실제 필요 폭은 FADD/FSUB ~32, FMA `3p+4 ≈ 76`(그래서 `MAGW=80`),
+FDIV 몫 소수부 28, FSQRT 근 29다.
+
+###### 5. 핵심 교훈 — 폭은 area 레버, 직렬 캐리 체인이 timing 레버
+
+같은 flow에서 순수 가산기만 폭별로 합성한 결과:
+
+| W | 32 | 48 | 64 | 80 | 96 | 112 | 128 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| delay (ps) | 1,080.61 | 1,534.20 | 1,620.25 | 1,940.60 | 2,016.37 | 2,213.60 | 2,171.46 |
+| area (µm²) | 799.6 | 1,215.9 | 1,620.2 | 2,029.8 | 2,362.3 | 2,818.5 | 3,177.1 |
+
+**area는 폭에 정확히 선형(3.97×)이지만 delay는 2.01×에 그친다.** ABC가 `$add`를
+carry-skip/select 구조로 매핑하므로 지연은 대략 √W로 움직인다. 따라서
+`MAGW` 128 → 80은 area −10.3%를 주고 delay는 사실상 변하지 않았다(단계 b).
+timing을 실제로 움직인 것은 폭이 아니라 **직렬로 놓인 캐리 체인의 개수**다.
+
+- `fp_align_finish`: `signed_sum = x+y` 뒤에 `-signed_sum`이 붙어 **풀폭 캐리
+  체인 2개가 직렬**이었다. probe 분해 결과 add만 1,622.06 ps, invert/sign 포함
+  1,985.21 ps, 전체 3,317.03 ps — 뒤쪽 negate 하나가 1,332 ps(스테이지의 40%)다.
+  `x+y`, `x−y`, `y−x`를 **병렬 가산기 3개**로 만들고 부호로 선택하도록 바꿔
+  3,317.03 → 2,267.31 ps(−31.7%), area는 오히려 −3.1%.
+- `normalize_fp_pre` / `pack_finite`: LZC 결과 `highest_bit` 뒤에
+  `hb + lsb_exponent`, `> 127` 비교, `>= -126` 비교, `shift_amount` 계산,
+  `+127` bias가 **32-bit `integer` 산술로 직렬** 연결돼 있었다. 32-bit 가산
+  하나가 1,080 ps인 flow에서 이것이 스테이지의 대부분이었다
+  (LZC 단독 1,516.49 ps → shift amount까지 2,564.56 ps → 전체 2,702.58 ps,
+  즉 barrel shifter 자체는 ~140 ps).
+  지수 산술을 16-bit로 좁히고 `hb`에 의존하지 않는 항
+  (`127 - lsb`, `-126 - lsb`, `-(lsb+149)`, `lsb+127`)을 모두 LZC와 **병렬**로
+  앞세워 비교만 남겼다. 반올림 캐리도 새 가산을 시작하지 않도록 두 후보 지수를
+  미리 만들어 선택한다. `normalize_fp_pre` 2,702.58 → 1,842.49 ps.
+
+###### 6. 반복 divider/sqrt는 피연산자를 정규화하면 폭과 반복이 함께 준다
+
+`fp_mantissa`는 subnormal에서 선행 0을 그대로 남기므로 `rv_fpu`의 radix-2
+FDIV/FSQRT는 최악 subnormal을 덮으려고 과도한 폭을 썼다. 나누기/제곱근 **전에**
+mantissa를 정규화(`mantissa_lz` + 좌시프트, 지수 보정)하면 피연산자가
+`[2^23, 2^24)`로 고정되어 필요한 폭이 결정된다.
+
+| | baseline | v1.18.4 |
+| --- | --- | --- |
+| `DIV_FRAC` / `DIV_NUMW` | 52 / 77 | **28 / 53** |
+| FDIV 반복 | 77 cycle | **53 cycle** |
+| sqrt radicand / root / remainder | 128 / 64 / 130 bit | **58 / 29 / 60 bit** |
+| FSQRT 반복 | 64 cycle | **29 cycle** |
+
+`DIV_FRAC`를 정규화 없이 28로 낮추면 vector 1550(`a=0x00000001`,
+`b=0x007fffff`, rm=3)에서 1 ULP가 틀린다. 정규화가 선행 조건이다.
+이 변경은 타이밍뿐 아니라 **FDIV −24 cycle / FSQRT −35 cycle의 순수 지연
+개선**이기도 하다. CoreMark는 soft-float ABI라 이 이득을 보여주지 못한다.
+
+###### 7. 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| `scripts/check_rtl.py` (pyslang) | 40개 구성 PASS |
+| unit 18종 | 17 PASS / `rv_fetch_queue_tb` 1건 |
+| block 17종 | 17 PASS |
+| backend integration | `rv_backend_int_tb` PASS |
+| FPU differential oracle | 6,470 vectors PASS |
+| FPU transport/flush | PASS |
+| FDIV 등가 co-sim (`DIV_FRAC` 28 vs 52) | 14,600 vectors bit-exact |
+| FADD/FSUB/FMUL/FDIV/FSQRT 등가 co-sim | 32,900 vectors bit-exact |
+| FSQRT 전용 등가 co-sim | 24,170 vectors bit-exact |
+| GCC C/FP ELF | host-finish 0, commit trace md5 baseline과 동일 |
+| CoreMark | **468,408 cycles / 576,462 instret / IPC 1.230684**, 593,268행 commit trace md5 baseline과 완전 일치 |
+
+`rv_fetch_queue_tb` 실패는 회귀가 아니다. 손대지 않은 `f634128`를 같은 md5로
+두고 실행해도 동일하게 실패하는 Verilator 전용 TB 환경 artifact다
+(Windows/Icarus에서는 PASS).
+
+등가 co-sim은 변경 전 모듈을 `rv_fpu_ref`로 rename해 같은 자극을 주고
+`result_data_o` / `result_fflags_o`를 bit 단위로 비교하는 방식이다. 오라클을
+새로 구현하지 않으므로 오라클 자체의 버그가 결론을 오염시키지 않는다.
+
+###### 8. 남은 병목
+
+1. `rv_issue_queue` 2,945.19 ps — 이제 설계 최장 block.
+2. `execute_fp_align` 3,535.53 ps — 24×24 곱과 정렬 배럴시프터가 한 단에 있다.
+   `SPLIT_PREMUL`로 분리하는 방향(이전 L7 시도는 dual-adder 이전 구조라 무의미).
+3. `fp_align_finish` 2,350.21 ps — 더 내리려면 LZA(leading-zero anticipation)로
+   정규화 시프트량을 가산기와 병렬 예측해야 한다.
+4. 서버 STA의 cross-module 경로(LSQ → store_buffer → writeback → IQ → mul)는
+   PC flow의 block 단위 측정으로는 재현되지 않는다. 저장해 둔
+   `rv_backend_pre_abc.il`로 whole-backend ABC를 돌려 확인해야 한다.
+
+##### v1.18.5 FPU/IQ 추가 절감 (2026-09-23)
+
+v1.18.4에서 남은 두 병목(`rv_fpu` 2,906.45 ps, `rv_issue_queue` 2,945.19 ps)을
+같은 공개 조건에서 한 번 더 깎았다.
+
+| Block | be78fec | v1.18.4 | v1.18.5 | 누적 Δdelay | area be78fec → v1.18.5 |
+| --- | --- | --- | --- | --- | --- |
+| `rv_fpu` (L=5) | 4,709.85 ps | 2,906.45 ps | **2,513.04 ps** | **−46.6%** | 34,131.5 → 27,012.6 µm² (−20.9%) |
+| `rv_issue_queue` | 3,493.28 ps | 2,945.19 ps | **2,422.98 ps** | **−30.6%** | 238,496.1 → 225,992.5 µm² (−5.2%) |
+
+설계 전체 최장 block은 **6,270.32 → 2,513.04 ps (−59.9%)** 이고, v1.18.4에서
+IQ area가 +16.2% 늘었던 절충도 해소되어 baseline보다 −5.2%가 됐다.
+
+###### 1. FPU — 지수 산술이 정렬 단에도 그대로 있었다
+
+v1.18.4에서 `normalize_fp_pre`/`pack_finite`의 32-bit `integer` 지수 산술을
+잡았는데, **정렬(align) 단에는 같은 패턴이 그대로 남아 있었다.**
+`fp_fma_align`의 실제 직렬 사슬은 다음과 같았다.
+
+```
+fp_lsb_exponent(a) + fp_lsb_exponent(b)   // 32-bit 가산
+  -> max(product_exponent, c_exponent)    // 32-bit 비교
+  -> common_exponent - product_exponent   // 32-bit 감산
+  -> right_shift_sticky(...)              // 80-bit barrel shift
+```
+
+32-bit 가산 하나가 1,080 ps인 flow에서 배럴시프터 **앞에** 32-bit 연산 3개가
+직렬로 놓여 있었다. 게다가 `right_shift_sticky`는 sticky mask를
+`if (bit_index < shift_amount)`로 만들면서 32-bit 비교를 MAGW번 돌렸다.
+
+수정: 지수 산술 폭을 `EXPW = 16`으로 통일했다.
+
+- `fp_lsb_exponent` 범위는 [-149, 104], FMA product 지수는 [-298, 208],
+  `ALIGN_SH` 보정까지 합쳐도 |e| < 400이므로 16-bit signed로 80배 여유가 있다.
+- `fp_precalc_t.lsb_exponent`, `fp_align_t.common_exponent`,
+  `fp_normalized_t.unbiased_exponent`, `div_exponent_q`, `sqrt_exponent_q`,
+  `pack_finite`/`right_shift_sticky`의 인자를 모두 `logic signed [EXPW-1:0]`로
+  바꿨다.
+- sticky mask 비교는 해당 분기에서 `0 < s < MAGW`가 보장되므로 7-bit로 좁혔다
+  (`shift_minus1`).
+- `finalize_fp_normalized`도 `pack_finite`와 같은 방식으로, 반올림 캐리가 새
+  가산을 시작하지 않도록 두 후보 지수를 미리 만들어 선택하게 했다.
+
+**2,906.45 → 2,590.69 ps (−10.9%), area 변화 없음.**
+
+폭 캐스팅 함정 하나를 기록해 둔다. SystemVerilog는 이항 연산의 한쪽이
+unsigned면 **식 전체가 unsigned**가 된다. `sqrt_lsb - EXPW'(34)`처럼 쓰면
+`EXPW'(34)`가 unsigned라 음수 지수에서 `/2`가 unsigned 나눗셈이 되어
+FSQRT vector 3442가 깨졌다. 모든 캐스트를 `signed'(EXPW'(x))`로 바꿔야 한다.
+원래 코드가 `int'(...)`를 쓰고 있어서 문제가 드러나지 않았던 것이다.
+
+###### 2. FPU — 누산 단 출력 mux 평탄화
+
+`fp_align_finish`는 `if (!sum_pending) return` → `if (sum_zero) return` →
+정상 경로의 중첩 early-return이라 가산기 뒤에 mux가 3단 쌓였다.
+두 제어항(`sum_pending`, `sum_zero`)은 가산기와 무관하게 일찍 확정되므로,
+세 결과(`al.pre` / `pre_zero` / `pre_sum`)를 모두 만들어 두고 **평탄한 select
+한 번**으로 바꿨다.
+
+**2,590.69 → 2,513.04 ps (−3.0%), area +0.4%.**
+
+ABC start-point는 `align_calc_q[27]`(= `mag_y[1]`)로, 81-bit 가산기의 캐리
+체인 자체다. 같은 flow의 순수 80-bit 가산기가 1,940.60 ps이므로 현재
+2,513 ps는 가산기 바닥의 1.29배다. 여기서 더 내리려면 단일 경로 FMA를
+near/far 2-path 구조로 바꾸거나 누산 단을 한 번 더 쪼개야 한다(`LATENCY=6`).
+
+###### 3. IQ — am_first → am_second 직렬 축약 제거
+
+```
+am_first[i]  = ready[i] && ((age_matrix_q[i] & ready) == 0)
+am_ready2    = ready & ~am_first
+am_second[i] = am_ready2[i] && ((age_matrix_q[i] & am_ready2) == 0)
+```
+
+`am_second`가 `am_first`를 기다리므로 ENTRIES-wide 축약이 **직렬로 두 번**
+돌았다. age matrix가 ready 집합 위에서 strict total order이면
+second-oldest는 "자기보다 오래된 ready 항목이 정확히 하나인 항목"이다.
+따라서 `m_i = age_matrix_q[i] & ready_now`에 대해
+
+```
+oldest        == count(m_i) == 0
+second-oldest == count(m_i) == 1
+```
+
+이고, 두 판정을 **하나의 saturating {any, ge2} 트리**에서 뽑을 수 있다.
+노드마다 `any = any_L | any_R`, `ge2 = ge2_L | ge2_R | (any_L & any_R)`.
+
+절차적 3중 루프는 21k 반복이라 slang의 `--unroll-limit 4000`을 넘기므로
+`generate`로 기술했다. Verilator는 레벨 배열을 한 덩어리로 보고 UNOPTFLAT
+(순환 조합 논리)로 오인하므로 선언에 `/* verilator split_var */`를 붙였다.
+
+**2,945.19 → 2,832.49 ps (−3.8%), area 277,138.2 → 273,013.1 µm² (−1.5%).**
+
+###### 4. IQ — candidate payload를 one-hot AND-OR로
+
+원래는 one-hot(`am_first`) → 우선순위 인코더 → 6-bit `am_index` →
+`xxx_q[am_index[slot]]`의 ENTRIES:1 mux였다. 늦게 도착하는 `am_first` 뒤에
+인코더와 6단 mux가 **연달아** 붙는다.
+
+- 28개 per-entry 필드를 `cand_payload_t` 하나로 묶고
+  `sel_payload |= {CAND_W{am_hot[entry]}} & entry_payload[entry]`로 선택한다.
+  늦은 신호 뒤에 남는 것은 OR 트리 하나뿐이다.
+- one-hot → binary 인코더도 비트별 OR 축약으로 다시 썼다. 순차 last-wins
+  루프로 기술하면 ENTRIES 깊이의 우선순위 사슬로 내려간다.
+- `candidate_store_data_valid_o` / `candidate_final_phase`가 쓰던
+  `source_ready_now[am_index][1]`(늦은 신호에 대한 또 하나의 ENTRIES:1 mux)도
+  `|(am_hot & store_data_ready_vec)` 1-bit 축약으로 바꿨다.
+
+**2,832.49 → 2,422.98 ps (−14.5%), area 273,013.1 → 225,992.5 µm² (−17.2%).**
+delay와 area가 함께 크게 줄었다. one-hot AND-OR가 인코더+mux보다 게이트
+수에서도 유리하다.
+
+###### 5. 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| `scripts/check_rtl.py` | 40개 구성 PASS |
+| unit 18종 | 17 PASS (`rv_fetch_queue_tb` 기존 환경 artifact) |
+| block 17종 | 17 PASS |
+| backend integration | `rv_backend_int_tb` PASS |
+| FPU differential oracle | 6,470 vectors PASS |
+| FPU 등가 co-sim (v1.18.4 FPU 기준) | 5-op 32,900 + FSQRT 24,170 vectors bit-exact |
+| GCC C/FP ELF | host-finish 0, commit trace md5 동일 |
+| CoreMark | **468,408 cycles / 576,462 instret / IPC 1.230684**, 593,268행 commit trace md5 동일 |
+
+###### 6. 남은 병목
+
+1. `rv_fpu` 2,513.04 ps — 81-bit 누산 캐리 체인(바닥 ≈1,940 ps)이 한계.
+   near/far 2-path FMA 또는 누산 단 추가 분할(`LATENCY=6`)이 다음 카드다.
+2. `rv_issue_queue` 2,422.98 ps — `tag_wakes`(11 port × 56 entry × 3 source)
+   → `ready_now` → age tree → one-hot fan-in의 약 20 논리 단. 구조를 더
+   줄이려면 speculative(issue-time) wakeup + shadow window가 필요하다.
+3. `rv_lsu_cluster` 2,456.02 ps가 이제 세 번째다.
+
+##### 전체 backend(Top) 기준 합성은 된다 — 멈춘 원인은 ABC 기본 script였다
+
+###### 1. 왜 멈췄나
+
+`rv_backend`를 통째로 내리면 `read_slang → proc → flatten → techmap → dfflibmap`
+뒤에 **610,696 cell** 짜리 조합 네트워크가 남는다. yosys의 ABC 기본 script는
+
+```
+strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; retime -o -D <t>;
+strash; &get -n; &dch -f; &nf -D <t>; &put; buffer; upsize; dnsize; stime -p
+```
+
+인데, 이 중 `scorr`(sequential SAT sweeping) / `dc2` / `dretime` / `retime`은
+60만 cell 규모에서 실질적으로 끝나지 않는다. 21분 넘게 CPU 97%를 쓰면서
+`2.2. Extracting gate netlist ...` 이후로 로그가 한 줄도 나오지 않았다.
+도구가 죽은 것이 아니라 **끝나지 않는 pass를 돌고 있었던 것**이다.
+
+앞쪽 sequential 최적화를 빼고 delay 중심으로만 남기면
+
+```
+strash; &get -n; &dch -f; &nf -D <t>; &put; buffer;
+upsize -D <t>; dnsize -D <t>; stime -p
+```
+
+**약 25분에 완주한다.** `retime`을 뺀 것은 속도 때문만이 아니다. retime은
+register를 옮기므로 "어느 register에서 어느 register까지"라는 경로 해석 자체를
+무의미하게 만든다.
+
+`scripts/run_open_timing.ps1` / `.sh`의 whole-top 항목에 `AbcScript = "trim"`
+(bash는 `INCLUDE_WHOLE_TOP=1`)을 추가해 이 script를 쓰도록 했다. ABC의 `source`는
+yosys placeholder(`{D}`)를 전개하지 않으므로 delay target은 파일에 직접 써 넣는다.
+
+###### 2. 서버 STA가 지목한 경로가 그대로 재현된다
+
+flatten 후에도 계층 이름이 남아 ABC의 start-point를 읽을 수 있다.
+
+| 트리 | Delay | Area | Start-point |
+| --- | --- | --- | --- |
+| `be78fec` | 14,827.02 ps | 284,938.40 µm² | `u_lsu_cluster.u_lsq.candidate_found[0]` |
+| v1.18.5 | **8,072.33 ps** | 322,086.37 µm² | `u_lsu_cluster.u_lsq.candidate_found[0]` |
+
+**−45.6%.** 그리고 시작점은 사용자가 서버 STA에서 보고한
+`lsu_cluster/lsq/candidate_index_reg → mul/stage0`과 **같은 register 그룹**이다.
+공개 PC flow에서 서버의 cross-module 경로가 재현된다는 뜻이고, 앞으로 서버를
+기다리지 않고 이 경로를 반복 측정할 수 있다.
+
+###### 3. block 단위 측정은 구조적으로 이 경로를 볼 수 없다
+
+whole-backend는 lowering이 `macro`(가벼움)이고 ABC script도 다듬은 것이라
+절대값을 block 수치(`synth -flatten` + 전체 ABC script)와 직접 비교할 수 없다.
+그래서 **같은 lowering + 같은 trim script로 단일 block을 다시 재서 보정계수**를
+구했다.
+
+| | block 정식 flow | whole-backend와 동일 flow | 비율 |
+| --- | --- | --- | --- |
+| `rv_fpu` | 2,513.04 ps | 2,925.11 ps | 1.16× |
+| `rv_issue_queue` | 2,422.98 ps | 3,608.58 ps | 1.49× |
+
+즉 whole-backend 8,072 ps를 정식 flow 기준으로 환산하면 대략 **5.4 ~ 7.0 ns**,
+설계 최장 block(2,513 ps)의 **2 ~ 2.7배**다.
+
+이 차이는 측정 오차가 아니라 실제 회로다. `rv_lsq`의 candidate register에서
+`rv_multiplier`의 `stage0_q`까지
+
+```
+LSQ candidate → store_buffer 16-entry CAM/youngest → lsu_cluster completion
+  → writeback_arbiter 11-source arbitration → IQ tag_wakes → select
+  → issue arbiter → multiplier stage0
+```
+
+**다섯 모듈을 지나는 동안 중간 register가 하나도 없다.** block 단위 screening은
+이 경로를 다섯 조각으로 나눠 보므로, 각 조각을 아무리 줄여도 합은 그대로
+남는다. 실제로 v1.18.5에서 다섯 모듈을 전부 줄였는데도 start-point는
+그대로 LSQ candidate다.
+
+###### 4. 결론
+
+- whole-top 합성은 가능하다. 매 변경마다 돌리기에는 무겁지만(전처리 8분 +
+  ABC 25분), 라운드 종료 시 sign-off 용도로는 충분하다.
+- 다음 단계는 block 최적화가 아니라 **이 사슬에 register를 하나 넣는 것**이다.
+  speculative(issue-time) wakeup + IQ shadow window가 그 방법이고,
+  writeback → wakeup 경로를 끊어 사슬을 둘로 나눈다.
+- whole-backend area가 +13.0%인 것은 대부분 v1.18.4에서 들어간 56×56
+  age matrix의 flip-flop이다(DFF 3,379 → 6,568). block 단위 IQ area는 오히려
+  줄었으므로(238,496 → 225,992 µm²), 이 증가분은 lowering 차이와 FF 자체의
+  비용이다. 서버 library에서 다시 확인해야 한다.
+
+##### v1.18.7 모듈 간 무등록 경로 절단 — writeback 우회 wakeup과 forwarding 등록
+
+###### 1. 문제: 한 cycle 안에 다섯 모듈이 register 없이 이어져 있었다
+
+whole-backend 합성의 critical path는 144 gate, 8,072.33 ps였고 시작점은
+`u_lsu_cluster.u_lsq.candidate_found`, 끝점은 `g_fast[0].u_buffer.payload_q`였다.
+서버 STA가 보고한 `lsu_cluster/lsq/candidate_index_reg → mul/stage0`과 같은 경로다.
+
+모듈 경계를 보기 위해 hierarchy를 유지한 JSON에서 모듈별 입력→출력 조합 arc와
+top의 연결을 따라가는 도구(`scripts/find_comb_chains.py`)를 만들었다. 결과:
+
+| 모듈 | FF | 조합 arc |
+| --- | --- | --- |
+| `rv_writeback_arbiter` | 0 | `source_valid_i → wakeup_*_o / source_ready_o / int_wb_*_o` 전부 조합 |
+| `rv_issue_queue` | 56 | `writeback_*_i → candidate_*_o` (wakeup→select→payload 동일 cycle) |
+| `rv_issue_arbiter` | 0 | `candidate_* / port_mask → issue_* / port_*` 전부 조합 |
+| `rv_phys_regfile` | — | `read_addr_i / write_*_i → read_data_o` (비동기 read + write-through) |
+| `rv_exec_result_buffer` | — | `result_ready_i → request_ready_o` (writeback grant가 issue 가능 여부로) |
+| `rv_lsu_cluster` | — | LQ candidate → SQ/SB CAM → forward → `completion_*_o` 조합 |
+
+즉 `FU 결과 reg → writeback arbiter → IQ wakeup/select → issue arbiter → PRF → FU → 결과 reg`가
+**한 cycle 조합 루프**였고, 부하가 있는 load는 그 앞에 LSQ forwarding까지 붙어 있었다.
+여기에 writeback grant가 결과 buffer의 ready를 거쳐 issue 마스크로 들어가는
+backpressure 경로, recovery flush가 IQ payload와 PRF 주소까지 게이트하는 경로가 겹쳐
+있었다. block 단위 측정은 이 사슬을 다섯 조각으로 나눠 보므로 볼 수 없다.
+
+###### 2. IPC 영향을 먼저 측정했다
+
+| 실험 | 내용 | CoreMark cycles | Δ |
+| --- | --- | --- | --- |
+| E1 | writeback wakeup을 1 cycle 등록 (전부) | 557,232 | **+18.96%** |
+| E2a | ALU 결과 buffer만 직접 wakeup + bypass, 나머지는 등록 | 511,820 | +9.27% |
+| E2x | mul/div/fpu까지 직접 wakeup | 511,848 | +9.27% |
+
+E2a와 E2x가 같으므로 비용은 전부 **load**에서 나온다. CoreMark의 load 완료는
+memory 응답 107,913건, store→load forwarding 1,286건(1.2%)이었다. 따라서
+"load 전체 +1 cycle"은 받아들일 수 없고, forwarding만 등록하면 비용이 거의 없다.
+
+###### 3. 수정 A — producer-side wakeup (writeback arbiter를 루프에서 제거)
+
+- 목적지를 쓰는 writeback source 7개(fast result buffer 2, mul, div, fpu, load 2)가
+  **자기 결과를 제시하는 동안 스스로 wakeup**하고, PRF에 써질 때까지 operand
+  **bypass**로 값을 공급한다. writeback arbiter는 PRF write와 ROB complete만 한다.
+  wakeup 시점은 기존 arbiter-grant wakeup과 같거나(대부분) 더 이르다.
+- 불변조건 "wakeup을 올린 source는 arbiter가 가져갈 때까지 같은 결과를 계속
+  제시한다"를 모든 source에 대해 보장하기 위해:
+  - source 2..9(mul/div/fpu/LSU 5 stream)는 pass-through 1-entry skid를 거친다.
+    producer가 보는 ready는 skid 점유(register)뿐이다.
+  - fast result buffer는 `DEPTH=2` 모드(신규 파라미터, 기본값 1은 기존과 동일)로
+    `request_ready`가 등록된 점유만 본다. → writeback → issue 마스크 경로 제거.
+- ROB-head system op(CSR read)는 valid가 fence/flush/trap 제어에서 나오므로 직접
+  wakeup하면 그 제어 사슬이 select 앞에 붙는다. grant 다음 cycle에 register에서
+  wakeup한다(head 직렬화 명령이라 throughput 영향 없음). flush 게이트는 두지 않는다
+  — head는 flush에 살아남고, head와 flush 경계 사이의 소비자도 깨워야 한다.
+- 모든 소비자 값이 bypass 또는 "write 다음 cycle 읽기"로 공급되므로 PRF의
+  same-cycle write-through는 필요 없다. `rv_phys_regfile.WRITE_BYPASS`(기본 1)를
+  backend에서 0으로 두어 `writeback → PRF → operand` 경로를 없앴다. CoreMark
+  cycle이 비트 단위로 동일해 불필요함을 확인했다.
+- flush 후 오래된 결과가 재할당된 tag를 깨우면 안 된다. FU 결과 reg, FPU issue
+  reg, skid는 flush cycle에 정리되지만, **outstanding 중 squash된 load의 응답은
+  나중에 도착한다**(`lq_killed` 메커니즘). ROB live CAM(48-entry)을 wakeup 앞에
+  두는 대신 `rv_lsu_cluster.load_meta_live_q`(request 시 set, 해당 sequence를
+  죽이는 flush에서 clear)로 그런 응답의 목적지 claim을 지운다.
+- IQ의 candidate payload는 flush로 게이트하지 않는다(valid만 게이트). payload
+  게이트는 recovery flush를 PRF 읽기 주소와 operand 경로 앞에 두고 있었다.
+
+###### 4. 수정 B — store→load forwarding 완료 등록
+
+forwarding 결정(`LQ candidate → SQ/SB CAM → youngest match`)의 결과를 같은 cycle에
+완료로 내보내던 것을 `rv_lsu_cluster` 안의 `forward_q`에 받아 다음 cycle에 내보낸다.
+memory 응답은 기존처럼 같은 cycle에 완료되고, `forward_q`가 제시 중인 cycle에만
+응답이 한 cycle 대기한다. forwarded load만 +1 cycle(CoreMark load의 1.2%).
+
+###### 5. 결과
+
+| 단계 | whole-backend delay | start-point |
+| --- | --- | --- |
+| v1.18.5 | 8,072.33 ps | `u_lsu_cluster.u_lsq.candidate_found` |
+| + 수정 A | 6,291.77 ps | `u_lsu_cluster.u_lsq.candidate_found` |
+| + 수정 B | **5,687.73 ps (−29.5%)** | **`fetch_instr_i`** → `u_iq.age_matrix_q` |
+
+start-point가 드디어 LSQ에서 벗어났다. 남은 최장 경로는 issue 루프가 아니라
+`frontend 입력 → decode(조합) → rename(조합) → dispatch → IQ age matrix`의
+dispatch 경로다.
+
+| 항목 | v1.18.5 | v1.18.7 |
+| --- | --- | --- |
+| CoreMark cycles | 468,408 | 468,967 (+0.119%) |
+| IPC | 1.230684 | 1.229217 |
+| whole-backend area (macro lowering) | 322,086.37 µm² | 376,587.11 µm² (+16.9%) |
+| DFF | 6,568 | 7,366 |
+| `rv_issue_queue` block (정식 flow, wake port 4→8) | 2,422.98 ps / 225,992.5 µm² | 2,426.64 ps / 241,355.1 µm² |
+
+CoreMark의 명령·데이터 commit trace(cycle/lane 열 제외)는 `mcycle` 읽기 2건과 그
+값을 출력하는 벤치마크 종료 후 명령만 다르고 576k 명령 본문은 동일하다. cycle
+증가분은 실행 순서 변화로 분기 예측 학습 시점이 바뀐 잡음이다(중간 단계에서
+mispredict +178, port 충돌 −6,168).
+
+###### 6. 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| `check_rtl.py` | 40개 구성 PASS |
+| unit 18종 + 신규 `rv_exec_result_buffer_depth2_tb` | 18 PASS (`rv_fetch_queue_tb` 기존 artifact) — depth2는 200k cycle 무작위, push 110,829 / pop 106,940 / flush 8,597 모두 참조 모델과 일치 |
+| block 17종 | 17 PASS |
+| backend integration | PASS |
+| GCC C/FP ELF | commit trace md5 baseline과 동일 |
+| CoreMark | CRC/exit PASS, 명령 본문 trace 동일 |
+| 위 전부를 **assertion 활성(-DSYNTHESIS 없이)** 재실행 | PASS (신규 "non-live source direct wake" assertion 포함) |
+
+###### 7. 검증 중 발견한 기존 문제
+
+`rv_local_mem_if.sv:54`의 `p_request_stable_when_stalled`(stall 중 D-bus 요청이
+유지돼야 함)가 CoreMark simulation 시각 177,545(약 17,750 cycle)에서 실패한다.
+**`be78fec`에서도 같은 시각에 실패**하므로 이번 변경과 무관하다. 모든 기존 실행
+스크립트가 `-DSYNTHESIS`로 컴파일해 assertion이 꺼져 있었기 때문에 드러나지 않았다.
+원인과 수정은 v1.18.8 절 9항(`rv_d_fabric` outbound/CLINT 선택 고정)에 있다.
+
+###### 8. 다음
+
+1. dispatch 경로(`fetch → decode → rename → dispatch`)에 decode→rename 사이
+   pipeline register. 분기 mispredict penalty +1 cycle(CoreMark mispredict 약
+   7,000건)과 decode 시점 `mstatus.FS` 판단의 직렬화 처리가 필요하다.
+2. issue 루프(`IQ select → arbiter → PRF/bypass → FU`)는 이제 register에서
+   시작한다. 더 줄이려면 issue→execute register와 issue-time 추정 wakeup이 필요하다.
+
+##### v1.18.8 dispatch 경로와 issue-select 입력 경로 절단 — decode→dispatch register, rename 병렬 free count, 2-entry AGU
+
+###### 1. 문제: frontend 입력부터 IQ age matrix까지 register가 없었다
+
+v1.18.7 whole-backend의 최장 경로는 `fetch_instr_i → rv_decode2(조합, FF 0) → rv_rename2
+(RAT/free-list, 조합) → dispatch 자원 판정(ROB/IQ/LSQ/checkpoint) → dispatch_fire →
+u_iq.age_matrix_q`였다(5,687.73 ps). frontend fetch queue register에서 출발하면 IQ 할당까지가
+한 cycle이었다.
+
+###### 2. 수정 A — decode→dispatch uop register (`rv_backend`)
+
+- decoder 출력 bundle(2 lane, 필드 35개)을 `uq_q`에 받고, rename/ROB/IQ/LSQ/checkpoint 할당과
+  branch/serial 추적은 모두 등록된 `dec_*`에서 계산한다. `rv_decode2`는 수정하지 않았다
+  (여전히 순수 조합, 인터페이스 동일).
+- 점유는 1 bundle이며 `uq_ready = (empty || dispatch_fire) && !uq_hold`다. 정상 흐름에서는
+  bubble이 없다.
+- **flush는 register를 항상 비운다.** bundle은 아직 ROB sequence가 없으므로 모든 live ROB
+  entry보다 younger이다. `rv_branch_recovery`에서 `flush_valid`는 항상 `redirect_valid_o`와
+  같이 뜨므로 frontend가 그 bundle을 다시 fetch한다.
+- **decode 시점 CSR 상태(`mstatus.FS`) 직렬화:** `uq_hold = serial barrier live ||
+  system redirect pending || register 안에 serializing op`. 즉 older serializing op(CSR/
+  FENCE/FENCE.I/system)가 retire하고 refetch redirect까지 끝나기 전에는 새 bundle을 decode해
+  받지 않는다. 따라서 decode는 decode와 dispatch가 같은 cycle이던 때와 **정확히 같은
+  post-serialization CSR 상태**를 본다. 이는 기존 `retire_is_decode_state_write` refetch와
+  독립적인 보장이다. 비용은 serializing op마다 1 cycle이고, serializing op는 어차피 ROB를
+  비우고 실행된다.
+- serializing bundle을 dispatch하는 cycle에는 hold 때문에 새 bundle을 받지 않으므로 register를
+  명시적으로 비운다(처음 구현에서 이 분기가 없어 같은 bundle이 반복 dispatch되는 것을
+  backend integration TB가 잡았다).
+- `dec_ready`는 dispatch 단 ready로 유지해 기존 hierarchical 참조(HTIF TB stall 출력)를 깨지
+  않았다.
+
+###### 3. 수정 B — rename 수락 판정의 병렬화 (`rv_rename2`)
+
+수정 A 뒤 최장 경로는 `u_rename.fp_free_q → lane0 first-free encoder → bit clear →
+lane1 |free → rename_can_accept → dispatch_fire → IQ age matrix`였다(4,794.04 ps).
+수락 판정은 "필요한 tag 수 ≤ 남은 free 수"와 같으므로 free bitmap마다 `{any, ≥2}`를
+균형 tree(`free_any_ge2`)로 구하고 class별 필요 수(0/1/2)와 비교한다
+(`allocation_count_ok`). tag 선택 encoder는 그대로 두어 할당되는 tag 번호는 비트 단위로
+동일하다. 기존 직렬 판정(`allocation_ok`)과의 일치는 비합성 assertion으로 모든
+simulation에서 확인한다. `rv_rename2` block: 1,783.48 → 1,668.06 ps(−6.5%),
+70,443.98 → 69,222.78 µm²(−1.7%).
+
+###### 4. 수정 C — 2-entry AGU buffer (`rv_lsu_pipe DEPTH=2`)
+
+수정 B 뒤 최장 경로는 `data PMP(pmpaddr/pmpcfg) → agu_effective_exception →
+agu_completion_needed → agu_update_ready → rv_lsu_pipe.issue_ready_o → issue arbiter
+effective mask → select → ALU → g_fast[0] result buffer`였다(5,005.97 ps). DEPTH=1 AGU는
+`issue_ready = !update_valid || update_ready`여서 PMP 판정과 completion port 사정이 같은
+cycle의 issue 선택으로 들어갔다.
+
+- `rv_lsu_pipe`에 `DEPTH` parameter(기본 1 = 기존 동작 그대로)를 추가했다. `DEPTH=2`는
+  issue 순서를 유지하는 2-entry buffer이고 `issue_ready_o = !(두 entry 모두 점유) &&
+  !flush_valid_i`로 **등록된 점유만** 본다. flush는 killed entry를 지우고 남은 entry를
+  head로 당긴다. flush cycle에는 push/pop이 없다.
+- `rv_lsu_cluster`에 `AGU_DEPTH`(기본 1)를 추가해 전달하고 `rv_backend`에서 2로 둔다.
+- 신규 `tb/unit/backend/rv_lsu_pipe_depth2_tb.sv`: 200k cycle 무작위(issue/ready/flush/
+  flush_all/비순차 sequence) 대 queue 참조 모델, push 104,158 / pop 100,807 /
+  flush 6,880 / full 38,128 cycle, 일치. `run_unit_tests.ps1`에 등록.
+- CoreMark cycle과 commit trace가 수정 B와 **비트 단위로 동일**하다(IPC 비용 0).
+- `rv_lsu_pipe` block(DEPTH=2): 998.50 ps / 2,703.36 µm²(DEPTH=1 998.87 ps / 1,385.86 µm²).
+
+###### 5. 결과
+
+| 단계 | whole-backend delay | area (macro lowering) | DFF | 최장 경로 |
+| --- | --- | --- | --- | --- |
+| v1.18.7 | 5,687.73 ps | 376,587.11 µm² | 7,366 | `fetch_instr_i` → decode → rename → dispatch → `u_iq.age_matrix_q` |
+| + A decode→dispatch register | 4,794.04 ps | 377,428.73 µm² | 8,023 | `u_rename.fp_free_q` → rename 수락 → dispatch → `u_iq.age_matrix_q` |
+| + B rename 병렬 free count | 5,005.97 ps | 379,070.22 µm² | 8,023 | `u_data_pmp.pmpaddr_i` → LSU `issue_ready` → select → ALU → `g_fast[0].payload_q` |
+| + C 2-entry AGU | **4,438.31 ps** | 383,862.21 µm² (+1.9%) | 8,287 | `dmem_rsp_replay_i` → load 완료 → producer wakeup → select → ALU → `g_fast[0].payload_q` |
+
+- v1.18.7 대비 **−22.0%**, v1.18.5(8,072.33 ps) 대비 −45.0%. area +1.9%.
+- B 단계에서 수치가 오른 것은 B가 없앤 경로 대신 **B와 무관한 PMP 경로**가 최장으로
+  보고됐기 때문이다. 같은 경로도 ABC(`&dch`/`&nf`) 매핑 결과가 넷리스트 전체에 따라 수 %
+  흔들린다(A 결과에서 PMP 경로는 4,794 ps 이하였다). 단계별 수치는 "그 run의 최장
+  경로"로만 읽어야 하고, 개별 경로 개선은 block 측정과 start-point 이동으로 확인한다.
+- A는 hold 조건 추가 전 RTL로 측정했다. hold는 `fetch_ready_o` 쪽 AND 한 단만 추가한다.
+- 남은 최장 경로는 v1.18.7에서 IPC 때문에 의도적으로 남긴 **load 응답 same-cycle
+  wakeup**이 issue 루프(select → arbiter → operand/bypass → FU → 결과 reg)에 붙은 것이다.
+
+###### 6. CoreMark
+
+| 항목 | v1.18.7 | v1.18.8 |
+| --- | --- | --- |
+| cycles | 468,967 | 477,581 (+8,614, **+1.84%**) → fabric 수정 후 최종 **477,685 (+1.86%)** |
+| IPC | 1.229217 | 1.207046 → 최종 1.206783 |
+| branch mispredict | 7,204 | 7,504 (+300) |
+| return mispredict | 262 | 411 (+149) |
+
+- 기준값 468,930 / IPC 1.229288 대비 +1.845%. commit trace(cycle/lane 열 제외)는
+  `mcycle` 읽기와 그 값 출력만 다르고 576k 명령 본문 동일.
+- 비용의 대부분은 설계대로 **mispredict/redirect penalty +1 cycle**(약 7,500건)이다.
+- return mispredict +149: speculative RAS는 recovery 때 pointer/count만 복원하고 entry
+  내용은 복원하지 않는다. redirect가 1 cycle 늦어지면 wrong-path call이 RAS entry를 더 많이
+  덮어쓴다. RAS top entry를 checkpoint에 함께 저장하면 회수 가능한 손실이다(후속 후보).
+
+###### 7. 검증
+
+| 항목 | 결과 |
+| --- | --- |
+| `check_rtl.py` | 40개 구성 PASS |
+| unit 20종(신규 `rv_lsu_pipe_depth2_tb`, `rv_exec_result_buffer_depth2_tb` 포함) | 19 PASS (`rv_fetch_queue_tb` 기존 Verilator artifact) |
+| block 17종 | 17 PASS |
+| backend integration | PASS (아래 TB 수정 포함) |
+| GCC C/FP ELF | exit 0, commit trace(cycle/lane 제외) baseline과 동일 |
+| CoreMark | CRC/exit PASS, 명령 본문 trace 동일 |
+| 위 전부를 **assertion 활성(-DSYNTHESIS 없이)** 재실행 | PASS — 9항 fabric 수정 후 **비활성화한 assertion 없음** (신규 rename 판정 일치, fabric lock assertion 포함) |
+
+`rv_backend_int_tb`의 MPRV 복구 단계는 `csrw mstatus` 전달 직후 `rob_empty`만 기다렸다.
+이제 받아들인 bundle이 uop register를 거쳐 ROB에 들어가므로 `rob_empty && !dec_valid`를
+기다리도록 고쳤다(판정 기준은 동일, 대기 조건만 한 단 확장).
+
+###### 8. 다음
+
+1. load 응답 → wakeup → select 경로(현재 최장): load-use를 1 cycle 늘리는 단순 등록은
+   v1.18.7 측정으로 +9% 수준이라 받아들이기 어렵다. 후보는 issue→execute register와
+   issue-time 추정 wakeup(hit 가정 + replay)이다.
+2. `rob trap → trap_controller → recovery flush → IQ candidate_valid → select → FU` 경로
+   (find_comb_chains 7 모듈): architectural redirect를 1 cycle 등록하면 끊을 수 있다(trap/
+   refetch 빈도가 낮아 IPC 영향 작음).
+3. RAS top-entry checkpoint로 return mispredict 증가분 회수.
+
+###### 9. CoreMark assertion 실패 수정 — `rv_d_fabric` outbound/CLINT 선택 고정
+
+v1.18.7에서 "기존 문제"로 남기고 assertion 활성 회귀에서 비활성화했던
+`rv_local_mem_if.sv:54`(stall 중 request 유지) 실패를 원인까지 추적해 고쳤다.
+이제 **어떤 assertion도 끄지 않고** CoreMark가 통과한다.
+
+- 실패 위치는 `u_dut.d_outbound_bus`(D-fabric → local→AXI bridge)다. 추적 결과
+  (예: sim 시각 179,235): LSU1의 younger load(seq 223, `0x8000_287b`)가 outbound에서
+  bridge busy로 stall된 동안 LSU0의 older load(seq 218, `0x8000_287a`)가 나타나고,
+  `rv_d_fabric`의 outbound 선택이 매 cycle age로 다시 계산돼 stall 중인 request를
+  다른 request로 바꿨다. CoreMark 상수 data가 ITIM(`0x8000_xxxx`)에 있어 D-side load가
+  Xbar 경유 outbound로 나가므로 흔히 일어난다. 각 LSU bus 자체는 계약을 지켰다.
+- bridge는 handshake 시점에만 capture하고 AXI 쪽은 등록 출력이라 기능 오류(잘못된 data)는
+  없었지만, local-bus 계약 위반이며 target이 capture 전 request를 참조하면 오동작한다.
+- 수정: outbound와 CLINT 선택에 lock을 둔다. grant했지만 `req_ready=0`이면 그 requester를
+  기억하고, accept될 때까지 같은 requester를 선택한다(`outbound_lock_q`,
+  `clint_lock_q`). 잠긴 requester는 자기 bus 계약상 request를 유지하므로 lock이 사라진
+  request를 기다리는 일이 없고, 이를 `p_outbound_lock_holds_candidate`/
+  `p_clint_lock_holds_candidate` assertion으로 확인한다. DTIM bank 중재는 grant와 ready가
+  같은 cycle이라 해당 없다.
+- 영향: CoreMark 477,581 → **477,685 cycles(+104, +0.02%)**, IPC 1.206783. 명령 본문 trace
+  동일. `rv_d_fabric`(DTIM 1 KiB wrapper, 1 ns target) 1,002.91 → 999.78 ps,
+  78,182.72 → 79,179.69 µm²(+1.3%).
+- CoreMark 결과 검증: seedcrc `0xe9f5`, crclist `0xe714`, crcmatrix `0x1fd7`, crcstate
+  `0x8e3a`, crcfinal `0x72be`, status `0x9`, exit 0 — 기준 run과 동일.
+- **전 assertion 활성(비활성화 없음)** 회귀: unit 20종(`rv_fetch_queue_tb` 기존 artifact
+  제외), block 17종, backend integration, C/FP ELF, CoreMark 모두 PASS, assertion 실패 0.
+
+##### v1.18.9 `rv_ooo_core` Top 기준 경로 분석 — issue 선택기 단축과 측정 방법의 맹점
+
+###### 1. `rv_ooo_core` Top 결과 (v1.18.8 RTL, 기존 macro flow)
+
+| 항목 | 값 |
+| --- | --- |
+| delay | **4,685.99 ps** |
+| area | 433,875.53 µm², DFF 8,681 |
+| 최장 경로 | `u_frontend.u_fetch_queue.count_q` → head 명령 길이 판정 → predictor direct-target 가산 → predicted redirect PC → fetch target buffer lookup → IFU PMP 주소(8 parcel) → fetch queue fill → `u_fetch_queue.byte_d` |
+
+core Top에서는 frontend가 최장이다. `rv_frontend` 단독은 3,551.26 ps인데, 단독
+합성에서는 IFU PMP가 frontend 밖(`rv_ooo_core`)이라 그 판정이 port로 잘리기 때문이다.
+"queue 출력 → 예측 → 같은 edge에 target block을 queue에 설치"는 taken branch bubble을
+없애려는 의도된 구조이고, 끊으면 predicted redirect(CoreMark 약 86,000건)마다 bubble이
+생긴다.
+
+###### 2. D-bus 응답 경로가 긴 이유 (v1.18.8 backend 4,438.31 ps)
+
+경로 이름 추적 도구(`scripts/trace_named_path.py`, 아래 5항)로 본 구성. 숫자는 2-input
+gate 환산 누적값(순서 파악용):
+
+| 누적 | 단계 |
+| ---: | --- |
+| 16 | D-bus 응답 → LSU 완료 → producer-side wakeup valid |
+| 29 | IQ tag CAM → `ready_now` |
+| 44 | age matrix oldest/second select |
+| 102 | 56-entry one-hot payload 선택 |
+| 141 | candidate sequence ↔ serial barrier 비교 → effective port mask |
+| 258 | **`rv_issue_arbiter`** (두 candidate의 sequence 재비교, port pair 탐색, 두 번째 candidate) |
+| 262 | port operand 선택 / bypass |
+| 303 | branch 비교 → mispredict → `g_fast[0]` 결과 buffer |
+
+즉 한 cycle 안에 **wakeup + select + port 중재 + payload + operand/bypass + 실행**이
+들어 있다. 1~2 ns급 설계는 이것을 2~3 단으로 나눈다. 특정 모듈 하나가 비정상이라서가
+아니라 cycle당 일의 양이 많은 구조다. 그 안에서 바로 줄일 수 있는 직렬 요소 두 개를
+먼저 없앴다.
+
+###### 3. 수정 (IPC 영향 없음)
+
+- **`rv_issue_arbiter` `AGE_ORDERED`**(기본 0 = 기존 그대로): IQ가 주는 candidate 0/1은
+  oldest/second-oldest라 항상 0이 older다. 이 보장 아래 sequence 비교를 없애고 port
+  선택을 5-bit 병렬 식으로 바꿨다. 기존 일반 탐색 로직을 같은 process에서 함께 계산해
+  simulation 중 매 cycle 일치를 assertion으로 확인하고(합성에서는 제거), 신규
+  `rv_issue_arbiter_age_tb`(200k 무작위, dual issue 37,112건)로도 대조했다. block(2
+  candidate, 100 ps 목표): 988.72 → **571.38 ps**, 259.88 → 148.69 µm².
+- **serializing bundle 분리**: lane 0이 serializing이면 lane 1은 그 barrier가 retire한
+  뒤 따로 dispatch한다(uop register에서 lane 1을 lane 0로 당겨 보관). 그러면 IQ에 barrier보다
+  younger인 uop이 존재할 수 없으므로 issue 경로의 `candidate sequence ↔ barrier` 비교를
+  제거했다(위반 여부는 assertion으로 상시 확인).
+- 결과(같은 macro flow): backend **4,438.31 → 3,972.90 ps (−10.5%)**, area 383,862.21 →
+  383,266.10 µm². 최장 경로는 `g_fast[0]` ALU 결과 → producer wakeup → select → 중재 →
+  ALU → `g_fast[0]`(ALU back-to-back 루프)로 이동.
+- CoreMark 477,685 → **477,689 cycles(+4)**, IPC 1.206773, CRC 동일, 명령 본문 trace 동일.
+  unit 21종(`rv_fetch_queue_tb` 기존 artifact 제외), block 17종, backend integration,
+  C/FP ELF, CoreMark 모두 **assertion 전부 활성** 상태로 PASS.
+
+###### 4. 측정 방법의 맹점 — 기존 whole-top 수치는 낙관적이다
+
+whole-top flow는 추론된 memory를 `$mem` macro로 남긴다. ABC는 macro의 read data를
+primary input으로 보므로 **variable-address async read의 주소→데이터 경로가 전부
+빠진다.** 해당 array가 49개이며 중요 경로에 걸린 것은:
+
+- frontend: `pht_q`/`global_pht_q`/`chooser_q`(2048×2, async read 6 port), `btb_q`,
+  RAS, fetch target buffer, **fetch queue `byte_q`**(head 명령 추출)
+- backend: **PRF 2개**(operand read), **`load_meta_*`**(D-bus 응답 id → 목적지/live),
+  LSQ/SB 주소·sequence, `branch_cp_q`(flush 경로), rename checkpoint, ROB
+
+상수 주소로만 읽는 array(IQ payload, RAT 등)는 flop과 timing이 같아 문제없다.
+
+실제 값을 보기 위한 analysis flow(`scripts/run_analysis_netlist.sh`)를 만들었다.
+reset을 비활성으로 묶고(entry별 reset loop가 수백 개 write port가 되어 `memory_map`이
+메모리를 소진한다. flop D의 reset mux 한 단이 빠진다), 해당 memory를 하나씩 flop+mux로
+바꾼다. 7 GB sandbox 한계로 whole-core를 한 번에는 못 돌려 frontend/backend를 나눴다.
+
+| 대상 | macro flow | analysis flow | 비고 |
+| --- | --- | --- | --- |
+| `rv_frontend` | 3,551.26 ps / 30,457 µm² | **4,194.16 ps** / 365,932 µm² (DFF 31,258) | predictor table을 flop으로 두면 area 12배. IFU PMP까지 더하면 core 기준 약 5 ns대 |
+| `rv_backend` | 3,972.90 ps | 4,282.91 ps | issue 루프 array(PRF, load_meta, branch_cp 등)만 mapping. 최장은 FPU `pre_calc_q → norm_calc_q`로 보고됨 |
+
+backend analysis에서 FPU 경로가 최장으로 나온 것은 같은 RTL에서도 whole-top ABC 결과가
+넷리스트 차이로 ±10% 정도 흔들린다는 뜻이기도 하다(macro flow에서는 FPU 경로가 3,973 ps
+이하였다). ROB/checkpoint/branch 정보/LSQ·SB array는 sandbox 메모리 안에 mapping되지
+않아 아직 macro로 남아 있다. 서버에서 동일 script로 전체를 돌리면 이 공백이 없어진다.
+
+###### 5. 도구
+
+- `scripts/trace_named_path.py`: pre-ABC RTLIL에서 named 신호를 따라 최장 구조 경로를
+  출력한다(`--src/--srcbit` 시작, `--to/--tobit/--tonode` 끝). 단위 delay 모델이라
+  ABC가 재균형하는 직렬 loop(FPU LZC, one-hot OR 사슬)는 과대평가한다. ABC가 보고한
+  경로의 **단계 이름을 붙이는 용도**다.
+- `scripts/run_analysis_netlist.sh <top> <out_dir> [EXCLUDE] [INCLUDE]`: 위 4항 flow.
+
+###### 6. 다음 (IPC 비용이 있는 구조 변경 — 방향 결정 필요)
+
+1. **backend issue/execute 분리**: select+중재 → register → operand/bypass+실행. 1-cycle
+   ALU는 select 시점 wakeup으로 back-to-back 유지. load/mul/div/FPU 소비자는 +1 cycle이
+   되며 v1.18.7 측정(E2a)상 CoreMark 약 +9%. DTIM load hit 가정 wakeup + replay를 붙이면
+   대부분 회수 가능하나 IQ entry 보존/취소 로직이 필요하다.
+2. **frontend 예측 경로**: queue 출력 기반 예측을 fetch block 주소 기반(ahead) 예측으로
+   바꾸거나 예측을 한 단 등록(taken branch마다 bubble). predictor table의 async read를
+   SRAM형 sync read로 바꾸는 일과 함께 해야 한다.
+3. **area**: `branch_*_q`가 ROB sequence(8-bit, 256 entry)로 index되어 ROB 48 entry의
+   5.3배를 차지한다(약 60k bit). ROB index로 바꾸면 약 11k bit.
+
+
+
+
+
 위 event는 동시에 발생할 수 있으므로 표의 비율을 합산하지 않는다. 특히
 profiler의 `frontend_empty`는 fetch queue의 byte count가 반드시 0이라는 뜻이
 아니다. `fetch_valid[1:0]`이 모두 0인 cycle을 세므로 queue가 비었거나, 남은
@@ -4334,3 +5151,9 @@ interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
 | v1.18.1 | Slang/Yosys+Nangate45 기반 공개 합성 preflight를 Windows/Linux script로 추가하고 `rv_ooo_core` 구조 check와 8개 주요 block timing을 재현 가능하게 했다. 11-source writeback의 네 번 직렬 oldest scan을 parallel INT/FP/completion age-rank로 바꿔 15.936→2.347 ns, 24-entry LQ oldest-two scan을 parallel load age-rank로 바꿔 9.993→6.379 ns를 기록했다. WB wrap-around directed test와 CSR PMP cfg loop의 synthesis-front-end-safe constant indexing을 추가했다. 두 변경 뒤 parse/elaboration, unit 18종, block 17종, backend integration, CoreMark CRC/exit를 통과했고 CoreMark는 468,930 cycles/IPC 1.229288로 불변이다. LSQ는 64.7% area 증가가 있어 서버 library 결과를 최종 채택 gate로 명시한다. |
 | v1.18.2 | `rv_fpu` 기본 fast path를 decode/special/align·product·accumulate pre-stage와 normalize/round/pack stage로 실제 분할하되 총 LATENCY=3과 1 request/cycle 계약은 유지했다. pre-stage에도 ROB identity/exception/flush/backpressure를 적용하고 LATENCY 1/2는 호환용 unsplit 경로로 유지했다. 5 ns 공개 preflight에서 FPU가 7.293→5.079 ns, mapped area가 39,951.1→34,531.1 µm²로 감소했다. differential 6,470 vectors, unit 18종, block 17종, backend integration과 GCC C/FP ELF를 통과했고, C payload startup은 architectural FS=Off reset 뒤 `mstatus.FS=Dirty`를 명시한다. CoreMark는 468,930 cycles/IPC 1.229288로 정확히 불변이다. |
 | v1.18.3 | IQ와 LQ의 oldest-two 선택을 균형 tournament tree로, SQ forwarding을 4-level youngest-match reduction tree로 바꾸고 commit 반환 tag/issue된 IQ slot을 다음 cycle allocation부터 쓰도록 resource-return 경로를 끊었다. `rv_fpu`의 normalize/sticky와 round/pack 경계를 나누고 module/backend 기본 `LATENCY`를 4로 통일했다. 공개 1 ns preflight에서 IQ 6,180.63→3,309.81 ps(area 24,502.6→32,082.8 µm²), LSQ 5,785.50→2,472.17 ps(area 41,782.2→23,994.8 µm²), rename2 1,899.51→1,783.48 ps, FPU(LATENCY=4) 5,079.32→4,828.67 ps로 최장 block이 IQ에서 FPU로 이동했다. block 17종·backend integration·FPU differential 6,470 vectors·GCC C/FP ELF PASS, Windows unit 18종 PASS. CoreMark는 468,408 cycles / 576,450 instret / IPC 1.230658, CRC/exit PASS로 baseline 468,930 cycles / IPC 1.229288보다 522 cycles 적다. |
+| v1.18.4 | 공개 flow screening list의 blind spot(`rv_store_buffer`, `rv_lsu_cluster` 등 6개 leaf 누락)을 먼저 메우고, store-buffer youngest-match reduction tree, ROB flush-keep popcount tree, LSQ binary-search allocator, IQ popcount count + age-ordering matrix, multiplier stage0 재배치 5건과 FPU 4단계(align/accumulate 분리 + negate folding으로 `LATENCY=5`, `MAGW` 128→80, 직렬 add→negate를 병렬 3-가산기로, `normalize_fp_pre`/`pack_finite` 지수 산술 16-bit 재구성, FDIV/FSQRT 피연산자 정규화로 `DIV_FRAC` 52→28 및 sqrt 128/64/130→58/29/60 bit)를 적용했다. 동일 공개 조건에서 설계 최장 block이 6,270.32→2,945.19 ps(−53.0%)로 줄고 `rv_fpu`는 4,709.85→2,906.45 ps(−38.3%)·area 34,131.5→26,913.9 µm²(−21.1%)로 delay와 area가 함께 개선됐다. FDIV 반복 77→53 cycle, FSQRT 반복 64→29 cycle. check_rtl 40 구성·block 17종·backend integration·FPU differential 6,470 vectors·FDIV/FSQRT 등가 co-sim 71,670 vectors·GCC C/FP ELF PASS, unit 18종 중 `rv_fetch_queue_tb`만 기존 Verilator 환경 artifact로 실패. CoreMark는 468,408 cycles / 576,462 instret / IPC 1.230684로 baseline과 593,268행 commit trace까지 bit-exact 동일하다. |
+| v1.18.5 | v1.18.4에서 남은 두 병목을 한 번 더 깎았다. FPU는 정렬 단에 그대로 남아 있던 32-bit 지수 산술(`lsb(a)+lsb(b)` → `max` → `common-own` → barrel shift가 직렬)을 `EXPW=16`으로 통일하고 sticky mask 비교를 7-bit로 좁혀 2,906.45→2,590.69 ps, 이어서 `fp_align_finish`의 중첩 early-return을 평탄한 select 한 번으로 바꿔 2,513.04 ps가 됐다. IQ는 `am_second`가 `am_first`를 기다리며 ENTRIES-wide 축약을 두 번 직렬로 돌던 것을 saturating {any, ge2} 트리 하나로 합치고, candidate payload를 인코더+ENTRIES:1 mux 대신 one-hot AND-OR로 바꿔 2,945.19→2,422.98 ps(area 277,138.2→225,992.5 µm², −17.2%)가 됐다. 설계 최장 block은 6,270.32→2,513.04 ps(−59.9%), `rv_fpu`는 be78fec 대비 −46.6%·area −20.9%, IQ는 −30.6%·area −5.2%다. check_rtl 40 구성·block 17종·backend integration·FPU differential 6,470 vectors·FPU 등가 co-sim 57,070 vectors·GCC C/FP ELF PASS, unit은 `rv_fetch_queue_tb`만 기존 환경 artifact로 실패. CoreMark 468,408 cycles / IPC 1.230684, commit trace md5까지 동일하다. |
+| v1.18.6 | 전체 backend(Top) 합성이 멈추던 원인이 yosys ABC 기본 script의 `scorr`/`dc2`/`dretime`/`retime`임을 확인했다(610,696 cell 네트워크에서 종료되지 않음). delay 중심으로 다듬은 script(`strash;&get -n;&dch -f;&nf;&put;buffer;upsize;dnsize;stime -p`)로 바꿔 약 25분에 완주시켰고, `run_open_timing.ps1`/`.sh`의 whole-top 항목이 이 script를 쓰도록 했다. flatten 후에도 계층 이름이 남아 critical path 시작점이 `u_lsu_cluster.u_lsq.candidate_found[0]`으로 찍히는데, 이는 서버 STA가 보고한 `lsu_cluster/lsq/candidate_index_reg → mul/stage0`과 같은 register 그룹이다. whole-backend delay는 be78fec 14,827.02 → v1.18.5 8,072.33 ps(−45.6%)이고 시작점은 그대로다. 같은 lowering/script로 단일 block을 재측정한 보정계수(FPU 1.16×, IQ 1.49×) 기준으로 환산하면 약 5.4~7.0 ns로, 설계 최장 block 2,513 ps의 2~2.7배다. LSQ→store_buffer→writeback→IQ→mul 다섯 모듈 사이에 register가 하나도 없기 때문이며, block 단위 최적화로는 더 줄일 수 없다. 다음 단계는 speculative(issue-time) wakeup + IQ shadow window로 이 사슬을 끊는 것이다. |
+| v1.18.7 | whole-backend 경로를 모듈 경계 단위로 추적하는 `scripts/find_comb_chains.py`로 `FU 결과 reg → writeback arbiter → IQ wakeup/select → issue arbiter → PRF → FU`가 한 cycle 조합 루프이고 load는 그 앞에 LSQ forwarding까지 붙어 있음을 확인했다. writeback wakeup을 단순 등록하면 CoreMark +18.96%, fast source만 직접 두면 +9.27%(전부 load 기인)로 측정됐다. 대신 목적지를 쓰는 source가 스스로 wakeup하고 PRF에 써질 때까지 bypass하는 producer-side wakeup으로 바꾸고(source 2..9 skid, fast result buffer `DEPTH=2`, PRF `WRITE_BYPASS=0`, squash된 outstanding load 응답은 `load_meta_live_q`로 claim 제거, system op는 등록 wakeup, IQ payload flush 게이트 제거), store→load forwarding 완료를 `forward_q`로 등록했다. whole-backend 8,072.33 → 5,687.73 ps(−29.5%), start-point가 LSQ candidate에서 `fetch_instr_i → decode → rename → dispatch → IQ age matrix`로 이동했다. CoreMark 468,967 cycles(+0.119%), 명령 본문 commit trace 동일. check_rtl·unit(신규 depth2 TB 포함)·block·backend integration·C/FP ELF PASS, assertion 활성 재실행 PASS. 검증 중 `rv_local_mem_if` D-bus 요청 안정성 assertion이 `be78fec`에서도 실패하는 기존 문제를 발견했다(기존 스크립트가 모두 -DSYNTHESIS라 가려져 있었다). |
+| v1.18.8 | v1.18.7의 최장 경로 `fetch → decode → rename → dispatch → IQ age matrix`를 `rv_backend`의 1-bundle decode→dispatch register로 끊었다. flush는 register를 비우고, older serializing op가 끝날 때까지 새 bundle을 받지 않아 decode 시점 `mstatus.FS` 판단이 기존과 같다. 이어서 드러난 `rename free-list encoder → 수락 판정`을 `{any, ≥2}` 병렬 판정으로, `data PMP → AGU ready → issue select`를 `rv_lsu_pipe DEPTH=2`(기본 1 유지)로 끊었다. whole-backend 5,687.73 → 4,438.31 ps(−22.0%), area +1.9%, 최장 경로는 load 응답 same-cycle wakeup → select → ALU로 이동. CoreMark 477,581 cycles / IPC 1.207046(+1.84%, 대부분 redirect penalty +1 cycle, RAS wrong-path 덮어쓰기로 return mispredict +149). check_rtl·unit 20종(신규 `rv_lsu_pipe_depth2_tb`)·block·backend integration·C/FP ELF·CoreMark PASS. v1.18.7에서 비활성화했던 `rv_local_mem_if` stall 안정성 assertion 실패의 원인(`rv_d_fabric` outbound 선택이 stall 중 older request로 바뀜)을 CLINT/outbound 선택 고정으로 고쳐 **모든 assertion 활성** 상태에서 전 회귀와 CoreMark(CRC 일치)가 통과한다. 최종 CoreMark 477,685 cycles / IPC 1.206783. |
+| v1.18.9 | `rv_ooo_core`를 Top으로 합성(4,685.99 ps, 최장은 frontend fetch queue → 예측 → FTB → IFU PMP → queue fill). D-bus 응답 경로가 긴 이유를 경로 이름 추적 도구(`scripts/trace_named_path.py`)로 분해했다: 한 cycle에 wakeup+select+port 중재+payload+operand+실행. 그중 `rv_issue_arbiter`를 age 보장 기반 `AGE_ORDERED` 경로로(block 988.72 → 571.38 ps), serializing bundle 분리로 barrier 비교를 issue 경로에서 제거해 backend 4,438.31 → 3,972.90 ps(−10.5%). CoreMark 477,689 cycles(+4), 전 assertion 활성 회귀 PASS. whole-top macro flow가 memory의 variable-address async read(PRF, fetch queue, predictor table, load_meta 등 49개)를 잘라 낙관적임을 확인하고 analysis flow(`scripts/run_analysis_netlist.sh`)로 frontend 4,194.16 ps, backend 4,282.91 ps를 측정했다. 남은 개선은 issue/execute 분리와 frontend ahead 예측 같은 IPC 비용이 있는 구조 변경이다. |

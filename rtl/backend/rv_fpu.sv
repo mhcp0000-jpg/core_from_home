@@ -42,11 +42,39 @@ module rv_fpu #(
   // default LATENCY=4 also separates leading-bit normalization/barrel shift
   // from rounding/packing; this is the timing-safe 1 GHz-oriented pipeline.
   // LATENCY 1/2 keeps the compact unsplit datapath.
+  // float32 exact FMA/add 에 실제로 필요한 누산 폭.  product 48-bit +
+  // ALIGN_SH 만큼의 하위 여유 + carry.  128-bit 은 과했다.
+  localparam int unsigned MAGW     = 80;
+  localparam int unsigned ALIGN_SH = 32;
+  // radix-2 FDIV 가 만드는 몫의 소수 bit 수.  피연산자 mantissa 를 나누기
+  // 전에 정규화하므로 A/B in (0.5, 2) 가 보장되고, 24-bit significand +
+  // guard 에 sticky(div_remainder != 0) 를 더하면 충분하다.  정규화 이전에는
+  // subnormal(선행 0 최대 23개) 때문에 52 가 필요했다.
+  localparam int unsigned DIV_FRAC = 28;
+  localparam int unsigned DIV_NUMW = 25 + DIV_FRAC;
+  // radix-2 FSQRT.  피연산자 mantissa 를 정규화하면 m in [2^23, 2^24) 이므로
+  // 근은 29-bit 면 24-bit significand + guard 를 담고도 남는다.  정규화
+  // 이전에는 subnormal 을 덮으려고 128-bit radicand / 64 회 반복을 썼다.
+  localparam int unsigned SQRT_ITERS = 29;
+  localparam int unsigned SQRT_RADW  = 2 * SQRT_ITERS;
+  localparam int unsigned SQRT_ROOTW = SQRT_ITERS;
+  localparam int unsigned SQRT_REMW  = SQRT_RADW + 2;
+  // 지수 산술 폭.  fp_lsb_exponent 는 [-149, 104], FMA product 지수는
+  // [-298, 208], ALIGN_SH 보정까지 합쳐도 |e| < 400 이다.  이것을 32-bit
+  // integer 로 계산하면 정렬/정규화 경로마다 1,080 ps 짜리 캐리 체인이
+  // 직렬로 붙는다.  16-bit signed 로 80배 여유가 있다.
+  localparam int unsigned EXPW = 16;
+  localparam logic signed [EXPW-1:0] MAGW_S = EXPW'(MAGW);
   localparam bit SPLIT_PREPACK = LATENCY >= 3;
   localparam bit SPLIT_NORMALIZE = LATENCY >= 4;
-  localparam int unsigned PIPE_STAGES = SPLIT_NORMALIZE ? LATENCY - 2 :
+  // LATENCY>=5 additionally separates the multiply/alignment network from the
+  // wide signed accumulate.  That accumulate was the longest single datapath
+  // in the fast pipe.
+  localparam bit SPLIT_ALIGN = LATENCY >= 5;
+  localparam int unsigned PIPE_STAGES = SPLIT_ALIGN ? LATENCY - 3 :
+                                    (SPLIT_NORMALIZE ? LATENCY - 2 :
                                            (SPLIT_PREPACK ? LATENCY - 1 :
-                                                   ((LATENCY < 1) ? 1 : LATENCY));
+                                                   ((LATENCY < 1) ? 1 : LATENCY)));
   localparam logic [4:0] FFLAG_NX = 5'b00001;
   localparam logic [4:0] FFLAG_UF = 5'b00010;
   localparam logic [4:0] FFLAG_OF = 5'b00100;
@@ -63,11 +91,27 @@ module rv_fpu #(
     logic                needs_pack;
     fp_calc_t             direct;
     logic                sign;
-    logic [127:0]         magnitude;
-    logic signed [31:0]   lsb_exponent;
+    logic [MAGW-1:0]         magnitude;
+    logic signed [EXPW-1:0] lsb_exponent;
     logic [2:0]          rounding_mode;
     logic                extra_sticky;
   } fp_precalc_t;
+
+  typedef struct packed {
+    logic                 sum_pending;
+    fp_precalc_t          pre;
+    logic [MAGW-1:0]         mag_x;
+    logic [MAGW-1:0]         mag_y;
+    logic                 neg_x;
+    logic                 neg_y;
+    logic signed [EXPW-1:0] common_exponent;
+    logic                 sticky;
+    logic [2:0]           rm;
+    logic                 zx_zero;
+    logic                 zx_sign;
+    logic                 zy_zero;
+    logic                 zy_sign;
+  } fp_align_t;
 
   typedef struct packed {
     logic                direct_valid;
@@ -76,7 +120,7 @@ module rv_fpu #(
     logic [23:0]         retained;
     logic                guard_bit;
     logic                sticky_bit;
-    logic signed [31:0]  unbiased_exponent;
+    logic signed [EXPW-1:0] unbiased_exponent;
     logic [2:0]          rounding_mode;
     logic                subnormal;
   } fp_normalized_t;
@@ -104,6 +148,15 @@ module rv_fpu #(
   exception_code_e pre_exception_cause_q;
   logic [XLEN-1:0] pre_exception_tval_q;
   fp_precalc_t pre_calc_q;
+  logic align_valid_q;
+  logic [ROB_SEQ_WIDTH-1:0] align_sequence_q;
+  logic align_destination_valid_q;
+  reg_class_e align_destination_class_q;
+  logic [PHYS_TAG_WIDTH-1:0] align_destination_phys_q;
+  logic align_exception_valid_q;
+  exception_code_e align_exception_cause_q;
+  logic [XLEN-1:0] align_exception_tval_q;
+  fp_align_t align_calc_q;
   logic norm_valid_q;
   logic [ROB_SEQ_WIDTH-1:0] norm_sequence_q;
   logic norm_destination_valid_q;
@@ -116,6 +169,9 @@ module rv_fpu #(
   pipe_payload_t result_payload;
   logic [PIPE_STAGES-1:0] stage_ready;
   logic pre_ready;
+  logic align_ready;
+  fp_align_t request_align;
+  fp_precalc_t align_pre_calc;
   logic norm_ready;
   fp_precalc_t request_precalc;
   fp_normalized_t pre_norm_calc;
@@ -144,28 +200,33 @@ module rv_fpu #(
 
   logic div_sign_q;
   logic [2:0] div_rm_q;
-  logic signed [31:0] div_exponent_q;
+  logic signed [EXPW-1:0] div_exponent_q;
   logic [23:0] div_divisor_q;
-  logic [87:0] div_numerator_q;
+  logic [DIV_NUMW-1:0] div_numerator_q;
   logic [24:0] div_remainder_q;
-  logic [87:0] div_quotient_q;
+  logic [DIV_NUMW-1:0] div_quotient_q;
   logic [6:0] div_count_q;
   logic [24:0] div_shifted_remainder;
   logic [24:0] div_next_remainder;
-  logic [87:0] div_next_quotient;
+  logic [DIV_NUMW-1:0] div_next_quotient;
   logic div_quotient_bit;
+  logic [4:0] div_lz_a, div_lz_b;
+  logic [23:0] div_norm_a, div_norm_b;
 
   logic [2:0] sqrt_rm_q;
-  logic signed [31:0] sqrt_exponent_q;
-  logic [127:0] sqrt_radicand_q;
-  logic [129:0] sqrt_remainder_q;
-  logic [63:0] sqrt_root_q;
-  logic [5:0] sqrt_count_q;
-  logic [129:0] sqrt_shifted_remainder;
-  logic [129:0] sqrt_trial;
-  logic [129:0] sqrt_next_remainder;
-  logic [63:0] sqrt_next_root;
+  logic signed [EXPW-1:0] sqrt_exponent_q;
+  logic [SQRT_RADW-1:0] sqrt_radicand_q;
+  logic [SQRT_REMW-1:0] sqrt_remainder_q;
+  logic [SQRT_ROOTW-1:0] sqrt_root_q;
+  logic [6:0] sqrt_count_q;
+  logic [SQRT_REMW-1:0] sqrt_shifted_remainder;
+  logic [SQRT_REMW-1:0] sqrt_trial;
+  logic [SQRT_REMW-1:0] sqrt_next_remainder;
+  logic [SQRT_ROOTW-1:0] sqrt_next_root;
   logic sqrt_root_bit;
+  logic [4:0] sqrt_lz;
+  logic [23:0] sqrt_norm_m;
+  logic signed [EXPW-1:0] sqrt_lsb;
   fp_calc_t div_pack_calc;
   fp_calc_t sqrt_pack_calc;
 
@@ -222,10 +283,35 @@ module rv_fpu #(
     return {1'b1, value[22:0]};
   endfunction
 
+  function automatic logic signed [EXPW-1:0] fp_lsb_exponent_n(
+    input logic [31:0] value
+  );
+    if (value[30:23] == 0)
+      return -signed'(EXPW'(149));
+    return signed'(EXPW'({1'b0, value[30:23]})) - signed'(EXPW'(150));
+  endfunction
+
   function automatic integer fp_lsb_exponent(input logic [31:0] value);
     if (value[30:23] == 0)
       return -149;
     return $signed({1'b0, value[30:23]}) - 150;
+  endfunction
+
+  // 24-bit mantissa 의 선행 0 개수.  subnormal 피연산자를 FDIV 앞에서
+  // 정규화하는 데 쓴다.  mantissa 가 0 인 경우는 slow_special_case 가
+  // 먼저 걸러내므로 여기 도달하지 않는다.
+  function automatic logic [4:0] mantissa_lz(input logic [23:0] mantissa);
+    logic [4:0] lz;
+    logic       found;
+    lz = 5'd0;
+    found = 1'b0;
+    for (integer bit_index = 23; bit_index >= 0; bit_index--) begin
+      if (!found && mantissa[bit_index]) begin
+        lz = 5'(23 - bit_index);
+        found = 1'b1;
+      end
+    end
+    return lz;
   endfunction
 
   function automatic logic round_up(
@@ -247,23 +333,32 @@ module rv_fpu #(
     endcase
   endfunction
 
-  function automatic logic [127:0] right_shift_sticky(
-    input logic [127:0] value,
-    input integer shift_amount
+  function automatic logic [MAGW-1:0] right_shift_sticky(
+    input logic [MAGW-1:0] value,
+    input logic signed [EXPW-1:0] shift_amount
   );
-    logic [127:0] shifted;
+    logic [MAGW-1:0] shifted;
+    logic [6:0] shift_unsigned;
+    logic [6:0] shift_minus1;
     logic sticky;
     shifted = '0;
+    shift_unsigned = 7'd0;
+    shift_minus1 = 7'd0;
     sticky = 1'b0;
-    if (shift_amount <= 0) begin
-      if (-shift_amount < 128)
-        shifted = value << (-shift_amount);
-    end else if (shift_amount >= 128) begin
+    // 시프트량은 이 분기 안에서 0 < s < MAGW 가 보장되므로 7-bit 로 좁힌다.
+    // 32-bit 비교를 MAGW 번 돌리던 sticky mask 가 7-bit 비교로 바뀐다.
+    if (shift_amount <= '0) begin
+      if (-shift_amount < MAGW_S) begin
+        shift_unsigned = 7'(-shift_amount);
+        shifted = value << shift_unsigned;
+      end
+    end else if (shift_amount >= MAGW_S) begin
       shifted[0] = |value;
     end else begin
-      shifted = value >> shift_amount;
-      for (integer bit_index = 0; bit_index < 128; bit_index++)
-        if (bit_index < shift_amount)
+      shift_unsigned = 7'(shift_amount);
+      shifted = value >> shift_unsigned;
+      for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
+        if (7'(bit_index) < shift_unsigned)
           sticky |= value[bit_index];
       shifted[0] |= sticky;
     end
@@ -272,17 +367,36 @@ module rv_fpu #(
 
   function automatic fp_calc_t pack_finite(
     input logic sign,
-    input logic [127:0] magnitude,
-    input integer lsb_exponent,
+    input logic [MAGW-1:0] magnitude,
+    input logic signed [EXPW-1:0] lsb_exponent,
     input logic [2:0] rm,
     input logic extra_sticky
   );
     fp_calc_t result;
-    logic [127:0] retained;
+    logic [MAGW-1:0] retained;
     logic [24:0] rounded;
     logic guard_bit, sticky_bit, increment, inexact;
     logic [7:0] exponent_field;
-    integer highest_bit, unbiased_exponent, shift_amount;
+    logic found;
+    logic [6:0] highest_bit;
+    logic [6:0] shift_unsigned;
+    logic [6:0] shift_minus1;
+    // normalize_fp_pre 와 같은 이유로 지수 산술을 16-bit 로 좁히고, LZC 결과에
+    // 의존하지 않는 항은 모두 앞으로 뺀다.  원래는 LZC 뒤에 32-bit 캐리
+    // 체인이 다섯 개까지 직렬로 이어졌다.
+    logic signed [EXPW-1:0] lsb_exp;
+    logic signed [EXPW-1:0] overflow_threshold;
+    logic signed [EXPW-1:0] subnormal_threshold;
+    logic signed [EXPW-1:0] subnormal_shift;
+    logic signed [EXPW-1:0] biased_base;
+    logic signed [EXPW-1:0] highest_signed;
+    logic signed [EXPW-1:0] shift_amount;
+    logic signed [EXPW-1:0] exponent_no_carry;
+    logic signed [EXPW-1:0] exponent_with_carry;
+    logic is_overflow;
+    logic is_normal_range;
+    logic overflow_after_round;
+    logic carry_out;
 
     result = '0;
     if (magnitude == 0) begin
@@ -290,13 +404,28 @@ module rv_fpu #(
       return result;
     end
 
-    highest_bit = -1;
-    for (integer bit_index = 127; bit_index >= 0; bit_index--)
-      if ((highest_bit < 0) && magnitude[bit_index])
-        highest_bit = bit_index;
-    unbiased_exponent = highest_bit + lsb_exponent;
+    lsb_exp             = lsb_exponent;
+    overflow_threshold  =  signed'(EXPW'(127)) - lsb_exp;
+    subnormal_threshold = -signed'(EXPW'(126)) - lsb_exp;
+    subnormal_shift     = -(lsb_exp + signed'(EXPW'(149)));
+    biased_base         =  lsb_exp + signed'(EXPW'(127));
 
-    if (unbiased_exponent > 127) begin
+    highest_bit = 7'd0;
+    found = 1'b0;
+    for (integer bit_index = int'(MAGW)-1; bit_index >= 0; bit_index--)
+      if (!found && magnitude[bit_index]) begin
+        highest_bit = 7'(bit_index);
+        found = 1'b1;
+      end
+    highest_signed  = signed'(EXPW'({9'b0, highest_bit}));
+    is_overflow     = highest_signed >  overflow_threshold;
+    is_normal_range = highest_signed >= subnormal_threshold;
+    // Both post-rounding exponent candidates are built before the rounding
+    // carry is known, so the carry only selects instead of starting a new add.
+    exponent_no_carry   = highest_signed + biased_base;
+    exponent_with_carry = highest_signed + biased_base + signed'(EXPW'(1));
+
+    if (is_overflow) begin
       result.flags = FFLAG_OF | FFLAG_NX;
       if ((rm == 3'b001) || (rm == 3'b010 && !sign) ||
           (rm == 3'b011 && sign))
@@ -306,28 +435,33 @@ module rv_fpu #(
       return result;
     end
 
-    if (unbiased_exponent >= -126) begin
-      shift_amount = highest_bit - 23;
+    if (is_normal_range) begin
+      shift_amount = highest_signed - signed'(EXPW'(23));
       retained = '0;
       guard_bit = 1'b0;
       sticky_bit = extra_sticky;
       if (shift_amount > 0) begin
-        retained = magnitude >> shift_amount;
-        guard_bit = magnitude[shift_amount-1];
-        for (integer bit_index = 0; bit_index < 128; bit_index++)
-          if (bit_index < (shift_amount-1))
+        shift_unsigned = 7'(shift_amount);
+        shift_minus1 = shift_unsigned - 7'd1;
+        retained = magnitude >> shift_unsigned;
+        guard_bit = magnitude[shift_minus1];
+        for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
+          if (7'(bit_index) < shift_minus1)
             sticky_bit |= magnitude[bit_index];
       end else begin
-        retained = magnitude << (-shift_amount);
+        shift_unsigned = 7'(-shift_amount);
+        retained = magnitude << shift_unsigned;
       end
       inexact = guard_bit || sticky_bit;
       increment = round_up(sign, rm, retained[0], guard_bit, sticky_bit);
       rounded = {1'b0, retained[23:0]} + increment;
-      if (rounded[24]) begin
+      carry_out = rounded[24];
+      if (carry_out)
         rounded = rounded >> 1;
-        unbiased_exponent = unbiased_exponent + 1;
-      end
-      if (unbiased_exponent > 127) begin
+      // (hb + carry) + lsb > 127  <=>  hb + carry > overflow_threshold
+      overflow_after_round = carry_out ? (highest_signed >= overflow_threshold)
+                                       : (highest_signed >  overflow_threshold);
+      if (overflow_after_round) begin
         result.flags = FFLAG_OF | FFLAG_NX;
         if ((rm == 3'b001) || (rm == 3'b010 && !sign) ||
             (rm == 3'b011 && sign))
@@ -335,29 +469,32 @@ module rv_fpu #(
         else
           result.data[31:0] = {sign, 8'hff, 23'h0};
       end else begin
-        exponent_field = 8'(unbiased_exponent + 127);
+        exponent_field = 8'(carry_out ? exponent_with_carry : exponent_no_carry);
         result.data[31:0] = {sign, exponent_field, rounded[22:0]};
         if (inexact)
           result.flags |= FFLAG_NX;
       end
     end else begin
       // A subnormal fraction is an integer measured in units of 2^-149.
-      shift_amount = -(lsb_exponent + 149);
+      shift_amount = subnormal_shift;
       retained = '0;
       guard_bit = 1'b0;
       sticky_bit = extra_sticky;
       if (shift_amount > 0) begin
-        if (shift_amount < 128) begin
-          retained = magnitude >> shift_amount;
-          guard_bit = magnitude[shift_amount-1];
-          for (integer bit_index = 0; bit_index < 128; bit_index++)
-            if (bit_index < (shift_amount-1))
+        if (shift_amount < MAGW_S) begin
+          shift_unsigned = 7'(shift_amount);
+          shift_minus1 = shift_unsigned - 7'd1;
+          retained = magnitude >> shift_unsigned;
+          guard_bit = magnitude[shift_minus1];
+          for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
+            if (7'(bit_index) < shift_minus1)
               sticky_bit |= magnitude[bit_index];
         end else begin
           sticky_bit |= |magnitude;
         end
-      end else if (-shift_amount < 128) begin
-        retained = magnitude << (-shift_amount);
+      end else if (-shift_amount < MAGW_S) begin
+        shift_unsigned = 7'(-shift_amount);
+        retained = magnitude << shift_unsigned;
       end
       inexact = guard_bit || sticky_bit;
       increment = round_up(sign, rm, retained[0], guard_bit, sticky_bit);
@@ -383,12 +520,25 @@ module rv_fpu #(
   );
     fp_normalized_t norm;
     fp_calc_t direct;
-    logic [127:0] magnitude;
-    logic [127:0] retained_wide;
+    logic [MAGW-1:0] magnitude;
+    logic [MAGW-1:0] retained_wide;
     logic sticky;
-    integer highest_bit;
-    integer unbiased_exponent;
-    integer shift_amount;
+    logic found;
+    logic [6:0] highest_bit;
+    logic [6:0] shift_unsigned;
+    logic [6:0] shift_minus1;
+    // lsb_exponent 의 실제 범위는 대략 [-362, +208] 이라 16-bit signed 로
+    // 충분하다.  32-bit integer 로 계산하면 LZC 뒤에 32-bit 캐리 체인이
+    // 세 개 직렬로 붙어 이 스테이지의 대부분을 차지한다.
+    logic signed [EXPW-1:0] lsb_exp;
+    logic signed [EXPW-1:0] overflow_threshold;
+    logic signed [EXPW-1:0] subnormal_threshold;
+    logic signed [EXPW-1:0] subnormal_shift;
+    logic signed [EXPW-1:0] highest_signed;
+    logic signed [EXPW-1:0] unbiased_exponent;
+    logic signed [EXPW-1:0] shift_amount;
+    logic is_overflow;
+    logic is_normal_range;
 
     norm = '0;
     magnitude = pre.magnitude;
@@ -404,13 +554,29 @@ module rv_fpu #(
       return norm;
     end
 
-    highest_bit = -1;
-    for (integer bit_index = 127; bit_index >= 0; bit_index--)
-      if ((highest_bit < 0) && magnitude[bit_index])
-        highest_bit = bit_index;
-    unbiased_exponent = highest_bit + $signed(pre.lsb_exponent);
+    // These depend on lsb_exponent only, so they resolve concurrently with the
+    // leading-one search rather than chaining behind it.
+    lsb_exp             = pre.lsb_exponent;
+    overflow_threshold  =  signed'(EXPW'(127)) - lsb_exp;
+    subnormal_threshold = -signed'(EXPW'(126)) - lsb_exp;
+    subnormal_shift     = -(lsb_exp + signed'(EXPW'(149)));
 
-    if (unbiased_exponent > 127) begin
+    highest_bit = 7'd0;
+    found = 1'b0;
+    for (integer bit_index = int'(MAGW)-1; bit_index >= 0; bit_index--)
+      if (!found && magnitude[bit_index]) begin
+        highest_bit = 7'(bit_index);
+        found = 1'b1;
+      end
+    highest_signed = signed'(EXPW'({9'b0, highest_bit}));
+
+    // hb + lsb > 127  <=>  hb >  127 - lsb
+    // hb + lsb >= -126 <=> hb >= -126 - lsb
+    is_overflow       = highest_signed >  overflow_threshold;
+    is_normal_range   = highest_signed >= subnormal_threshold;
+    unbiased_exponent = highest_signed + lsb_exp;
+
+    if (is_overflow) begin
       direct = '0;
       direct.flags = FFLAG_OF | FFLAG_NX;
       if ((pre.rounding_mode == 3'b001) ||
@@ -425,32 +591,29 @@ module rv_fpu #(
     end
 
     norm.sign = pre.sign;
-    norm.unbiased_exponent = 32'(unbiased_exponent);
+    norm.unbiased_exponent = unbiased_exponent;
     norm.rounding_mode = pre.rounding_mode;
     retained_wide = '0;
     norm.guard_bit = 1'b0;
     sticky = pre.extra_sticky;
-
-    if (unbiased_exponent >= -126) begin
-      norm.subnormal = 1'b0;
-      shift_amount = highest_bit - 23;
-    end else begin
-      norm.subnormal = 1'b1;
-      shift_amount = -($signed(pre.lsb_exponent) + 149);
-    end
+    norm.subnormal = ~is_normal_range;
+    shift_amount = is_normal_range ? (highest_signed - signed'(EXPW'(23))) : subnormal_shift;
 
     if (shift_amount > 0) begin
-      if (shift_amount < 128) begin
-        retained_wide = magnitude >> shift_amount;
-        norm.guard_bit = magnitude[shift_amount-1];
-        for (integer bit_index = 0; bit_index < 128; bit_index++)
-          if (bit_index < (shift_amount-1))
+      if (shift_amount < MAGW_S) begin
+        shift_unsigned = 7'(shift_amount);
+        shift_minus1 = shift_unsigned - 7'd1;
+        retained_wide = magnitude >> shift_unsigned;
+        norm.guard_bit = magnitude[shift_minus1];
+        for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
+          if (7'(bit_index) < shift_minus1)
             sticky |= magnitude[bit_index];
       end else begin
         sticky |= |magnitude;
       end
-    end else if (-shift_amount < 128) begin
-      retained_wide = magnitude << (-shift_amount);
+    end else if (-shift_amount < MAGW_S) begin
+      shift_unsigned = 7'(-shift_amount);
+      retained_wide = magnitude << shift_unsigned;
     end
 
     norm.retained = retained_wide[23:0];
@@ -466,7 +629,10 @@ module rv_fpu #(
     logic increment;
     logic inexact;
     logic [7:0] exponent_field;
-    integer unbiased_exponent;
+    logic signed [EXPW-1:0] unbiased_exponent;
+    logic signed [EXPW-1:0] exponent_no_carry;
+    logic signed [EXPW-1:0] exponent_with_carry;
+    logic carry_out;
 
     if (norm.direct_valid)
       return norm.direct;
@@ -476,14 +642,18 @@ module rv_fpu #(
     increment = round_up(norm.sign, norm.rounding_mode, norm.retained[0],
                          norm.guard_bit, norm.sticky_bit);
     rounded = {1'b0, norm.retained} + increment;
-    unbiased_exponent = $signed(norm.unbiased_exponent);
+    unbiased_exponent = norm.unbiased_exponent;
+    // 반올림 캐리가 새 가산을 시작하지 않도록 두 후보를 미리 만들어 둔다.
+    exponent_no_carry   = unbiased_exponent + signed'(EXPW'(127));
+    exponent_with_carry = unbiased_exponent + signed'(EXPW'(128));
+    carry_out = 1'b0;
 
     if (!norm.subnormal) begin
-      if (rounded[24]) begin
+      carry_out = rounded[24];
+      if (carry_out)
         rounded = rounded >> 1;
-        unbiased_exponent = unbiased_exponent + 1;
-      end
-      if (unbiased_exponent > 127) begin
+      if (carry_out ? (unbiased_exponent >= signed'(EXPW'(127)))
+                    : (unbiased_exponent >  signed'(EXPW'(127)))) begin
         result.flags = FFLAG_OF | FFLAG_NX;
         if ((norm.rounding_mode == 3'b001) ||
             (norm.rounding_mode == 3'b010 && !norm.sign) ||
@@ -492,7 +662,7 @@ module rv_fpu #(
         else
           result.data[31:0] = {norm.sign, 8'hff, 23'h0};
       end else begin
-        exponent_field = 8'(unbiased_exponent + 127);
+        exponent_field = 8'(carry_out ? exponent_with_carry : exponent_no_carry);
         result.data[31:0] = {norm.sign, exponent_field, rounded[22:0]};
         if (inexact)
           result.flags |= FFLAG_NX;
@@ -521,9 +691,9 @@ module rv_fpu #(
     fp_calc_t result;
     logic sign_a, sign_b, sticky_a, sticky_b, result_sign;
     logic [23:0] mantissa_a, mantissa_b;
-    logic [127:0] aligned_a, aligned_b, magnitude;
-    logic signed [128:0] signed_a, signed_b, signed_sum;
-    integer exponent_a, exponent_b, common_exponent;
+    logic [MAGW-1:0] aligned_a, aligned_b, magnitude;
+    logic signed [MAGW:0] signed_a, signed_b, signed_sum;
+    logic signed [EXPW-1:0] exponent_a, exponent_b, common_exponent;
 
     pre = '0;
     pre.rounding_mode = rm;
@@ -555,12 +725,12 @@ module rv_fpu #(
 
     mantissa_a = fp_mantissa(a);
     mantissa_b = fp_mantissa(b);
-    exponent_a = fp_lsb_exponent(a);
-    exponent_b = fp_lsb_exponent(b);
+    exponent_a = fp_lsb_exponent_n(a);
+    exponent_b = fp_lsb_exponent_n(b);
     common_exponent = (exponent_a > exponent_b) ? exponent_a : exponent_b;
-    aligned_a = right_shift_sticky({104'b0, mantissa_a} << 32,
+    aligned_a = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_a} << ALIGN_SH,
                                    common_exponent - exponent_a);
-    aligned_b = right_shift_sticky({104'b0, mantissa_b} << 32,
+    aligned_b = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_b} << ALIGN_SH,
                                    common_exponent - exponent_b);
     sticky_a = aligned_a[0];
     sticky_b = aligned_b[0];
@@ -575,14 +745,89 @@ module rv_fpu #(
       pre.direct = result;
       return pre;
     end
-    result_sign = signed_sum[128];
-    magnitude = result_sign ? 128'(-signed_sum) : 128'(signed_sum);
+    result_sign = signed_sum[MAGW];
+    magnitude = result_sign ? MAGW'(-signed_sum) : MAGW'(signed_sum);
     pre.needs_pack = 1'b1;
     pre.sign = result_sign;
     pre.magnitude = magnitude;
-    pre.lsb_exponent = common_exponent - 32;
+    pre.lsb_exponent = common_exponent - signed'(EXPW'(ALIGN_SH));
     pre.extra_sticky = sticky_a || sticky_b;
     return pre;
+  endfunction
+
+  function automatic fp_align_t fp_add_sub_align(
+    input logic [31:0] a,
+    input logic [31:0] b,
+    input logic subtract_b,
+    input logic [2:0] rm
+  );
+    fp_precalc_t pre;
+    fp_align_t al;
+    fp_calc_t result;
+    logic sign_a, sign_b, sticky_a, sticky_b, result_sign;
+    logic [23:0] mantissa_a, mantissa_b;
+    logic [MAGW-1:0] aligned_a, aligned_b, magnitude;
+    logic signed [MAGW:0] signed_a, signed_b, signed_sum;
+    logic signed [EXPW-1:0] exponent_a, exponent_b, common_exponent;
+
+    pre = '0;
+    al = '0;
+    pre.rounding_mode = rm;
+    result = '0;
+    sign_a = a[31];
+    sign_b = b[31] ^ subtract_b;
+    if (fp_is_nan(a) || fp_is_nan(b)) begin
+      result.data[31:0] = CANONICAL_NAN;
+      if (fp_is_snan(a) || fp_is_snan(b)) result.flags = FFLAG_NV;
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if (fp_is_inf(a) && fp_is_inf(b) && (sign_a != sign_b)) begin
+      result.data[31:0] = CANONICAL_NAN;
+      result.flags = FFLAG_NV;
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if (fp_is_inf(a)) begin
+      result.data[31:0] = {sign_a, 8'hff, 23'h0};
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if (fp_is_inf(b)) begin
+      result.data[31:0] = {sign_b, 8'hff, 23'h0};
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+
+    mantissa_a = fp_mantissa(a);
+    mantissa_b = fp_mantissa(b);
+    exponent_a = fp_lsb_exponent_n(a);
+    exponent_b = fp_lsb_exponent_n(b);
+    common_exponent = (exponent_a > exponent_b) ? exponent_a : exponent_b;
+    aligned_a = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_a} << ALIGN_SH,
+                                   common_exponent - exponent_a);
+    aligned_b = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_b} << ALIGN_SH,
+                                   common_exponent - exponent_b);
+    sticky_a = aligned_a[0];
+    sticky_b = aligned_b[0];
+    al.sum_pending     = 1'b1;
+    al.mag_x           = aligned_a;
+    al.mag_y           = aligned_b;
+    al.neg_x           = sign_a;
+    al.neg_y           = sign_b;
+    al.common_exponent = common_exponent;
+    al.sticky          = sticky_a || sticky_b;
+    al.rm              = rm;
+    al.zx_zero         = fp_is_zero(a);
+    al.zx_sign         = sign_a;
+    al.zy_zero         = fp_is_zero(b);
+    al.zy_sign         = sign_b;
+    al.pre             = pre;
+    return al;
   endfunction
 
   function automatic fp_precalc_t fp_multiply_pre(
@@ -594,7 +839,7 @@ module rv_fpu #(
     fp_calc_t result;
     logic sign;
     logic [47:0] product;
-    integer result_exponent;
+    logic signed [EXPW-1:0] result_exponent;
     pre = '0;
     pre.rounding_mode = rm;
     result = '0;
@@ -612,10 +857,10 @@ module rv_fpu #(
       result.data[31:0] = {sign, 31'h0};
     end else begin
       product = fp_mantissa(a) * fp_mantissa(b);
-      result_exponent = fp_lsb_exponent(a) + fp_lsb_exponent(b);
+      result_exponent = fp_lsb_exponent_n(a) + fp_lsb_exponent_n(b);
       pre.needs_pack = 1'b1;
       pre.sign = sign;
-      pre.magnitude = {80'b0, product};
+      pre.magnitude = {{(MAGW-48){1'b0}}, product};
       pre.lsb_exponent = result_exponent;
     end
     pre.direct = result;
@@ -635,9 +880,9 @@ module rv_fpu #(
     logic product_sign, c_sign, result_sign, sticky_product, sticky_c;
     logic [47:0] product;
     logic [23:0] mantissa_c;
-    logic [127:0] aligned_product, aligned_c, magnitude;
-    logic signed [128:0] signed_product, signed_c, signed_sum;
-    integer product_exponent, c_exponent, common_exponent;
+    logic [MAGW-1:0] aligned_product, aligned_c, magnitude;
+    logic signed [MAGW:0] signed_product, signed_c, signed_sum;
+    logic signed [EXPW-1:0] product_exponent, c_exponent, common_exponent;
 
     pre = '0;
     pre.rounding_mode = rm;
@@ -694,13 +939,13 @@ module rv_fpu #(
 
     product = fp_mantissa(a) * fp_mantissa(b);
     mantissa_c = fp_mantissa(c);
-    product_exponent = fp_lsb_exponent(a) + fp_lsb_exponent(b);
-    c_exponent = fp_lsb_exponent(c);
+    product_exponent = fp_lsb_exponent_n(a) + fp_lsb_exponent_n(b);
+    c_exponent = fp_lsb_exponent_n(c);
     common_exponent = (product_exponent > c_exponent) ?
       product_exponent : c_exponent;
-    aligned_product = right_shift_sticky({80'b0, product} << 32,
+    aligned_product = right_shift_sticky({{(MAGW-48){1'b0}}, product} << ALIGN_SH,
       common_exponent - product_exponent);
-    aligned_c = right_shift_sticky({104'b0, mantissa_c} << 32,
+    aligned_c = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_c} << ALIGN_SH,
       common_exponent - c_exponent);
     sticky_product = aligned_product[0];
     sticky_c = aligned_c[0];
@@ -716,14 +961,120 @@ module rv_fpu #(
       pre.direct = result;
       return pre;
     end
-    result_sign = signed_sum[128];
-    magnitude = result_sign ? 128'(-signed_sum) : 128'(signed_sum);
+    result_sign = signed_sum[MAGW];
+    magnitude = result_sign ? MAGW'(-signed_sum) : MAGW'(signed_sum);
     pre.needs_pack = 1'b1;
     pre.sign = result_sign;
     pre.magnitude = magnitude;
-    pre.lsb_exponent = common_exponent - 32;
+    pre.lsb_exponent = common_exponent - signed'(EXPW'(ALIGN_SH));
     pre.extra_sticky = sticky_product || sticky_c;
     return pre;
+  endfunction
+
+  function automatic fp_align_t fp_fma_align(
+    input logic [31:0] a,
+    input logic [31:0] b,
+    input logic [31:0] c,
+    input logic negate_product,
+    input logic negate_c,
+    input logic [2:0] rm
+  );
+    fp_precalc_t pre;
+    fp_align_t al;
+    fp_calc_t result;
+    logic product_sign, c_sign, result_sign, sticky_product, sticky_c;
+    logic [47:0] product;
+    logic [23:0] mantissa_c;
+    logic [MAGW-1:0] aligned_product, aligned_c, magnitude;
+    logic signed [MAGW:0] signed_product, signed_c, signed_sum;
+    logic signed [EXPW-1:0] product_exponent, c_exponent, common_exponent;
+
+    pre = '0;
+    al = '0;
+    pre.rounding_mode = rm;
+    result = '0;
+    product_sign = a[31] ^ b[31] ^ negate_product;
+    c_sign = c[31] ^ negate_c;
+    if (fp_is_nan(a) || fp_is_nan(b) || fp_is_nan(c)) begin
+      result.data[31:0] = CANONICAL_NAN;
+      if (fp_is_snan(a) || fp_is_snan(b) || fp_is_snan(c) ||
+          ((fp_is_inf(a) && fp_is_zero(b)) ||
+           (fp_is_zero(a) && fp_is_inf(b)))) result.flags = FFLAG_NV;
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if ((fp_is_inf(a) && fp_is_zero(b)) ||
+        (fp_is_zero(a) && fp_is_inf(b))) begin
+      result.data[31:0] = CANONICAL_NAN;
+      result.flags = FFLAG_NV;
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if ((fp_is_inf(a) || fp_is_inf(b)) && fp_is_inf(c) &&
+        (product_sign != c_sign)) begin
+      result.data[31:0] = CANONICAL_NAN;
+      result.flags = FFLAG_NV;
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if (fp_is_inf(a) || fp_is_inf(b)) begin
+      result.data[31:0] = {product_sign, 8'hff, 23'h0};
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    if (fp_is_inf(c)) begin
+      result.data[31:0] = {c_sign, 8'hff, 23'h0};
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+    // A finite zero product contributes no magnitude.  Do not feed its
+    // synthetic fp_lsb_exponent into the alignment network: for a large
+    // non-zero multiplicand times zero that exponent can otherwise discard
+    // most or all of a small addend.  The addend is exact in this case.
+    if (fp_is_zero(a) || fp_is_zero(b)) begin
+      if (!fp_is_zero(c)) begin
+        result.data[31:0] = {c_sign, c[30:0]};
+      end else begin
+        result.data[31:0] = '0;
+        result.data[31] = exact_sum_zero_sign(1'b1, product_sign,
+                                              1'b1, c_sign, rm);
+      end
+      pre.direct = result;
+      al.pre = pre;
+      return al;
+    end
+
+    product = fp_mantissa(a) * fp_mantissa(b);
+    mantissa_c = fp_mantissa(c);
+    product_exponent = fp_lsb_exponent_n(a) + fp_lsb_exponent_n(b);
+    c_exponent = fp_lsb_exponent_n(c);
+    common_exponent = (product_exponent > c_exponent) ?
+      product_exponent : c_exponent;
+    aligned_product = right_shift_sticky({{(MAGW-48){1'b0}}, product} << ALIGN_SH,
+      common_exponent - product_exponent);
+    aligned_c = right_shift_sticky({{(MAGW-24){1'b0}}, mantissa_c} << ALIGN_SH,
+      common_exponent - c_exponent);
+    sticky_product = aligned_product[0];
+    sticky_c = aligned_c[0];
+    al.sum_pending     = 1'b1;
+    al.mag_x           = aligned_product;
+    al.mag_y           = aligned_c;
+    al.neg_x           = product_sign;
+    al.neg_y           = c_sign;
+    al.common_exponent = common_exponent;
+    al.sticky          = sticky_product || sticky_c;
+    al.rm              = rm;
+    al.zx_zero         = fp_is_zero(a) || fp_is_zero(b);
+    al.zx_sign         = product_sign;
+    al.zy_zero         = fp_is_zero(c);
+    al.zy_sign         = c_sign;
+    al.pre             = pre;
+    return al;
   endfunction
 
   function automatic fp_calc_t fp_min_max(
@@ -881,7 +1232,7 @@ module rv_fpu #(
     sign = !source_unsigned && source_value[source_width-1];
     magnitude = sign ? -source_value : source_value;
     pre.sign = sign;
-    pre.magnitude = {64'b0, magnitude};
+    pre.magnitude = {{(MAGW-64){1'b0}}, magnitude};
     pre.lsb_exponent = '0;
     return pre;
   endfunction
@@ -1000,6 +1351,178 @@ module rv_fpu #(
     return pre;
   endfunction
 
+  function automatic fp_align_t execute_fp_align(
+    input logic [31:0] instruction,
+    input logic [XLEN-1:0] operand_a,
+    input logic [XLEN-1:0] operand_b,
+    input logic [XLEN-1:0] operand_c,
+    input logic [2:0] rm
+  );
+    fp_precalc_t pre;
+    fp_align_t al;
+    fp_calc_t result;
+    logic use_precalc;
+    logic [6:0] opcode, funct7;
+    logic [2:0] funct3;
+    logic [4:0] rs2;
+    logic [31:0] a, b, c;
+    pre = '0;
+    pre.rounding_mode = rm;
+    al = '0;
+    al.pre.rounding_mode = rm;
+    result = '0;
+    use_precalc = 1'b0;
+    opcode = instruction[6:0];
+    funct7 = instruction[31:25];
+    funct3 = instruction[14:12];
+    rs2 = instruction[24:20];
+    a = operand_a[31:0];
+    b = operand_b[31:0];
+    c = operand_c[31:0];
+
+    case (opcode)
+      7'b1000011: begin
+        al = fp_fma_align(a, b, c, 1'b0, 1'b0, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1000111: begin
+        al = fp_fma_align(a, b, c, 1'b0, 1'b1, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1001011: begin
+        al = fp_fma_align(a, b, c, 1'b1, 1'b0, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1001111: begin
+        al = fp_fma_align(a, b, c, 1'b1, 1'b1, rm);
+        use_precalc = 1'b1;
+      end
+      7'b1010011: begin
+        case (funct7)
+          7'b0000000: begin
+            al = fp_add_sub_align(a, b, 1'b0, rm);
+            use_precalc = 1'b1;
+          end
+          7'b0000100: begin
+            al = fp_add_sub_align(a, b, 1'b1, rm);
+            use_precalc = 1'b1;
+          end
+          7'b0001000: begin
+            al.pre = fp_multiply_pre(a, b, rm);
+            use_precalc = 1'b1;
+          end
+          // FDIV.S and FSQRT.S are handled by the iterative slow path below.
+          // Keeping them out of this function prevents a combinational divider
+          // and 64-step square-root network from being inferred in the fast
+          // FPU request path.
+          7'b0001100: result = '0;
+          7'b0101100: result = '0;
+          7'b0010000: begin
+            case (funct3)
+              3'b000: result.data[31:0] = {b[31], a[30:0]};
+              3'b001: result.data[31:0] = {~b[31], a[30:0]};
+              default: result.data[31:0] = {a[31] ^ b[31], a[30:0]};
+            endcase
+          end
+          7'b0010100: result = fp_min_max(a, b, funct3[0]);
+          7'b1010000: result = fp_compare(a, b, funct3);
+          7'b1100000: result = fp_to_integer(a, rs2[1:0], rm);
+          7'b1110000: begin
+            if (funct3 == 3'b000)
+              result.data = XLEN'($signed(a));
+            else begin
+              result.data = '0;
+              result.data[0] = fp_is_inf(a) && a[31];
+              result.data[1] = !a[31] && 1'b0; // overwritten below by class map
+              result.data[1] = a[31] && (a[30:23] != 0) &&
+                               (a[30:23] != 8'hff);
+              result.data[2] = a[31] && (a[30:23] == 0) && (|a[22:0]);
+              result.data[3] = a[31] && fp_is_zero(a);
+              result.data[4] = !a[31] && fp_is_zero(a);
+              result.data[5] = !a[31] && (a[30:23] == 0) && (|a[22:0]);
+              result.data[6] = !a[31] && (a[30:23] != 0) &&
+                               (a[30:23] != 8'hff);
+              result.data[7] = fp_is_inf(a) && !a[31];
+              result.data[8] = fp_is_snan(a);
+              result.data[9] = fp_is_nan(a) && !fp_is_snan(a);
+            end
+          end
+          7'b1101000: begin
+            al.pre = integer_to_fp_pre(operand_a, rs2[1:0], rm);
+            use_precalc = 1'b1;
+          end
+          7'b1111000: result.data[31:0] = operand_a[31:0];
+          default: begin
+            result.data[31:0] = CANONICAL_NAN;
+            result.flags = FFLAG_NV;
+          end
+        endcase
+      end
+      default: begin
+        result.data[31:0] = CANONICAL_NAN;
+        result.flags = FFLAG_NV;
+      end
+    endcase
+    if (!use_precalc)
+      al.pre.direct = result;
+    return al;
+  endfunction
+
+  // Stage 2 of the split arithmetic path: the wide signed accumulate plus the
+  // exact-zero sign rule and magnitude extraction.
+  function automatic fp_precalc_t fp_align_finish(
+    input fp_align_t al
+  );
+    fp_precalc_t pre;
+    fp_precalc_t pre_sum;
+    fp_precalc_t pre_zero;
+    fp_calc_t result;
+    logic [MAGW:0] wx, wy, sum_add, dif_xy, dif_yx, magnitude;
+    logic same_sign, x_ge, sum_zero, result_sign;
+
+    // Three parallel adders instead of one add followed by a conditional
+    // two's-complement negate (that was two full-width carry chains in
+    // series).  Everything that does not depend on the adders -- sum_zero,
+    // same_sign, the direct/zero payloads -- is built alongside them so the
+    // only thing left behind the carry chain is a single select.
+    wx = {1'b0, al.mag_x};
+    wy = {1'b0, al.mag_y};
+    same_sign = (al.neg_x == al.neg_y);
+    sum_add   = wx + wy;
+    dif_xy    = wx - wy;
+    dif_yx    = wy - wx;
+    x_ge      = ~dif_xy[MAGW];
+    sum_zero  = same_sign ? ((al.mag_x | al.mag_y) == '0)
+                          : (al.mag_x == al.mag_y);
+
+    result = '0;
+    result.data[31] = exact_sum_zero_sign(al.zx_zero, al.zx_sign,
+                                          al.zy_zero, al.zy_sign, al.rm);
+    pre_zero = al.pre;
+    pre_zero.needs_pack = 1'b0;
+    pre_zero.direct = result;
+
+    magnitude   = same_sign ? sum_add : (x_ge ? dif_xy : dif_yx);
+    result_sign = same_sign ? al.neg_x : (x_ge ? al.neg_x : al.neg_y);
+
+    pre_sum = al.pre;
+    pre_sum.needs_pack   = 1'b1;
+    pre_sum.sign         = result_sign;
+    pre_sum.magnitude    = magnitude[MAGW-1:0];
+    pre_sum.lsb_exponent = al.common_exponent - signed'(EXPW'(ALIGN_SH));
+    pre_sum.extra_sticky = al.sticky;
+
+    // One flat select.  Both control terms are ready long before `magnitude`.
+    if (!al.sum_pending)
+      pre = al.pre;
+    else if (sum_zero)
+      pre = pre_zero;
+    else
+      pre = pre_sum;
+    return pre;
+  endfunction
+
+
   function automatic fp_calc_t finalize_fp_pre(
     input fp_precalc_t pre
   );
@@ -1014,6 +1537,9 @@ module rv_fpu #(
     request_illegal_rm = effective_rm > 3'b100;
     request_precalc = execute_fp_pre(instruction_i, operand_a_i, operand_b_i,
                                      operand_c_i, effective_rm);
+    request_align = execute_fp_align(instruction_i, operand_a_i, operand_b_i,
+                                     operand_c_i, effective_rm);
+    align_pre_calc = fp_align_finish(align_calc_q);
 
     request_is_divide = (instruction_i[6:0] == 7'b1010011) &&
                         (instruction_i[31:25] == 7'b0001100);
@@ -1080,26 +1606,33 @@ module rv_fpu #(
   end
 
   always @* begin
-    div_shifted_remainder = {div_remainder_q[23:0], div_numerator_q[87]};
+    div_lz_a   = mantissa_lz(fp_mantissa(operand_a_i[31:0]));
+    div_lz_b   = mantissa_lz(fp_mantissa(operand_b_i[31:0]));
+    div_norm_a = fp_mantissa(operand_a_i[31:0]) << div_lz_a;
+    div_norm_b = fp_mantissa(operand_b_i[31:0]) << div_lz_b;
+    div_shifted_remainder = {div_remainder_q[23:0], div_numerator_q[DIV_NUMW-1]};
     div_quotient_bit = div_shifted_remainder >= {1'b0, div_divisor_q};
     div_next_remainder = div_quotient_bit ?
       div_shifted_remainder - {1'b0, div_divisor_q} :
       div_shifted_remainder;
-    div_next_quotient = {div_quotient_q[86:0], div_quotient_bit};
+    div_next_quotient = {div_quotient_q[DIV_NUMW-2:0], div_quotient_bit};
 
+    sqrt_lz     = mantissa_lz(fp_mantissa(operand_a_i[31:0]));
+    sqrt_norm_m = fp_mantissa(operand_a_i[31:0]) << sqrt_lz;
+    sqrt_lsb    = fp_lsb_exponent_n(operand_a_i[31:0]) - signed'(EXPW'(sqrt_lz));
     sqrt_shifted_remainder = (sqrt_remainder_q << 2) |
-                             {{128{1'b0}}, sqrt_radicand_q[127:126]};
-    sqrt_trial = {{64{1'b0}}, sqrt_root_q, 2'b01};
+      {{(SQRT_REMW-2){1'b0}}, sqrt_radicand_q[SQRT_RADW-1:SQRT_RADW-2]};
+    sqrt_trial = {{(SQRT_REMW-SQRT_ROOTW-2){1'b0}}, sqrt_root_q, 2'b01};
     sqrt_root_bit = sqrt_shifted_remainder >= sqrt_trial;
     sqrt_next_remainder = sqrt_root_bit ?
       sqrt_shifted_remainder - sqrt_trial : sqrt_shifted_remainder;
-    sqrt_next_root = {sqrt_root_q[62:0], sqrt_root_bit};
+    sqrt_next_root = {sqrt_root_q[SQRT_ROOTW-2:0], sqrt_root_bit};
 
     div_pack_calc = pack_finite(
-      div_sign_q, {40'b0, div_quotient_q}, div_exponent_q,
+      div_sign_q, {{(MAGW-DIV_NUMW){1'b0}}, div_quotient_q}, div_exponent_q,
       div_rm_q, div_remainder_q != 0);
     sqrt_pack_calc = pack_finite(
-      1'b0, {64'b0, sqrt_root_q}, sqrt_exponent_q,
+      1'b0, {{(MAGW-SQRT_ROOTW){1'b0}}, sqrt_root_q}, sqrt_exponent_q,
       sqrt_rm_q, sqrt_remainder_q != 0);
     request_final_calc = finalize_fp_pre(request_precalc);
     pre_norm_calc = normalize_fp_pre(pre_calc_q);
@@ -1118,7 +1651,9 @@ module rv_fpu #(
     norm_ready = !SPLIT_NORMALIZE || !norm_valid_q || stage_ready[0];
     pre_ready = !SPLIT_PREPACK || !pre_valid_q ||
                 (SPLIT_NORMALIZE ? norm_ready : stage_ready[0]);
-    fast_pipe_empty = (!SPLIT_PREPACK || !pre_valid_q) &&
+    align_ready = !SPLIT_ALIGN || !align_valid_q || pre_ready;
+    fast_pipe_empty = (!SPLIT_ALIGN || !align_valid_q) &&
+                      (!SPLIT_PREPACK || !pre_valid_q) &&
                       (!SPLIT_NORMALIZE || !norm_valid_q) && !(|valid_q);
     if (request_is_slow)
       request_ready_o = !flush_valid_i && fast_pipe_empty &&
@@ -1126,7 +1661,8 @@ module rv_fpu #(
                         !slow_result_valid_q;
     else
       request_ready_o = !flush_valid_i &&
-                        (SPLIT_PREPACK ? pre_ready : stage_ready[0]) &&
+                        (SPLIT_ALIGN ? align_ready :
+                         (SPLIT_PREPACK ? pre_ready : stage_ready[0])) &&
                         (slow_state_q == SLOW_IDLE) &&
                         !slow_result_valid_q;
     request_accept = request_valid_i && request_ready_o;
@@ -1159,6 +1695,15 @@ module rv_fpu #(
       pre_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
       pre_exception_tval_q <= '0;
       pre_calc_q <= '0;
+      align_valid_q <= 1'b0;
+      align_sequence_q <= '0;
+      align_destination_valid_q <= 1'b0;
+      align_destination_class_q <= REG_NONE;
+      align_destination_phys_q <= '0;
+      align_exception_valid_q <= 1'b0;
+      align_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
+      align_exception_tval_q <= '0;
+      align_calc_q <= '0;
       norm_valid_q <= 1'b0;
       norm_sequence_q <= '0;
       norm_destination_valid_q <= 1'b0;
@@ -1188,6 +1733,8 @@ module rv_fpu #(
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         payload_q[stage] <= '0;
     end else if (flush_valid_i) begin
+      if (SPLIT_ALIGN && align_valid_q && killed_by_flush(align_sequence_q))
+        align_valid_q <= 1'b0;
       if (SPLIT_PREPACK && pre_valid_q && killed_by_flush(pre_sequence_q))
         pre_valid_q <= 1'b0;
       if (SPLIT_NORMALIZE && norm_valid_q &&
@@ -1270,8 +1817,17 @@ module rv_fpu #(
       end
 
       if (SPLIT_PREPACK && pre_ready) begin
-        pre_valid_q <= fast_request_accept;
-        if (fast_request_accept) begin
+        pre_valid_q <= SPLIT_ALIGN ? align_valid_q : fast_request_accept;
+        if (SPLIT_ALIGN && align_valid_q) begin
+          pre_sequence_q <= align_sequence_q;
+          pre_destination_valid_q <= align_destination_valid_q;
+          pre_destination_class_q <= align_destination_class_q;
+          pre_destination_phys_q <= align_destination_phys_q;
+          pre_exception_valid_q <= align_exception_valid_q;
+          pre_exception_cause_q <= align_exception_cause_q;
+          pre_exception_tval_q <= align_exception_tval_q;
+          pre_calc_q <= align_pre_calc;
+        end else if (!SPLIT_ALIGN && fast_request_accept) begin
           pre_sequence_q <= sequence_i;
           pre_destination_valid_q <= destination_valid_i;
           pre_destination_class_q <= destination_class_i;
@@ -1280,6 +1836,20 @@ module rv_fpu #(
           pre_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
           pre_exception_tval_q <= XLEN'(instruction_i);
           pre_calc_q <= request_precalc;
+        end
+      end
+
+      if (SPLIT_ALIGN && align_ready) begin
+        align_valid_q <= fast_request_accept;
+        if (fast_request_accept) begin
+          align_sequence_q <= sequence_i;
+          align_destination_valid_q <= destination_valid_i;
+          align_destination_class_q <= destination_class_i;
+          align_destination_phys_q <= destination_phys_i;
+          align_exception_valid_q <= request_illegal_rm;
+          align_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
+          align_exception_tval_q <= XLEN'(instruction_i);
+          align_calc_q <= request_align;
         end
       end
 
@@ -1299,26 +1869,27 @@ module rv_fpu #(
         end else if (request_is_divide) begin
           div_sign_q <= operand_a_i[31] ^ operand_b_i[31];
           div_rm_q <= effective_rm;
-          div_exponent_q <= fp_lsb_exponent(operand_a_i[31:0]) -
-                            fp_lsb_exponent(operand_b_i[31:0]) - 63;
-          div_divisor_q <= fp_mantissa(operand_b_i[31:0]);
-          div_numerator_q <= {1'b0, fp_mantissa(operand_a_i[31:0]), 63'b0};
+          div_exponent_q <=
+            (fp_lsb_exponent_n(operand_a_i[31:0]) - signed'(EXPW'(div_lz_a))) -
+            (fp_lsb_exponent_n(operand_b_i[31:0]) - signed'(EXPW'(div_lz_b))) -
+            signed'(EXPW'(DIV_FRAC));
+          div_divisor_q <= div_norm_b;
+          div_numerator_q <= {1'b0, div_norm_a, {DIV_FRAC{1'b0}}};
           div_remainder_q <= '0;
           div_quotient_q <= '0;
           div_count_q <= '0;
           slow_state_q <= SLOW_DIVIDE;
         end else begin
           sqrt_rm_q <= effective_rm;
-          if (fp_lsb_exponent(operand_a_i[31:0]) & 1) begin
-            sqrt_exponent_q <=
-              ((fp_lsb_exponent(operand_a_i[31:0]) - 1) / 2) - 40;
+          // radicand = m_norm << s, with s chosen so that (lsb - s) is even.
+          if (sqrt_lsb & 1) begin
+            sqrt_exponent_q <= (sqrt_lsb - signed'(EXPW'(SQRT_RADW - 25))) / 2;
             sqrt_radicand_q <=
-              ({104'b0, fp_mantissa(operand_a_i[31:0])} << 81);
+              {{(SQRT_RADW-24){1'b0}}, sqrt_norm_m} << (SQRT_RADW - 25);
           end else begin
-            sqrt_exponent_q <=
-              (fp_lsb_exponent(operand_a_i[31:0]) / 2) - 40;
+            sqrt_exponent_q <= (sqrt_lsb - signed'(EXPW'(SQRT_RADW - 24))) / 2;
             sqrt_radicand_q <=
-              ({104'b0, fp_mantissa(operand_a_i[31:0])} << 80);
+              {{(SQRT_RADW-24){1'b0}}, sqrt_norm_m} << (SQRT_RADW - 24);
           end
           sqrt_remainder_q <= '0;
           sqrt_root_q <= '0;
@@ -1328,10 +1899,10 @@ module rv_fpu #(
       end else begin
         case (slow_state_q)
           SLOW_DIVIDE: begin
-            div_numerator_q <= {div_numerator_q[86:0], 1'b0};
+            div_numerator_q <= {div_numerator_q[DIV_NUMW-2:0], 1'b0};
             div_remainder_q <= div_next_remainder;
             div_quotient_q <= div_next_quotient;
-            if (div_count_q == 7'd87)
+            if (div_count_q == 7'(DIV_NUMW-1))
               slow_state_q <= SLOW_DIV_PACK;
             else
               div_count_q <= div_count_q + 1'b1;
@@ -1343,10 +1914,10 @@ module rv_fpu #(
             slow_state_q <= SLOW_IDLE;
           end
           SLOW_SQRT: begin
-            sqrt_radicand_q <= {sqrt_radicand_q[125:0], 2'b0};
+            sqrt_radicand_q <= {sqrt_radicand_q[SQRT_RADW-3:0], 2'b0};
             sqrt_remainder_q <= sqrt_next_remainder;
             sqrt_root_q <= sqrt_next_root;
-            if (sqrt_count_q == 6'd63)
+            if (sqrt_count_q == 7'(SQRT_ITERS - 1))
               slow_state_q <= SLOW_SQRT_PACK;
             else
               sqrt_count_q <= sqrt_count_q + 1'b1;

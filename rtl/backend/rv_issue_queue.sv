@@ -154,6 +154,64 @@ module rv_issue_queue #(
   logic store_address_issued_q [0:ENTRIES-1];
   logic [2:0] source_ready_now [0:ENTRIES-1];
   logic [ENTRIES-1:0] ready_now;
+  logic [ENTRIES-1:0] store_data_ready_vec;
+  // One-hot fan-in for the candidate payload.  Going one-hot -> binary index
+  // -> ENTRIES:1 mux put an encoder AND a 6-level mux behind am_first; the
+  // AND-OR form is a single OR tree over the same late signal.
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0]         sequence_id;
+    fu_class_e                        fu;
+    logic [EXEC_PORTS-1:0]            port_mask;
+    logic [2:0][PHYS_TAG_WIDTH-1:0]   src_phys;
+    reg_class_e                       src0_class;
+    reg_class_e                       src1_class;
+    reg_class_e                       src2_class;
+    logic                             destination_valid;
+    reg_class_e                       destination_class;
+    logic [PHYS_TAG_WIDTH-1:0]        destination_phys;
+    logic [XLEN-1:0]                  pc;
+    logic [31:0]                      instruction;
+    inst_len_e                        inst_len;
+    prediction_meta_t                 prediction;
+    logic [XLEN-1:0]                  immediate;
+    logic [OP_WIDTH-1:0]              operation;
+    logic                             use_pc;
+    logic                             use_immediate;
+    logic                             word_operation;
+    logic [2:0]                       mem_size;
+    logic                             mem_unsigned;
+    logic [2:0]                       rounding_mode;
+    logic                             checkpoint_valid;
+    logic [CHECKPOINT_ID_WIDTH-1:0]   checkpoint_id;
+    logic [LQ_INDEX_WIDTH-1:0]        lq_index;
+    logic [SQ_INDEX_WIDTH-1:0]        sq_index;
+    logic                             store_address_valid;
+  } cand_payload_t;
+  localparam int unsigned CAND_W = $bits(cand_payload_t);
+  cand_payload_t entry_payload [0:ENTRIES-1];
+  logic [CAND_W-1:0] sel_payload [0:SELECT_WIDTH-1];
+  cand_payload_t sel_pl [0:SELECT_WIDTH-1];
+  logic [SELECT_WIDTH-1:0] sel_store_data_ready;
+  logic [SELECT_WIDTH-1:0][ENTRIES-1:0] am_hot;
+  // PROTOTYPE: age-ordering matrix.  age_matrix_q[i][j]=1 means entry j is
+  // older than entry i.  Oldest/second-oldest become 1-bit AND/NOR reductions,
+  // removing every ROB-sequence comparator from the select network.
+  logic [ENTRIES-1:0][ENTRIES-1:0] age_matrix_q;
+  logic [ENTRIES-1:0] valid_vec;
+  logic [ENTRIES-1:0] am_first, am_second;
+  logic [SELECT_WIDTH-1:0] am_found;
+  logic [SELECT_WIDTH-1:0][INDEX_WIDTH-1:0] am_index;
+  // Saturating {any, ge2} reduction over (age_matrix_q[e] & ready_now).
+  // oldest  == that set is empty,  second-oldest == it holds exactly one.
+  // Deriving both from ONE tree removes the am_first -> am_ready2 -> am_second
+  // dependency, which used to put two ENTRIES-wide reductions in series.
+  localparam int unsigned AGE_LEVELS = $clog2(ENTRIES);
+  localparam int unsigned AGE_LEAVES = 1 << AGE_LEVELS;
+  logic [AGE_LEAVES-1:0] age_any [0:ENTRIES-1][0:AGE_LEVELS] /* verilator split_var */;
+  logic [AGE_LEAVES-1:0] age_ge2 [0:ENTRIES-1][0:AGE_LEVELS] /* verilator split_var */;
+  localparam int unsigned CNT_LEVELS = $clog2(ENTRIES);
+  localparam int unsigned CNT_LEAVES = 1 << CNT_LEVELS;
+  logic [COUNT_WIDTH-1:0] cnt_tree [0:CNT_LEVELS][0:CNT_LEAVES-1];
   logic [ENTRIES-1:0] available_slots;
   logic [ENTRIES-1:0] allocation_slots_work;
   logic [1:0] allocation_found;
@@ -239,42 +297,103 @@ module rv_issue_queue #(
     end
   end
 
-  // Balanced oldest-two tournament.  Every subtree carries its two oldest
-  // ready entries.  Merging two already-sorted pairs takes only two compare
-  // levels, avoiding the previous 56-entry serial priority/mux chain.
-  always_comb begin
-    for (int unsigned level = 0; level <= SELECT_TREE_LEVELS; level++)
-      for (int unsigned node = 0; node < SELECT_TREE_LEAVES; node++)
-        for (int unsigned rank = 0; rank < 2; rank++)
-          select_tree[level][node][rank] = '0;
 
-    for (int unsigned leaf = 0; leaf < SELECT_TREE_LEAVES; leaf++) begin
-      if (leaf < ENTRIES) begin
-        select_tree[0][leaf][0].valid = ready_now[leaf];
-        select_tree[0][leaf][0].sequence_id = sequence_q[leaf];
-        select_tree[0][leaf][0].index = INDEX_WIDTH'(leaf);
-      end
-    end
-
-    for (int unsigned level = 1; level <= SELECT_TREE_LEVELS; level++) begin
-      for (int unsigned node = 0; node < SELECT_TREE_LEAVES; node++) begin
-        if (node < (SELECT_TREE_LEAVES >> level)) begin
-          if (select_before(select_tree[level-1][node*2][0],
-                            select_tree[level-1][node*2+1][0])) begin
-            select_tree[level][node][0] =
-              select_tree[level-1][node*2][0];
-            select_tree[level][node][1] = select_older(
-              select_tree[level-1][node*2][1],
-              select_tree[level-1][node*2+1][0]);
-          end else begin
-            select_tree[level][node][0] =
-              select_tree[level-1][node*2+1][0];
-            select_tree[level][node][1] = select_older(
-              select_tree[level-1][node*2][0],
-              select_tree[level-1][node*2+1][1]);
-          end
+  // Saturating {any, ge2} reduction over (age_matrix_q[e] & ready_now).
+  //   oldest        == that set is empty
+  //   second-oldest == it holds exactly one element
+  // Both fall out of ONE tree, so am_second no longer waits on am_first.
+  // Written as a generate: a procedural triple loop unrolls to 21k iterations
+  // and exceeds slang's default --unroll-limit.
+  generate
+    for (genvar age_e = 0; age_e < int'(ENTRIES); age_e++) begin : g_age
+      assign age_any[age_e][0] = AGE_LEAVES'(age_matrix_q[age_e] & ready_now);
+      assign age_ge2[age_e][0] = '0;
+      for (genvar age_l = 0; age_l < int'(AGE_LEVELS); age_l++) begin : g_lvl
+        for (genvar age_n = 0; age_n < int'(AGE_LEAVES >> (age_l + 1));
+             age_n++) begin : g_node
+          assign age_any[age_e][age_l+1][age_n] =
+            age_any[age_e][age_l][2*age_n] | age_any[age_e][age_l][2*age_n+1];
+          assign age_ge2[age_e][age_l+1][age_n] =
+            age_ge2[age_e][age_l][2*age_n] | age_ge2[age_e][age_l][2*age_n+1] |
+            (age_any[age_e][age_l][2*age_n] & age_any[age_e][age_l][2*age_n+1]);
         end
       end
+      assign am_first[age_e]  = ready_now[age_e] & ~age_any[age_e][AGE_LEVELS][0];
+      assign am_second[age_e] = ready_now[age_e] &  age_any[age_e][AGE_LEVELS][0]
+                                                  & ~age_ge2[age_e][AGE_LEVELS][0];
+    end
+  endgenerate
+
+  // Age-matrix oldest-two selection.  Both winners come out of a single
+  // saturating count tree instead of two chained NOR reductions.
+  always_comb begin
+    for (int unsigned entry = 0; entry < ENTRIES; entry++)
+      valid_vec[entry] = valid_q[entry];
+
+    // One-hot to binary is an OR reduction per bit.  Written as a sequential
+    // last-wins loop it lowered to an ENTRIES-deep priority chain.
+    am_found[0] = |am_first;
+    am_index[0] = '0;
+    for (int unsigned bit_index = 0; bit_index < INDEX_WIDTH; bit_index++)
+      for (int unsigned entry = 0; entry < ENTRIES; entry++)
+        if (entry[bit_index])
+          am_index[0][bit_index] = am_index[0][bit_index] | am_first[entry];
+    if (SELECT_WIDTH > 1) begin
+      am_found[1] = |am_second;
+      am_index[1] = '0;
+      for (int unsigned bit_index = 0; bit_index < INDEX_WIDTH; bit_index++)
+        for (int unsigned entry = 0; entry < ENTRIES; entry++)
+          if (entry[bit_index])
+            am_index[1][bit_index] = am_index[1][bit_index] | am_second[entry];
+    end
+  end
+
+  // Pack every per-entry field once, then select with a one-hot AND-OR.
+  always_comb begin
+    for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
+      entry_payload[entry].sequence_id       = sequence_q[entry];
+      entry_payload[entry].fu                = fu_q[entry];
+      entry_payload[entry].port_mask         = port_mask_q[entry];
+      entry_payload[entry].src_phys          = src_phys_q[entry];
+      entry_payload[entry].src0_class        = src0_class_q[entry];
+      entry_payload[entry].src1_class        = src1_class_q[entry];
+      entry_payload[entry].src2_class        = src2_class_q[entry];
+      entry_payload[entry].destination_valid = destination_valid_q[entry];
+      entry_payload[entry].destination_class = destination_class_q[entry];
+      entry_payload[entry].destination_phys  = destination_phys_q[entry];
+      entry_payload[entry].pc                = pc_q[entry];
+      entry_payload[entry].instruction       = instruction_q[entry];
+      entry_payload[entry].inst_len          = inst_len_q[entry];
+      entry_payload[entry].prediction        = prediction_q[entry];
+      entry_payload[entry].immediate         = immediate_q[entry];
+      entry_payload[entry].operation         = operation_q[entry];
+      entry_payload[entry].use_pc            = use_pc_q[entry];
+      entry_payload[entry].use_immediate     = use_immediate_q[entry];
+      entry_payload[entry].word_operation    = word_operation_q[entry];
+      entry_payload[entry].mem_size          = mem_size_q[entry];
+      entry_payload[entry].mem_unsigned      = mem_unsigned_q[entry];
+      entry_payload[entry].rounding_mode     = rounding_mode_q[entry];
+      entry_payload[entry].checkpoint_valid  = checkpoint_valid_q[entry];
+      entry_payload[entry].checkpoint_id     = checkpoint_id_q[entry];
+      entry_payload[entry].lq_index          = lq_index_q[entry];
+      entry_payload[entry].sq_index          = sq_index_q[entry];
+      entry_payload[entry].store_address_valid =
+        (fu_q[entry] == FU_STORE) && !store_address_issued_q[entry];
+      store_data_ready_vec[entry] = source_ready_now[entry][1];
+    end
+    am_hot[0] = am_first;
+    if (SELECT_WIDTH > 1)
+      am_hot[1] = am_second;
+    for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
+      sel_payload[slot] = '0;
+      sel_store_data_ready[slot] = 1'b0;
+      for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
+        sel_payload[slot] |= {CAND_W{am_hot[slot][entry]}} &
+                             CAND_W'(entry_payload[entry]);
+        sel_store_data_ready[slot] |= am_hot[slot][entry] &
+                                      store_data_ready_vec[entry];
+      end
+      sel_pl[slot] = cand_payload_t'(sel_payload[slot]);
     end
   end
 
@@ -308,71 +427,48 @@ module rv_issue_queue #(
     candidate_store_address_valid_o = '0;
     candidate_store_data_valid_o  = '0;
     candidate_final_phase         = '0;
-    if (!flush_all_i && !flush_younger_i) begin
+    // Only the valid is suppressed during a flush.  The payload is
+    // don't-care while invalid; gating it too put the recovery flush in
+    // front of the candidate's PRF read address and operand path.
+    begin
       for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-        if (select_tree[SELECT_TREE_LEVELS][0][slot].valid) begin
-          candidate_index_o[slot] =
-            select_tree[SELECT_TREE_LEVELS][0][slot].index;
-          candidate_valid_o[slot] = 1'b1;
-          candidate_sequence_o[slot] =
-            select_tree[SELECT_TREE_LEVELS][0][slot].sequence_id;
-          candidate_fu_o[slot] = fu_q[candidate_index_o[slot]];
-          candidate_port_mask_o[slot] =
-            port_mask_q[candidate_index_o[slot]];
-          candidate_src_phys_o[slot] =
-            src_phys_q[candidate_index_o[slot]];
-          candidate_src_class_o[slot][0] =
-            src0_class_q[candidate_index_o[slot]];
-          candidate_src_class_o[slot][1] =
-            src1_class_q[candidate_index_o[slot]];
-          candidate_src_class_o[slot][2] =
-            src2_class_q[candidate_index_o[slot]];
-          candidate_destination_valid_o[slot] =
-            destination_valid_q[candidate_index_o[slot]];
-          candidate_destination_class_o[slot] =
-            destination_class_q[candidate_index_o[slot]];
-          candidate_destination_phys_o[slot] =
-            destination_phys_q[candidate_index_o[slot]];
-          candidate_pc_o[slot] = pc_q[candidate_index_o[slot]];
-          candidate_instruction_o[slot] =
-            instruction_q[candidate_index_o[slot]];
-          candidate_inst_len_o[slot] =
-            inst_len_q[candidate_index_o[slot]];
-          candidate_prediction_o[slot] =
-            prediction_q[candidate_index_o[slot]];
-          candidate_immediate_o[slot] =
-            immediate_q[candidate_index_o[slot]];
-          candidate_operation_o[slot] =
-            operation_q[candidate_index_o[slot]];
-          candidate_use_pc_o[slot] =
-            use_pc_q[candidate_index_o[slot]];
-          candidate_use_immediate_o[slot] =
-            use_immediate_q[candidate_index_o[slot]];
-          candidate_word_operation_o[slot] =
-            word_operation_q[candidate_index_o[slot]];
-          candidate_mem_size_o[slot] =
-            mem_size_q[candidate_index_o[slot]];
-          candidate_mem_unsigned_o[slot] =
-            mem_unsigned_q[candidate_index_o[slot]];
-          candidate_rounding_mode_o[slot] =
-            rounding_mode_q[candidate_index_o[slot]];
-          candidate_checkpoint_valid_o[slot] =
-            checkpoint_valid_q[candidate_index_o[slot]];
-          candidate_checkpoint_id_o[slot] =
-            checkpoint_id_q[candidate_index_o[slot]];
-          candidate_lq_index_o[slot] =
-            lq_index_q[candidate_index_o[slot]];
-          candidate_sq_index_o[slot] =
-            sq_index_q[candidate_index_o[slot]];
-          candidate_store_address_valid_o[slot] =
-            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
-            !store_address_issued_q[candidate_index_o[slot]];
+        if (am_found[slot]) begin
+          candidate_index_o[slot]        = am_index[slot];
+          candidate_valid_o[slot]        = !flush_all_i && !flush_younger_i;
+          candidate_sequence_o[slot]     = sel_pl[slot].sequence_id;
+          candidate_fu_o[slot]           = sel_pl[slot].fu;
+          candidate_port_mask_o[slot]    = sel_pl[slot].port_mask;
+          candidate_src_phys_o[slot]     = sel_pl[slot].src_phys;
+          candidate_src_class_o[slot][0] = sel_pl[slot].src0_class;
+          candidate_src_class_o[slot][1] = sel_pl[slot].src1_class;
+          candidate_src_class_o[slot][2] = sel_pl[slot].src2_class;
+          candidate_destination_valid_o[slot] = sel_pl[slot].destination_valid;
+          candidate_destination_class_o[slot] = sel_pl[slot].destination_class;
+          candidate_destination_phys_o[slot]  = sel_pl[slot].destination_phys;
+          candidate_pc_o[slot]           = sel_pl[slot].pc;
+          candidate_instruction_o[slot]  = sel_pl[slot].instruction;
+          candidate_inst_len_o[slot]     = sel_pl[slot].inst_len;
+          candidate_prediction_o[slot]   = sel_pl[slot].prediction;
+          candidate_immediate_o[slot]    = sel_pl[slot].immediate;
+          candidate_operation_o[slot]    = sel_pl[slot].operation;
+          candidate_use_pc_o[slot]       = sel_pl[slot].use_pc;
+          candidate_use_immediate_o[slot] = sel_pl[slot].use_immediate;
+          candidate_word_operation_o[slot] = sel_pl[slot].word_operation;
+          candidate_mem_size_o[slot]     = sel_pl[slot].mem_size;
+          candidate_mem_unsigned_o[slot] = sel_pl[slot].mem_unsigned;
+          candidate_rounding_mode_o[slot] = sel_pl[slot].rounding_mode;
+          candidate_checkpoint_valid_o[slot] = sel_pl[slot].checkpoint_valid;
+          candidate_checkpoint_id_o[slot] = sel_pl[slot].checkpoint_id;
+          candidate_lq_index_o[slot]     = sel_pl[slot].lq_index;
+          candidate_sq_index_o[slot]     = sel_pl[slot].sq_index;
+          candidate_store_address_valid_o[slot] = sel_pl[slot].store_address_valid;
+          // store data readiness and final phase are 1-bit reductions over the
+          // same one-hot vector instead of another ENTRIES:1 mux on a late
+          // signal.
           candidate_store_data_valid_o[slot] =
-            (fu_q[candidate_index_o[slot]] == FU_STORE) &&
-            source_ready_now[candidate_index_o[slot]][1];
+            (sel_pl[slot].fu == FU_STORE) && sel_store_data_ready[slot];
           candidate_final_phase[slot] =
-            (fu_q[candidate_index_o[slot]] != FU_STORE) ||
-            source_ready_now[candidate_index_o[slot]][1];
+            (sel_pl[slot].fu != FU_STORE) || sel_store_data_ready[slot];
         end
       end
     end
@@ -561,13 +657,27 @@ module rv_issue_queue #(
   end
 
   always_comb begin
-    count_o = '0;
+    // PROTOTYPE: balanced popcount tree.  The previous sequential increment
+    // over ENTRIES synthesized as a 56-deep carry chain feeding count_o/full_o.
+    for (int unsigned level = 0; level <= CNT_LEVELS; level++)
+      for (int unsigned node = 0; node < CNT_LEAVES; node++)
+        cnt_tree[level][node] = '0;
+    for (int unsigned leaf = 0; leaf < CNT_LEAVES; leaf++)
+      cnt_tree[0][leaf] = (leaf < ENTRIES) ? COUNT_WIDTH'(valid_q[leaf]) :
+                                             COUNT_WIDTH'(0);
+    for (int unsigned level = 1; level <= CNT_LEVELS; level++)
+      for (int unsigned node = 0; node < CNT_LEAVES; node++)
+        if (node < (CNT_LEAVES >> level))
+          cnt_tree[level][node] = cnt_tree[level-1][2*node] +
+                                  cnt_tree[level-1][2*node+1];
+    count_o = cnt_tree[CNT_LEVELS][0];
+    // empty/full do not need the sum at all.
+    empty_o = 1'b1;
+    full_o  = 1'b1;
     for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-      if (valid_q[entry])
-        count_o = count_o + 1'b1;
+      if (valid_q[entry]) empty_o = 1'b0;
+      else                full_o  = 1'b0;
     end
-    empty_o = (count_o == 0);
-    full_o  = (count_o == ENTRIES);
   end
 
 `ifndef SYNTHESIS
@@ -620,6 +730,36 @@ module rv_issue_queue #(
     if ((WRITEBACK_PORTS == 0) || (EXEC_PORTS == 0) ||
         (CHECKPOINT_ID_WIDTH == 0))
       $fatal(1, "Issue queue wakeup and execution port counts must be nonzero");
+  end
+
+  // PROTOTYPE matrix maintenance.  A newly allocated entry records every
+  // currently valid entry (and, for lane1, lane0's entry) as older, and its own
+  // column is cleared in every row.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni || flush_all_i) begin
+      age_matrix_q <= '0;
+    end else if (dispatch_fire) begin
+      logic [ENTRIES-1:0][ENTRIES-1:0] am_next;
+      logic [ENTRIES-1:0] onehot0, onehot1;
+      logic d0v, d1v;
+
+      am_next = age_matrix_q;
+      d0v = dispatch_valid_i[0];
+      d1v = dispatch_valid_i[1];
+      onehot0 = '0;
+      onehot1 = '0;
+      if (d0v) onehot0[dispatch_index_o[0]] = 1'b1;
+      if (d1v) onehot1[dispatch_index_o[1]] = 1'b1;
+
+      for (int unsigned row = 0; row < ENTRIES; row++)
+        am_next[row] = am_next[row] & ~onehot0 & ~onehot1;
+      if (d0v)
+        am_next[dispatch_index_o[0]] = valid_vec & ~onehot0 & ~onehot1;
+      if (d1v)
+        am_next[dispatch_index_o[1]] = (valid_vec | onehot0) & ~onehot1;
+
+      age_matrix_q <= am_next;
+    end
   end
 
 endmodule

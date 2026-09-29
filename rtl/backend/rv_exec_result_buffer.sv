@@ -1,7 +1,12 @@
 module rv_exec_result_buffer #(
   parameter int unsigned XLEN           = 32,
   parameter int unsigned ROB_SEQ_WIDTH  = rv_ooo_pkg::ROB_SEQ_WIDTH,
-  parameter int unsigned PHYS_TAG_WIDTH = 7
+  parameter int unsigned PHYS_TAG_WIDTH = 7,
+  // DEPTH=1: original single register; request_ready depends on this cycle's
+  //          result_ready (writeback grant).
+  // DEPTH=2: two entries; request_ready depends only on registered occupancy,
+  //          so the writeback arbiter no longer reaches issue selection.
+  parameter int unsigned DEPTH          = 1
 ) (
   input  logic                               clk_i,
   input  logic                               rst_ni,
@@ -55,9 +60,6 @@ module rv_exec_result_buffer #(
     logic [4:0] fflags;
   } result_payload_t;
 
-  logic valid_q;
-  result_payload_t payload_q;
-
   function automatic logic sequence_is_younger(
     input logic [ROB_SEQ_WIDTH-1:0] candidate,
     input logic [ROB_SEQ_WIDTH-1:0] boundary
@@ -67,7 +69,109 @@ module rv_exec_result_buffer #(
     return (distance != 0) && !distance[ROB_SEQ_WIDTH-1];
   endfunction
 
-  assign request_ready_o = (!valid_q || result_ready_i) && !flush_valid_i;
+  result_payload_t request_payload;
+  always_comb begin
+    request_payload.sequence_id = request_sequence_i;
+    request_payload.destination_valid = request_destination_valid_i;
+    request_payload.destination_class = request_destination_class_i;
+    request_payload.destination_phys = request_destination_phys_i;
+    request_payload.data = request_data_i;
+    request_payload.exception_valid = request_exception_valid_i;
+    request_payload.exception_cause = request_exception_cause_i;
+    request_payload.exception_tval = request_exception_tval_i;
+    request_payload.branch_mispredict = request_branch_mispredict_i;
+    request_payload.branch_target = request_branch_target_i;
+    request_payload.fflags = request_fflags_i;
+  end
+
+  logic valid_q;
+  result_payload_t payload_q;
+
+  generate
+    if (DEPTH == 1) begin : g_depth1
+      assign request_ready_o = (!valid_q || result_ready_i) && !flush_valid_i;
+
+      always_ff @(posedge clk_i) begin
+        if (!rst_ni) begin
+          valid_q <= 1'b0;
+          payload_q <= '0;
+        end else if (flush_valid_i) begin
+          if (flush_all_i ||
+              (valid_q &&
+               sequence_is_younger(payload_q.sequence_id, flush_sequence_i)))
+            valid_q <= 1'b0;
+        end else if (request_ready_o) begin
+          valid_q <= request_valid_i;
+          if (request_valid_i)
+            payload_q <= request_payload;
+        end
+      end
+    end else begin : g_depth2
+      // Entry 0 is the presented head.  Entries are in issue order, which is
+      // not necessarily age order, so each is flush-checked independently.
+      logic valid1_q;
+      result_payload_t payload1_q;
+      logic pop, push, kill0, kill1;
+
+      assign request_ready_o = !(valid_q && valid1_q) && !flush_valid_i;
+      assign pop  = valid_q && result_ready_i;
+      assign push = request_valid_i && request_ready_o;
+      assign kill0 = valid_q &&
+        (flush_all_i || sequence_is_younger(payload_q.sequence_id,
+                                            flush_sequence_i));
+      assign kill1 = valid1_q &&
+        (flush_all_i || sequence_is_younger(payload1_q.sequence_id,
+                                            flush_sequence_i));
+
+      always_ff @(posedge clk_i) begin
+        if (!rst_ni) begin
+          valid_q <= 1'b0;
+          valid1_q <= 1'b0;
+          payload_q <= '0;
+          payload1_q <= '0;
+        end else if (flush_valid_i) begin
+          // Same policy as DEPTH=1: a flush cycle only removes squashed work.
+          if (kill0 && !kill1 && valid1_q) begin
+            payload_q <= payload1_q;
+            valid1_q <= 1'b0;
+          end else begin
+            if (kill0)
+              valid_q <= 1'b0;
+            if (kill1)
+              valid1_q <= 1'b0;
+          end
+        end else begin
+          case ({push, pop})
+            2'b01: begin
+              valid_q <= valid1_q;
+              payload_q <= payload1_q;
+              valid1_q <= 1'b0;
+            end
+            2'b10: begin
+              if (!valid_q) begin
+                valid_q <= 1'b1;
+                payload_q <= request_payload;
+              end else begin
+                valid1_q <= 1'b1;
+                payload1_q <= request_payload;
+              end
+            end
+            2'b11: begin
+              if (valid1_q) begin
+                payload_q <= payload1_q;
+                payload1_q <= request_payload;
+              end else begin
+                payload_q <= request_payload;
+              end
+            end
+            default: begin
+            end
+          endcase
+        end
+      end
+    end
+  endgenerate
+
   assign result_valid_o = valid_q;
   assign result_sequence_o = payload_q.sequence_id;
   assign result_destination_valid_o = payload_q.destination_valid;
@@ -80,33 +184,6 @@ module rv_exec_result_buffer #(
   assign result_branch_mispredict_o = payload_q.branch_mispredict;
   assign result_branch_target_o = payload_q.branch_target;
   assign result_fflags_o = payload_q.fflags;
-
-  always_ff @(posedge clk_i) begin
-    if (!rst_ni) begin
-      valid_q <= 1'b0;
-      payload_q <= '0;
-    end else if (flush_valid_i) begin
-      if (flush_all_i ||
-          (valid_q &&
-           sequence_is_younger(payload_q.sequence_id, flush_sequence_i)))
-        valid_q <= 1'b0;
-    end else if (request_ready_o) begin
-      valid_q <= request_valid_i;
-      if (request_valid_i) begin
-        payload_q.sequence_id <= request_sequence_i;
-        payload_q.destination_valid <= request_destination_valid_i;
-        payload_q.destination_class <= request_destination_class_i;
-        payload_q.destination_phys <= request_destination_phys_i;
-        payload_q.data <= request_data_i;
-        payload_q.exception_valid <= request_exception_valid_i;
-        payload_q.exception_cause <= request_exception_cause_i;
-        payload_q.exception_tval <= request_exception_tval_i;
-        payload_q.branch_mispredict <= request_branch_mispredict_i;
-        payload_q.branch_target <= request_branch_target_i;
-        payload_q.fflags <= request_fflags_i;
-      end
-    end
-  end
 
 `ifndef SYNTHESIS
   property p_result_stable_when_stalled;
@@ -122,6 +199,8 @@ module rv_exec_result_buffer #(
       $fatal(1, "Result buffer XLEN must be 32 or 64");
     if (ROB_SEQ_WIDTH < 2)
       $fatal(1, "Result buffer requires wrap-aware sequences");
+    if ((DEPTH != 1) && (DEPTH != 2))
+      $fatal(1, "Result buffer DEPTH must be 1 or 2");
   end
 
 endmodule

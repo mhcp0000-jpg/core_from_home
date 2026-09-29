@@ -90,6 +90,24 @@ module rv_rename2 #(
   logic [INT_PHYS_REGS-1:0] committed_int_free;
   logic [FP_PHYS_REGS-1:0] committed_fp_free;
 
+  // {any, at-least-two} of a free bitmap as a balanced tree.  Allocation
+  // legality needs only these counts, so it no longer waits for lane 0's
+  // first-free encoder and bit clear before lane 1's availability test.
+  function automatic logic [1:0] free_any_ge2(input logic [127:0] bitmap);
+    logic [127:0] any_level;
+    logic [127:0] ge2_level;
+    any_level = bitmap;
+    ge2_level = '0;
+    for (int unsigned width = 64; width >= 1; width = width / 2) begin
+      for (int unsigned index = 0; index < width; index++) begin
+        ge2_level[index] = ge2_level[2*index] | ge2_level[2*index+1] |
+                           (any_level[2*index] & any_level[2*index+1]);
+        any_level[index] = any_level[2*index] | any_level[2*index+1];
+      end
+    end
+    return {ge2_level[0], any_level[0]};
+  endfunction
+
   function automatic logic [PHYS_TAG_WIDTH-1:0] first_free_int(
     input logic [INT_PHYS_REGS-1:0] bitmap
   );
@@ -196,6 +214,34 @@ module rv_rename2 #(
     end
   end
 
+  logic allocation_count_ok;
+  always_comb begin
+    logic [1:0] int_avail, fp_avail;
+    logic [1:0] lane_writes;
+    logic [1:0] need_int, need_fp;
+    logic bad_class;
+    int_avail = free_any_ge2(128'(int_free_q));
+    fp_avail  = free_any_ge2(128'(fp_free_q));
+    need_int = '0;
+    need_fp = '0;
+    bad_class = 1'b0;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      lane_writes[lane] = rename_valid_i[lane] && writes_destination_i[lane] &&
+        !((destination_class_i[lane] == REG_INT) &&
+          (destination_arch_i[lane] == 0));
+      if (lane_writes[lane]) begin
+        case (destination_class_i[lane])
+          REG_INT: need_int = need_int + 2'd1;
+          REG_FP:  need_fp  = need_fp + 2'd1;
+          default: bad_class = 1'b1;
+        endcase
+      end
+    end
+    allocation_count_ok = !bad_class &&
+      ((need_int == 2'd0) || ((need_int == 2'd1) ? int_avail[0] : int_avail[1])) &&
+      ((need_fp == 2'd0) || ((need_fp == 2'd1) ? fp_avail[0] : fp_avail[1]));
+  end
+
   always_comb begin
     for (int unsigned arch = 0; arch < ARCH_INT_REGS; arch++)
       int_rat_work[arch] = int_rat_q[arch];
@@ -286,7 +332,9 @@ module rv_rename2 #(
       end
     end
 
-    rename_can_accept_o = allocation_ok && lane_shape_ok &&
+    // allocation_ok above is kept for the encoder bookkeeping (it is
+    // identical by construction); acceptance uses the parallel count test.
+    rename_can_accept_o = allocation_count_ok && lane_shape_ok &&
                           !recover_committed_i && !restore_checkpoint_i;
   end
 
@@ -429,6 +477,11 @@ module rv_rename2 #(
     FP_FREE_COUNT_WIDTH'($unsigned($countones(fp_free_q)));
 
 `ifndef SYNTHESIS
+  // The parallel free-count legality test must match the serial allocator.
+  always_comb begin
+    if (rst_ni) assert (allocation_count_ok == allocation_ok);
+  end
+
   property p_lane1_requires_lane0;
     @(posedge clk_i) disable iff (!rst_ni)
       rename_valid_i[1] |-> rename_valid_i[0];

@@ -106,7 +106,7 @@ module rv_backend #(
   endfunction
 
   // Decode contract.
-  logic [1:0] dec_ready, dec_valid;
+  logic [1:0] dec_ready, dec_valid;  // dec_* = registered dispatch-stage bundle
   logic [1:0][XLEN-1:0] dec_pc, dec_immediate, dec_exception_tval;
   logic [1:0][31:0] dec_raw, dec_instruction;
   inst_len_e [1:0] dec_len;
@@ -131,36 +131,166 @@ module rv_backend #(
   logic [1:0][3:0] dec_fence_predecessor, dec_fence_successor;
   logic [XLEN-1:0] csr_mstatus;
 
+  // Raw decoder outputs (before the decode->dispatch uop register).
+  logic [1:0] dd_valid;
+  logic [1:0][XLEN-1:0] dd_pc;
+  logic [1:0][31:0] dd_raw;
+  logic [1:0][31:0] dd_instruction;
+  inst_len_e [1:0] dd_len;
+  prediction_meta_t [1:0] dd_prediction;
+  fu_class_e [1:0] dd_fu;
+  logic [1:0][15:0] dd_operation;
+  logic [1:0][4:0] dd_port_mask;
+  reg_class_e [1:0][2:0] dd_src_class;
+  logic [1:0][2:0][4:0] dd_src_arch;
+  logic [1:0][2:0] dd_src_used;
+  reg_class_e [1:0] dd_dst_class;
+  logic [1:0][4:0] dd_dst_arch;
+  logic [1:0] dd_writes_dst;
+  logic [1:0][XLEN-1:0] dd_immediate;
+  logic [1:0][2:0] dd_mem_size;
+  logic [1:0] dd_mem_unsigned;
+  logic [1:0][11:0] dd_csr_addr;
+  logic [1:0][2:0] dd_rounding_mode;
+  logic [1:0][3:0] dd_fence_predecessor;
+  logic [1:0][3:0] dd_fence_successor;
+  logic [1:0] dd_use_pc;
+  logic [1:0] dd_use_immediate;
+  logic [1:0] dd_word_operation;
+  logic [1:0] dd_csr_immediate;
+  logic [1:0] dd_is_load;
+  logic [1:0] dd_is_store;
+  logic [1:0] dd_is_branch;
+  logic [1:0] dd_is_csr;
+  logic [1:0] dd_is_fence;
+  logic [1:0] dd_is_fence_i;
+  logic [1:0] dd_serializing;
+  logic [1:0] dd_exception_valid;
+  exception_code_e [1:0] dd_exception_cause;
+  logic [1:0][XLEN-1:0] dd_exception_tval;
+  typedef struct packed {
+    logic [XLEN-1:0] pc;
+    logic [31:0] raw;
+    logic [31:0] instruction;
+    inst_len_e len;
+    prediction_meta_t prediction;
+    fu_class_e fu;
+    logic [15:0] operation;
+    logic [4:0] port_mask;
+    reg_class_e [2:0] src_class;
+    logic [2:0][4:0] src_arch;
+    logic [2:0] src_used;
+    reg_class_e dst_class;
+    logic [4:0] dst_arch;
+    logic writes_dst;
+    logic [XLEN-1:0] immediate;
+    logic [2:0] mem_size;
+    logic mem_unsigned;
+    logic [11:0] csr_addr;
+    logic [2:0] rounding_mode;
+    logic [3:0] fence_predecessor;
+    logic [3:0] fence_successor;
+    logic use_pc;
+    logic use_immediate;
+    logic word_operation;
+    logic csr_immediate;
+    logic is_load;
+    logic is_store;
+    logic is_branch;
+    logic is_csr;
+    logic is_fence;
+    logic is_fence_i;
+    logic serializing;
+    logic exception_valid;
+    exception_code_e exception_cause;
+    logic [XLEN-1:0] exception_tval;
+  } dec_lane_t;
+  // Decode -> dispatch pipeline register (v1.18.8).
+  //
+  // The decoder is purely combinational, so fetch-queue state previously
+  // reached rename, the free lists, ROB/IQ/LSQ allocation and the IQ age
+  // matrix in one cycle.  The bundle is now captured here and dispatched from
+  // registered fields.
+  //   * Occupancy is one bundle; uq_ready = empty || dispatching, so steady
+  //     state throughput is unchanged (no bubble).
+  //   * Every flush kills the bundle: it has no ROB sequence yet, so it is
+  //     younger than every live ROB entry.  flush_valid always coincides with
+  //     redirect_valid_o (rv_branch_recovery), so the frontend refetches it.
+  //   * Decode-time mstatus.FS: see uq_hold below.  In addition an mstatus
+  //     write forces an architectural refetch at retire
+  //     (retire_is_decode_state_write) whose flush kills this bundle.
+  logic uq_ready;
+  logic [1:0] uq_valid_q;
+  dec_lane_t [1:0] uq_in, uq_q;
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      uq_in[lane].pc = dd_pc[lane];
+      uq_in[lane].raw = dd_raw[lane];
+      uq_in[lane].instruction = dd_instruction[lane];
+      uq_in[lane].len = dd_len[lane];
+      uq_in[lane].prediction = dd_prediction[lane];
+      uq_in[lane].fu = dd_fu[lane];
+      uq_in[lane].operation = dd_operation[lane];
+      uq_in[lane].port_mask = dd_port_mask[lane];
+      uq_in[lane].src_class = dd_src_class[lane];
+      uq_in[lane].src_arch = dd_src_arch[lane];
+      uq_in[lane].src_used = dd_src_used[lane];
+      uq_in[lane].dst_class = dd_dst_class[lane];
+      uq_in[lane].dst_arch = dd_dst_arch[lane];
+      uq_in[lane].writes_dst = dd_writes_dst[lane];
+      uq_in[lane].immediate = dd_immediate[lane];
+      uq_in[lane].mem_size = dd_mem_size[lane];
+      uq_in[lane].mem_unsigned = dd_mem_unsigned[lane];
+      uq_in[lane].csr_addr = dd_csr_addr[lane];
+      uq_in[lane].rounding_mode = dd_rounding_mode[lane];
+      uq_in[lane].fence_predecessor = dd_fence_predecessor[lane];
+      uq_in[lane].fence_successor = dd_fence_successor[lane];
+      uq_in[lane].use_pc = dd_use_pc[lane];
+      uq_in[lane].use_immediate = dd_use_immediate[lane];
+      uq_in[lane].word_operation = dd_word_operation[lane];
+      uq_in[lane].csr_immediate = dd_csr_immediate[lane];
+      uq_in[lane].is_load = dd_is_load[lane];
+      uq_in[lane].is_store = dd_is_store[lane];
+      uq_in[lane].is_branch = dd_is_branch[lane];
+      uq_in[lane].is_csr = dd_is_csr[lane];
+      uq_in[lane].is_fence = dd_is_fence[lane];
+      uq_in[lane].is_fence_i = dd_is_fence_i[lane];
+      uq_in[lane].serializing = dd_serializing[lane];
+      uq_in[lane].exception_valid = dd_exception_valid[lane];
+      uq_in[lane].exception_cause = dd_exception_cause[lane];
+      uq_in[lane].exception_tval = dd_exception_tval[lane];
+    end
+  end
   rv_decode2 #(.XLEN(XLEN), .HAS_C(HAS_C), .HAS_F(HAS_F), .HAS_SMODE(HAS_SMODE)) u_decode (
     .in_valid_i(fetch_valid_i), .in_ready_o(fetch_ready_o),
     .in_pc_i(fetch_pc_i), .in_instruction_i(fetch_instr_i),
     .in_inst_len_i(fetch_inst_len_i), .in_prediction_i(fetch_prediction_i),
     .in_fetch_fault_i(fetch_fault_i),
     .fp_state_enabled_i(HAS_F && (csr_mstatus[14:13] != 2'b00)),
-    .uop_valid_o(dec_valid),
-    .uop_ready_i(dec_ready), .uop_pc_o(dec_pc),
-    .uop_raw_instruction_o(dec_raw),
-    .uop_canonical_instruction_o(dec_instruction), .uop_inst_len_o(dec_len),
-    .uop_prediction_o(dec_prediction), .uop_fu_o(dec_fu),
-    .uop_operation_o(dec_operation), .uop_exec_port_mask_o(dec_port_mask),
-    .uop_src_class_o(dec_src_class), .uop_src_arch_o(dec_src_arch),
-    .uop_src_used_o(dec_src_used), .uop_dst_class_o(dec_dst_class),
-    .uop_dst_arch_o(dec_dst_arch), .uop_writes_dst_o(dec_writes_dst),
-    .uop_immediate_o(dec_immediate), .uop_mem_size_o(dec_mem_size),
-    .uop_mem_unsigned_o(dec_mem_unsigned), .uop_csr_addr_o(dec_csr_addr),
-    .uop_rounding_mode_o(dec_rounding_mode),
-    .uop_fence_predecessor_o(dec_fence_predecessor),
-    .uop_fence_successor_o(dec_fence_successor), .uop_use_pc_o(dec_use_pc),
-    .uop_use_immediate_o(dec_use_immediate),
-    .uop_word_operation_o(dec_word_operation),
-    .uop_csr_immediate_o(dec_csr_immediate), .uop_is_load_o(dec_is_load),
-    .uop_is_store_o(dec_is_store), .uop_is_branch_o(dec_is_branch),
-    .uop_is_csr_o(dec_is_csr), .uop_is_fence_o(dec_is_fence),
-    .uop_is_fence_i_o(dec_is_fence_i),
-    .uop_is_serializing_o(dec_serializing),
-    .uop_exception_valid_o(dec_exception_valid),
-    .uop_exception_cause_o(dec_exception_cause),
-    .uop_exception_tval_o(dec_exception_tval)
+    .uop_valid_o(dd_valid),
+    .uop_ready_i({2{uq_ready}}), .uop_pc_o(dd_pc),
+    .uop_raw_instruction_o(dd_raw),
+    .uop_canonical_instruction_o(dd_instruction), .uop_inst_len_o(dd_len),
+    .uop_prediction_o(dd_prediction), .uop_fu_o(dd_fu),
+    .uop_operation_o(dd_operation), .uop_exec_port_mask_o(dd_port_mask),
+    .uop_src_class_o(dd_src_class), .uop_src_arch_o(dd_src_arch),
+    .uop_src_used_o(dd_src_used), .uop_dst_class_o(dd_dst_class),
+    .uop_dst_arch_o(dd_dst_arch), .uop_writes_dst_o(dd_writes_dst),
+    .uop_immediate_o(dd_immediate), .uop_mem_size_o(dd_mem_size),
+    .uop_mem_unsigned_o(dd_mem_unsigned), .uop_csr_addr_o(dd_csr_addr),
+    .uop_rounding_mode_o(dd_rounding_mode),
+    .uop_fence_predecessor_o(dd_fence_predecessor),
+    .uop_fence_successor_o(dd_fence_successor), .uop_use_pc_o(dd_use_pc),
+    .uop_use_immediate_o(dd_use_immediate),
+    .uop_word_operation_o(dd_word_operation),
+    .uop_csr_immediate_o(dd_csr_immediate), .uop_is_load_o(dd_is_load),
+    .uop_is_store_o(dd_is_store), .uop_is_branch_o(dd_is_branch),
+    .uop_is_csr_o(dd_is_csr), .uop_is_fence_o(dd_is_fence),
+    .uop_is_fence_i_o(dd_is_fence_i),
+    .uop_is_serializing_o(dd_serializing),
+    .uop_exception_valid_o(dd_exception_valid),
+    .uop_exception_cause_o(dd_exception_cause),
+    .uop_exception_tval_o(dd_exception_tval)
   );
 
   logic [1:0] executable, backend_exception;
@@ -291,6 +421,84 @@ module rv_backend #(
     dispatch_fire = dispatch_resources_ready && (|dec_valid);
   end
 
+  // No bundle is decoded while an older serializing operation is still in
+  // flight (in this register, behind the barrier, or awaiting its
+  // architectural refetch).  Decode therefore observes exactly the
+  // post-serialization CSR state it saw when decode and dispatch shared a
+  // cycle (mstatus.FS in particular), independent of the refetch.  Costs one
+  // cycle after each serializing op, which already drains the ROB.
+  logic uq_hold;
+  logic uq_split;
+  assign uq_split = (&uq_valid_q) && uq_q[0].serializing;
+  assign uq_hold = (|serial_barrier_valid_q) || system_redirect_pending_q ||
+                   (|(uq_valid_q & dec_serializing));
+  assign uq_ready = (!(|uq_valid_q) || dispatch_fire) && !uq_hold;
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      uq_valid_q <= '0;
+      uq_q <= '0;
+    end else if (flush_valid) begin
+      uq_valid_q <= '0;
+    end else if (uq_ready) begin
+      uq_valid_q <= dd_valid;
+      if (|dd_valid) uq_q <= uq_in;
+    end else if (dispatch_fire) begin
+      // Dispatching a serializing bundle: drain without refilling.  A split
+      // bundle (lane0 serializing) keeps its lane1 uop, moved to lane 0.
+      if (uq_split) begin
+        uq_valid_q <= 2'b01;
+        uq_q[0] <= uq_q[1];
+      end else begin
+        uq_valid_q <= '0;
+      end
+    end
+  end
+  always_comb begin
+    // Split a bundle whose lane 0 is serializing: lane 1 dispatches only
+    // after that barrier retires.  Every dispatched uop is then older than
+    // (or is) the live serial barrier, so issue selection never needs the
+    // barrier sequence comparison (checked by assertion below).
+    dec_valid = uq_split ? 2'b01 : uq_valid_q;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      dec_pc[lane] = uq_q[lane].pc;
+      dec_raw[lane] = uq_q[lane].raw;
+      dec_instruction[lane] = uq_q[lane].instruction;
+      dec_len[lane] = uq_q[lane].len;
+      dec_prediction[lane] = uq_q[lane].prediction;
+      dec_fu[lane] = uq_q[lane].fu;
+      dec_operation[lane] = uq_q[lane].operation;
+      dec_port_mask[lane] = uq_q[lane].port_mask;
+      dec_src_class[lane] = uq_q[lane].src_class;
+      dec_src_arch[lane] = uq_q[lane].src_arch;
+      dec_src_used[lane] = uq_q[lane].src_used;
+      dec_dst_class[lane] = uq_q[lane].dst_class;
+      dec_dst_arch[lane] = uq_q[lane].dst_arch;
+      dec_writes_dst[lane] = uq_q[lane].writes_dst;
+      dec_immediate[lane] = uq_q[lane].immediate;
+      dec_mem_size[lane] = uq_q[lane].mem_size;
+      dec_mem_unsigned[lane] = uq_q[lane].mem_unsigned;
+      dec_csr_addr[lane] = uq_q[lane].csr_addr;
+      dec_rounding_mode[lane] = uq_q[lane].rounding_mode;
+      dec_fence_predecessor[lane] = uq_q[lane].fence_predecessor;
+      dec_fence_successor[lane] = uq_q[lane].fence_successor;
+      dec_use_pc[lane] = uq_q[lane].use_pc;
+      dec_use_immediate[lane] = uq_q[lane].use_immediate;
+      dec_word_operation[lane] = uq_q[lane].word_operation;
+      dec_csr_immediate[lane] = uq_q[lane].csr_immediate;
+      dec_is_load[lane] = uq_q[lane].is_load;
+      dec_is_store[lane] = uq_q[lane].is_store;
+      dec_is_branch[lane] = uq_q[lane].is_branch;
+      dec_is_csr[lane] = uq_q[lane].is_csr;
+      dec_is_fence[lane] = uq_q[lane].is_fence;
+      dec_is_fence_i[lane] = uq_q[lane].is_fence_i;
+      dec_serializing[lane] = uq_q[lane].serializing;
+      dec_exception_valid[lane] = uq_q[lane].exception_valid;
+      dec_exception_cause[lane] = uq_q[lane].exception_cause;
+      dec_exception_tval[lane] = uq_q[lane].exception_tval;
+    end
+  end
+
+
   rv_rename2 #(
     .INT_PHYS_REGS(INT_PHYS_REGS), .FP_PHYS_REGS(FP_PHYS_REGS),
     .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .BR_CHECKPOINTS(BR_CHECKPOINTS)
@@ -366,7 +574,7 @@ module rv_backend #(
     .DATA_WIDTH(XLEN), .PHYS_REGS(INT_PHYS_REGS),
     .TAG_WIDTH(PHYS_TAG_WIDTH), .READ_PORTS(8), .QUERY_PORTS(6),
     .WRITE_PORTS(2), .ALLOC_PORTS(2), .INITIAL_MAPPED_REGS(32),
-    .ZERO_REGISTER(1'b1)
+    .ZERO_REGISTER(1'b1), .WRITE_BYPASS(1'b0)
   ) u_int_prf (
     .clk_i, .rst_ni, .read_addr_i(int_read_addr), .read_data_o(int_read_data),
     .read_ready_o(int_read_ready), .query_addr_i(int_query_addr),
@@ -378,7 +586,7 @@ module rv_backend #(
   rv_phys_regfile #(
     .DATA_WIDTH(32), .PHYS_REGS(FP_PHYS_REGS), .TAG_WIDTH(PHYS_TAG_WIDTH),
     .READ_PORTS(8), .QUERY_PORTS(6), .WRITE_PORTS(2), .ALLOC_PORTS(2),
-    .INITIAL_MAPPED_REGS(32), .ZERO_REGISTER(1'b0)
+    .INITIAL_MAPPED_REGS(32), .ZERO_REGISTER(1'b0), .WRITE_BYPASS(1'b0)
   ) u_fp_prf (
     .clk_i, .rst_ni, .read_addr_i(fp_read_addr), .read_data_o(fp_read_data),
     .read_ready_o(fp_read_ready), .query_addr_i(fp_query_addr),
@@ -484,6 +692,42 @@ module rv_backend #(
   logic [WB_PORTS-1:0] wakeup_valid;
   reg_class_e [WB_PORTS-1:0] wakeup_class;
   logic [WB_PORTS-1:0][PHYS_TAG_WIDTH-1:0] wakeup_phys;
+
+  // ---------------------------------------------------------------------
+  // Producer-side wakeup (v1.18.7).
+  //
+  // Each destination-writing writeback source wakes its consumers directly
+  // and, until the writeback arbiter writes the PRF, supplies the value
+  // through an operand bypass.  The arbiter is no longer between a producer
+  // and its consumer's selection:
+  //
+  //   before: FU reg -> WB arbiter -> IQ wakeup/select -> PRF -> FU
+  //   after : FU reg ------------------> IQ wakeup/select -> PRF|bypass -> FU
+  //
+  // The wakeup cycle of every source equals the arbiter-granted wakeup it
+  // replaces (or is earlier, when the arbiter would have deferred the
+  // write), so dependent issue distance is unchanged.
+  //
+  // Invariant: a source that raises a direct wakeup keeps presenting the same
+  // result until the arbiter consumes it.  Sources 2..9 pass through a
+  // one-entry skid (below) and the fast result buffers are two-deep, so the
+  // invariant holds regardless of how each producer reacts to backpressure,
+  // and producer readiness depends only on registered occupancy.
+  // Ports 0..6 are the direct sources.  Port 7 is the ROB-head system op
+  // (CSR read), woken one cycle after its arbiter grant from a register:
+  // its valid is produced by the fence/flush/trap control at the ROB head,
+  // and waking directly from it would put that control chain in front of
+  // IQ selection.  CSR results are serialized at the head, so the extra
+  // cycle is not on any throughput path.
+  localparam int unsigned DIRECT_WAKE_PORTS = 8;
+  localparam int unsigned DIRECT_SOURCE_PORTS = 7;
+  localparam int unsigned DIRECT_WAKE_SOURCE [DIRECT_SOURCE_PORTS] =
+    '{0, 1, 2, 3, 4, 7, 8};
+  localparam int unsigned SYSTEM_SOURCE = 10;
+  logic [DIRECT_WAKE_PORTS-1:0] direct_wake_valid;
+  reg_class_e [DIRECT_WAKE_PORTS-1:0] direct_wake_class;
+  logic [DIRECT_WAKE_PORTS-1:0][PHYS_TAG_WIDTH-1:0] direct_wake_phys;
+  logic [DIRECT_WAKE_PORTS-1:0][XLEN-1:0] direct_wake_data;
   logic [1:0] cand_valid, cand_accept;
   logic [1:0][ROB_SEQ_WIDTH-1:0] cand_sequence;
   fu_class_e [1:0] cand_fu;
@@ -508,7 +752,7 @@ module rv_backend #(
 
   rv_issue_queue #(
     .XLEN(XLEN), .ENTRIES(IQ_ENTRIES), .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),
-    .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH), .WRITEBACK_PORTS(WB_PORTS),
+    .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH), .WRITEBACK_PORTS(DIRECT_WAKE_PORTS),
     .SELECT_WIDTH(2), .EXEC_PORTS(EXEC_PORTS), .LQ_INDEX_WIDTH(LQ_WIDTH),
     .SQ_INDEX_WIDTH(SQ_WIDTH), .CHECKPOINT_ID_WIDTH(CP_WIDTH)
   ) u_iq (
@@ -538,8 +782,8 @@ module rv_backend #(
     .dispatch_checkpoint_id_i(iq_dispatch_cp_id),
     .dispatch_lq_index_i(iq_dispatch_lq_index),
     .dispatch_sq_index_i(iq_dispatch_sq_index),
-    .writeback_valid_i(wakeup_valid),.writeback_class_i(wakeup_class),
-    .writeback_phys_i(wakeup_phys),.candidate_valid_o(cand_valid),
+    .writeback_valid_i(direct_wake_valid),.writeback_class_i(direct_wake_class),
+    .writeback_phys_i(direct_wake_phys),.candidate_valid_o(cand_valid),
     .candidate_accept_i(cand_accept),.candidate_index_o(),
     .candidate_sequence_o(cand_sequence),.candidate_fu_o(cand_fu),
     .candidate_port_mask_o(cand_port_mask),.candidate_src_phys_o(cand_src_phys),
@@ -565,8 +809,30 @@ module rv_backend #(
     .count_o(iq_count),.empty_o(iq_empty),.full_o(iq_full)
   );
 
-  // Four asynchronous PRF reads cover two integer-class candidates.
+  // Asynchronous PRF reads for the two candidates.  A value that has woken a
+  // consumer but has not yet been written to the PRF comes from the
+  // producer's presented result through the direct-wakeup bypass.
   logic [1:0][XLEN-1:0] cand_operand0, cand_operand1, cand_operand2;
+  function automatic logic [XLEN-1:0] bypass_or_prf(
+    input reg_class_e cls,
+    input logic [PHYS_TAG_WIDTH-1:0] tag,
+    input logic [XLEN-1:0] int_value,
+    input logic [31:0] fp_value
+  );
+    logic [XLEN-1:0] value;
+    case (cls)
+      REG_INT: value = int_value;
+      REG_FP:  value = {{(XLEN-32){1'b0}}, fp_value};
+      default: value = '0;
+    endcase
+    // At most one live producer owns a physical tag, so the hits are
+    // mutually exclusive and the loop order is irrelevant.
+    for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+      if (direct_wake_valid[w] && (direct_wake_class[w] == cls) &&
+          (cls != REG_NONE) && (direct_wake_phys[w] == tag))
+        value = direct_wake_data[w];
+    return value;
+  endfunction
   always_comb begin
     for (int unsigned candidate=0; candidate<2; candidate++) begin
       int_read_addr[candidate*3]=cand_src_phys[candidate][0];
@@ -575,21 +841,15 @@ module rv_backend #(
       fp_read_addr[candidate*3]=cand_src_phys[candidate][0];
       fp_read_addr[candidate*3+1]=cand_src_phys[candidate][1];
       fp_read_addr[candidate*3+2]=cand_src_phys[candidate][2];
-      case(cand_src_class[candidate][0])
-        REG_INT:cand_operand0[candidate]=int_read_data[candidate*3];
-        REG_FP:cand_operand0[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3]};
-        default:cand_operand0[candidate]='0;
-      endcase
-      case(cand_src_class[candidate][1])
-        REG_INT:cand_operand1[candidate]=int_read_data[candidate*3+1];
-        REG_FP:cand_operand1[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3+1]};
-        default:cand_operand1[candidate]='0;
-      endcase
-      case(cand_src_class[candidate][2])
-        REG_INT:cand_operand2[candidate]=int_read_data[candidate*3+2];
-        REG_FP:cand_operand2[candidate]={{(XLEN-32){1'b0}},fp_read_data[candidate*3+2]};
-        default:cand_operand2[candidate]='0;
-      endcase
+      cand_operand0[candidate]=bypass_or_prf(cand_src_class[candidate][0],
+        cand_src_phys[candidate][0], int_read_data[candidate*3],
+        fp_read_data[candidate*3]);
+      cand_operand1[candidate]=bypass_or_prf(cand_src_class[candidate][1],
+        cand_src_phys[candidate][1], int_read_data[candidate*3+1],
+        fp_read_data[candidate*3+1]);
+      cand_operand2[candidate]=bypass_or_prf(cand_src_class[candidate][2],
+        cand_src_phys[candidate][2], int_read_data[candidate*3+2],
+        fp_read_data[candidate*3+2]);
     end
     int_read_addr[6]=retire_dst_phys[0];
     int_read_addr[7]=head_is_csr_instruction ? rob_head_src0_phys :
@@ -629,10 +889,14 @@ module rv_backend #(
           (!fpu_issue_valid_q||fpu_req_ready);
         default:effective_mask[candidate]='0;
       endcase
-      if (serial_barrier_valid_q[0] &&
-          sequence_after_backend(cand_sequence[candidate],
-                                 serial_barrier_sequence_q[0]))
-        effective_mask[candidate] = '0;
+`ifndef SYNTHESIS
+      // Bundles are split at a serializing lane 0 (see uq_split), so no
+      // issue candidate can be younger than the live serial barrier.
+      if (rst_ni && cand_valid[candidate] && serial_barrier_valid_q[0])
+        assert (!sequence_after_backend(cand_sequence[candidate],
+                                        serial_barrier_sequence_q[0]))
+          else $error("issue candidate younger than the serial barrier");
+`endif
     end
   end
   logic [1:0] cand_grant;
@@ -642,7 +906,7 @@ module rv_backend #(
   logic [4:0] port_candidate;
   logic [1:0] issue_valid, issue_candidate;
   logic [1:0][2:0] issue_port;
-  rv_issue_arbiter #(.CANDIDATE_COUNT(2),.EXEC_PORTS(5),.ISSUE_WIDTH(2),
+  rv_issue_arbiter #(.CANDIDATE_COUNT(2),.EXEC_PORTS(5),.ISSUE_WIDTH(2),.AGE_ORDERED(1'b1),
                      .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH)) u_select (
     .candidate_valid_i(cand_valid),.candidate_sequence_i(cand_sequence),
     .candidate_port_mask_i(effective_mask),.port_ready_i('1),
@@ -815,7 +1079,7 @@ module rv_backend #(
   exception_code_e [1:0] fast_result_cause;
   logic [1:0][4:0] fast_result_fflags;
   for(genvar fast=0;fast<2;fast++) begin:g_fast
-    rv_exec_result_buffer #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
+    rv_exec_result_buffer #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),.DEPTH(2),
       .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)) u_buffer(
       .clk_i,.rst_ni,.request_valid_i(fast_req_valid[fast]),
       .request_ready_o(fast_req_ready[fast]),.request_sequence_i(port_sequence[fast]),
@@ -895,7 +1159,7 @@ module rv_backend #(
   exception_code_e fpu_result_cause;
   rv_fpu #(
     .XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
-    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(4)
+    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(5)
   ) u_fpu (
     .clk_i, .rst_ni,
     .request_valid_i(port_valid[4] && (port_fu[4] == FU_FP)),
@@ -973,7 +1237,10 @@ module rv_backend #(
     .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LQ_ENTRIES(LQ_ENTRIES),
     .SQ_ENTRIES(SQ_ENTRIES), .STORE_BUFFER_ENTRIES(STORE_BUFFER_ENTRIES),
     .ITIM_BASE_ADDR(ITIM_BASE_ADDR), .ITIM_SIZE_KB(ITIM_SIZE_KB),
-    .DTIM_BASE_ADDR(DTIM_BASE_ADDR), .DTIM_SIZE_KB(DTIM_SIZE_KB)
+    .DTIM_BASE_ADDR(DTIM_BASE_ADDR), .DTIM_SIZE_KB(DTIM_SIZE_KB),
+    // Two-entry AGU buffers: LSU issue_ready no longer carries the
+    // PMP check / completion-port decision into issue selection.
+    .AGU_DEPTH(2)
   ) u_lsu_cluster (
     .clk_i, .rst_ni,
     .dispatch_valid_i(dec_valid & (dec_is_load | dec_is_store)),
@@ -1037,6 +1304,39 @@ module rv_backend #(
   logic [WB_SOURCES-1:0] source_exception,source_mispredict;
   exception_code_e [WB_SOURCES-1:0] source_exception_cause;
   logic [WB_SOURCES-1:0][4:0] source_fflags;
+
+  // What the writeback arbiter sees.  Sources 0/1 (two-deep result buffers)
+  // and 10 (ROB-head system op) are presented directly; 2..9 pass through a
+  // one-entry skid, so `source_ready` returned to those producers is the
+  // registered skid occupancy instead of this cycle's arbitration.
+  localparam int unsigned SKID_FIRST = 2;
+  localparam int unsigned SKID_LAST  = 9;
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0]  sequence_id;
+    logic                      dst_valid;
+    reg_class_e                dst_class;
+    logic [PHYS_TAG_WIDTH-1:0] dst_phys;
+    logic [XLEN-1:0]           data;
+    logic                      exception;
+    exception_code_e           cause;
+    logic [XLEN-1:0]           tval;
+    logic                      mispredict;
+    logic [XLEN-1:0]           branch_target;
+    logic [4:0]                fflags;
+  } wb_payload_t;
+  wb_payload_t [WB_SOURCES-1:0] raw_payload, wb_payload;
+  logic [WB_SOURCES-1:0] skid_valid_q;
+  wb_payload_t [WB_SOURCES-1:0] skid_q;
+  logic [WB_SOURCES-1:0] wb_source_valid, wb_source_ready, wb_source_live;
+  logic [WB_SOURCES-1:0][ROB_SEQ_WIDTH-1:0] wb_source_sequence;
+  reg_class_e [WB_SOURCES-1:0] wb_source_dst_class;
+  logic [WB_SOURCES-1:0][PHYS_TAG_WIDTH-1:0] wb_source_dst_phys;
+  logic [WB_SOURCES-1:0][XLEN-1:0] wb_source_data, wb_source_exception_tval,
+                                   wb_source_branch_target;
+  logic [WB_SOURCES-1:0] wb_source_dst_valid, wb_source_exception,
+                         wb_source_mispredict;
+  exception_code_e [WB_SOURCES-1:0] wb_source_exception_cause;
+  logic [WB_SOURCES-1:0][4:0] wb_source_fflags;
   logic [3:0] complete_valid,complete_exception,complete_mispredict;
   logic [3:0][ROB_SEQ_WIDTH-1:0] complete_sequence;
   exception_code_e [3:0] complete_cause;
@@ -1343,19 +1643,141 @@ module rv_backend #(
     lsu_completion_ready=source_ready[9:5];
   end
 
+  always_comb begin
+    for (int unsigned src = 0; src < WB_SOURCES; src++) begin
+      raw_payload[src].sequence_id   = source_sequence[src];
+      raw_payload[src].dst_valid     = source_dst_valid[src];
+      raw_payload[src].dst_class     = source_dst_class[src];
+      raw_payload[src].dst_phys      = source_dst_phys[src];
+      raw_payload[src].data          = source_data[src];
+      raw_payload[src].exception     = source_exception[src];
+      raw_payload[src].cause         = source_exception_cause[src];
+      raw_payload[src].tval          = source_exception_tval[src];
+      raw_payload[src].mispredict    = source_mispredict[src];
+      raw_payload[src].branch_target = source_branch_target[src];
+      raw_payload[src].fflags        = source_fflags[src];
+      if ((src >= SKID_FIRST) && (src <= SKID_LAST) && skid_valid_q[src]) begin
+        wb_source_valid[src] = 1'b1;
+        wb_payload[src]      = skid_q[src];
+        source_ready[src]    = 1'b0;
+      end else begin
+        wb_source_valid[src] = source_valid[src];
+        wb_payload[src]      = raw_payload[src];
+        source_ready[src]    = ((src >= SKID_FIRST) && (src <= SKID_LAST)) ?
+                               1'b1 : wb_source_ready[src];
+      end
+      wb_source_sequence[src]        = wb_payload[src].sequence_id;
+      wb_source_dst_valid[src]       = wb_payload[src].dst_valid;
+      wb_source_dst_class[src]       = wb_payload[src].dst_class;
+      wb_source_dst_phys[src]        = wb_payload[src].dst_phys;
+      wb_source_data[src]            = wb_payload[src].data;
+      wb_source_exception[src]       = wb_payload[src].exception;
+      wb_source_exception_cause[src] = wb_payload[src].cause;
+      wb_source_exception_tval[src]  = wb_payload[src].tval;
+      wb_source_mispredict[src]      = wb_payload[src].mispredict;
+      wb_source_branch_target[src]   = wb_payload[src].branch_target;
+      wb_source_fflags[src]          = wb_payload[src].fflags;
+    end
+  end
+
+  // A presented result that the arbiter does not take (write or discard) is
+  // captured and presented from the skid until it is taken.  The arbiter's
+  // ready already covers flush and ROB-liveness discards.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      skid_valid_q <= '0;
+      skid_q <= '0;
+    end else begin
+      for (int unsigned src = SKID_FIRST; src <= SKID_LAST; src++) begin
+        if (skid_valid_q[src]) begin
+          if (wb_source_ready[src])
+            skid_valid_q[src] <= 1'b0;
+        end else if (source_valid[src] && !wb_source_ready[src]) begin
+          skid_valid_q[src] <= 1'b1;
+          skid_q[src] <= raw_payload[src];
+        end
+      end
+    end
+  end
+
+  // Direct wakeup is qualified like a live arbiter write minus the port grant:
+  // valid, claims a destination, no exception.  No source presents a
+  // squashed result after its flush cycle: the FU result registers and the
+  // FPU issue register kill squashed work in the flush cycle, the skids are
+  // drained by the arbiter's flush discard, and a load response for a
+  // request squashed while outstanding arrives with its destination claim
+  // cleared (rv_lsu_cluster.load_meta_live_q).  So ROB liveness -- a 48-entry
+  // CAM per query -- is not needed in front of issue selection.
+
+  // No flush gate: a granted system op is the ROB head, so it survives any
+  // flush, and a consumer between it and the flush boundary survives too and
+  // must still be woken.
+  logic system_wake_valid_q;
+  reg_class_e system_wake_class_q;
+  logic [PHYS_TAG_WIDTH-1:0] system_wake_phys_q;
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      system_wake_valid_q <= 1'b0;
+      system_wake_class_q <= REG_NONE;
+      system_wake_phys_q <= '0;
+    end else begin
+      system_wake_valid_q <= wb_source_valid[SYSTEM_SOURCE] &&
+        wb_source_ready[SYSTEM_SOURCE] && wb_source_live[SYSTEM_SOURCE] &&
+        wb_source_dst_valid[SYSTEM_SOURCE] &&
+        !wb_source_exception[SYSTEM_SOURCE] &&
+        (wb_source_dst_class[SYSTEM_SOURCE] != REG_NONE);
+      system_wake_class_q <= wb_source_dst_class[SYSTEM_SOURCE];
+      system_wake_phys_q <= wb_source_dst_phys[SYSTEM_SOURCE];
+    end
+  end
+
+  always_comb begin
+    for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++) begin
+      direct_wake_valid[w] =
+        wb_source_valid[DIRECT_WAKE_SOURCE[w]] &&
+        wb_source_dst_valid[DIRECT_WAKE_SOURCE[w]] &&
+        !wb_source_exception[DIRECT_WAKE_SOURCE[w]] &&
+        (wb_source_dst_class[DIRECT_WAKE_SOURCE[w]] != REG_NONE);
+      direct_wake_class[w] = wb_source_dst_class[DIRECT_WAKE_SOURCE[w]];
+      direct_wake_phys[w]  = wb_source_dst_phys[DIRECT_WAKE_SOURCE[w]];
+      direct_wake_data[w]  = wb_source_data[DIRECT_WAKE_SOURCE[w]];
+    end
+    // The system result is already in the PRF when this wakeup is seen, so
+    // it never needs to act as a bypass source.
+    direct_wake_valid[DIRECT_SOURCE_PORTS] = system_wake_valid_q;
+    direct_wake_class[DIRECT_SOURCE_PORTS] = system_wake_class_q;
+    direct_wake_phys[DIRECT_SOURCE_PORTS]  = system_wake_phys_q;
+    direct_wake_data[DIRECT_SOURCE_PORTS]  = '0;
+  end
+
+`ifndef SYNTHESIS
+  // No direct wakeup may come from a result the ROB no longer holds.
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+    end else begin
+      for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+        if (direct_wake_valid[w] && !flush_valid)
+          assert (wb_source_live[DIRECT_WAKE_SOURCE[w]])
+            else $error("direct wake from non-live source %0d seq %0d",
+                        DIRECT_WAKE_SOURCE[w],
+                        wb_source_sequence[DIRECT_WAKE_SOURCE[w]]);
+    end
+  end
+`endif
+
   rv_writeback_arbiter #(.XLEN(XLEN),.SOURCE_COUNT(WB_SOURCES),
     .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
     .INT_WRITE_PORTS(2),.FP_WRITE_PORTS(2),.ROB_COMPLETE_PORTS(4)) u_wb(
-    .source_valid_i(source_valid),.source_ready_o(source_ready),
-    .source_live_i(source_live),.source_sequence_i(source_sequence),
-    .source_destination_valid_i(source_dst_valid),
-    .source_destination_class_i(source_dst_class),
-    .source_destination_phys_i(source_dst_phys),.source_data_i(source_data),
-    .source_exception_valid_i(source_exception),
-    .source_exception_cause_i(source_exception_cause),
-    .source_exception_tval_i(source_exception_tval),
-    .source_branch_mispredict_i(source_mispredict),
-    .source_branch_target_i(source_branch_target),.source_fflags_i(source_fflags),
+    .source_valid_i(wb_source_valid),.source_ready_o(wb_source_ready),
+    .source_live_i(wb_source_live),.source_sequence_i(wb_source_sequence),
+    .source_destination_valid_i(wb_source_dst_valid),
+    .source_destination_class_i(wb_source_dst_class),
+    .source_destination_phys_i(wb_source_dst_phys),.source_data_i(wb_source_data),
+    .source_exception_valid_i(wb_source_exception),
+    .source_exception_cause_i(wb_source_exception_cause),
+    .source_exception_tval_i(wb_source_exception_tval),
+    .source_branch_mispredict_i(wb_source_mispredict),
+    .source_branch_target_i(wb_source_branch_target),.source_fflags_i(wb_source_fflags),
     .flush_valid_i(flush_valid),.flush_all_i(flush_all),
     .flush_sequence_i(flush_sequence),.int_wb_valid_o(int_wb_valid),
     .int_wb_phys_o(int_wb_phys),.int_wb_data_o(int_wb_data),
@@ -1396,7 +1818,7 @@ module rv_backend #(
     .complete_fflags_i(complete_fflags),
     .complete_branch_mispredict_i(complete_mispredict),
     .complete_branch_target_i(complete_target),
-    .live_query_sequence_i(source_sequence),.live_query_valid_o(source_live),
+    .live_query_sequence_i(wb_source_sequence),.live_query_valid_o(wb_source_live),
     .retire_valid_o(retire_valid),.retire_ready_i(retire_ready),
     .retire_sequence_o(retire_sequence),.retire_pc_o(retire_pc),
     .retire_instruction_o(retire_instruction),
@@ -1437,7 +1859,7 @@ module rv_backend #(
   logic branch_resolve_valid,branch_resolve_live,branch_resolve_drop;
   assign branch_resolve_valid=fast_result_valid[0]&&
     branch_valid_q[fast_result_sequence[0]]&&!branch_resolved_q[fast_result_sequence[0]];
-  assign branch_resolve_live=source_live[0];
+  assign branch_resolve_live=wb_source_live[0];
   always_comb begin
     bp_resolve_valid_o = branch_resolve_valid && branch_resolve_live;
     bp_resolve_pc_o = branch_pc_q[fast_result_sequence[0]];

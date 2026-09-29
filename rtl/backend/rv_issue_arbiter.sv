@@ -3,6 +3,12 @@ module rv_issue_arbiter #(
   parameter int unsigned EXEC_PORTS = 5,
   parameter int unsigned ISSUE_WIDTH = 2,
   parameter int unsigned ROB_SEQ_WIDTH = rv_ooo_pkg::ROB_SEQ_WIDTH,
+  // AGE_ORDERED=1 (two candidates only): the caller guarantees candidate 0
+  // is older than candidate 1 whenever both are valid (the IQ's oldest /
+  // second-oldest outputs).  The sequence comparisons fold away and the
+  // port choice becomes a few parallel 5-bit terms.  Grants equal the
+  // generic search under that guarantee; simulation checks both.
+  parameter bit          AGE_ORDERED = 1'b0,
   localparam int unsigned CANDIDATE_INDEX_WIDTH = $clog2(CANDIDATE_COUNT),
   localparam int unsigned PORT_INDEX_WIDTH = $clog2(EXEC_PORTS)
 ) (
@@ -42,6 +48,28 @@ module rv_issue_arbiter #(
     logic signed [ROB_SEQ_WIDTH-1:0] difference;
     difference = $signed(lhs - rhs);
     return difference < 0;
+  endfunction
+
+  logic [CANDIDATE_COUNT-1:0] gen_candidate_grant, fo_candidate_grant;
+  logic [CANDIDATE_COUNT-1:0][PORT_INDEX_WIDTH-1:0] gen_candidate_port,
+                                                    fo_candidate_port;
+  logic [EXEC_PORTS-1:0] gen_port_valid, fo_port_valid;
+  logic [EXEC_PORTS-1:0][CANDIDATE_INDEX_WIDTH-1:0] gen_port_candidate,
+                                                    fo_port_candidate;
+  logic [ISSUE_WIDTH-1:0] gen_issue_valid, fo_issue_valid;
+  logic [ISSUE_WIDTH-1:0][CANDIDATE_INDEX_WIDTH-1:0] gen_issue_candidate,
+                                                     fo_issue_candidate;
+  logic [ISSUE_WIDTH-1:0][PORT_INDEX_WIDTH-1:0] gen_issue_port, fo_issue_port;
+  logic [EXEC_PORTS-1:0] fm0, fm1, fallow, fpair, fm1_rest;
+  logic fe0, fe1, fgrant2;
+  logic [PORT_INDEX_WIDTH-1:0] fp_first, fp_second;
+
+  function automatic logic [PORT_INDEX_WIDTH-1:0] lowest_port(
+    input logic [EXEC_PORTS-1:0] mask
+  );
+    lowest_port = '0;
+    for (int port = EXEC_PORTS - 1; port >= 0; port--)
+      if (mask[port]) lowest_port = PORT_INDEX_WIDTH'(port);
   endfunction
 
   always_comb begin
@@ -127,32 +155,107 @@ module rv_issue_arbiter #(
       end
     end
 
-    candidate_grant_o = '0;
-    candidate_port_o  = '0;
-    port_valid_o      = '0;
-    port_candidate_o  = '0;
-    issue_valid_o     = '0;
-    issue_candidate_o = '0;
-    issue_port_o      = '0;
+    gen_candidate_grant = '0;
+    gen_candidate_port  = '0;
+    gen_port_valid      = '0;
+    gen_port_candidate  = '0;
+    gen_issue_valid     = '0;
+    gen_issue_candidate = '0;
+    gen_issue_port      = '0;
 
     if (first_found && first_port_found) begin
-      candidate_grant_o[first_candidate] = 1'b1;
-      candidate_port_o[first_candidate]  = first_port;
-      port_valid_o[first_port]           = 1'b1;
-      port_candidate_o[first_port]       = first_candidate;
-      issue_valid_o[0]                   = 1'b1;
-      issue_candidate_o[0]               = first_candidate;
-      issue_port_o[0]                    = first_port;
+      gen_candidate_grant[first_candidate] = 1'b1;
+      gen_candidate_port[first_candidate]  = first_port;
+      gen_port_valid[first_port]           = 1'b1;
+      gen_port_candidate[first_port]       = first_candidate;
+      gen_issue_valid[0]                   = 1'b1;
+      gen_issue_candidate[0]               = first_candidate;
+      gen_issue_port[0]                    = first_port;
     end
     if ((ISSUE_WIDTH > 1) && second_found && second_port_found) begin
-      candidate_grant_o[second_candidate] = 1'b1;
-      candidate_port_o[second_candidate]  = second_port;
-      port_valid_o[second_port]           = 1'b1;
-      port_candidate_o[second_port]       = second_candidate;
-      issue_valid_o[1]                    = 1'b1;
-      issue_candidate_o[1]                = second_candidate;
-      issue_port_o[1]                     = second_port;
+      gen_candidate_grant[second_candidate] = 1'b1;
+      gen_candidate_port[second_candidate]  = second_port;
+      gen_port_valid[second_port]           = 1'b1;
+      gen_port_candidate[second_port]       = second_candidate;
+      gen_issue_valid[1]                    = 1'b1;
+      gen_issue_candidate[1]                = second_candidate;
+      gen_issue_port[1]                     = second_port;
     end
+
+    // ---- age-ordered two-candidate fast path ----
+    fo_candidate_grant = '0;
+    fo_candidate_port  = '0;
+    fo_port_valid      = '0;
+    fo_port_candidate  = '0;
+    fo_issue_valid     = '0;
+    fo_issue_candidate = '0;
+    fo_issue_port      = '0;
+    if (CANDIDATE_COUNT == 2) begin
+      fm0 = candidate_port_mask_i[0] & port_ready_i;
+      fm1 = candidate_port_mask_i[CANDIDATE_COUNT-1] & port_ready_i;
+      fe0 = candidate_valid_i[0] && (|fm0);
+      fe1 = candidate_valid_i[CANDIDATE_COUNT-1] && (|fm1);
+      for (int unsigned port = 0; port < EXEC_PORTS; port++)
+        fallow[port] = fe1 && (|(fm1 & ~(EXEC_PORTS'(1) << port)));
+      fpair = fm0 & fallow;
+      fp_first = fe0 ? lowest_port((|fpair) ? fpair : fm0) : lowest_port(fm1);
+      fm1_rest = fm1 & ~(EXEC_PORTS'(1) << fp_first);
+      fgrant2 = fe0 && fe1 && (|fm1_rest);
+      fp_second = lowest_port(fm1_rest);
+      if (fe0 || fe1) begin
+        fo_candidate_grant[fe0 ? 0 : 1] = 1'b1;
+        fo_candidate_port[fe0 ? 0 : 1]  = fp_first;
+        fo_port_valid[fp_first]         = 1'b1;
+        fo_port_candidate[fp_first]     = fe0 ? '0 : CANDIDATE_INDEX_WIDTH'(1);
+        fo_issue_valid[0]               = 1'b1;
+        fo_issue_candidate[0]           = fe0 ? '0 : CANDIDATE_INDEX_WIDTH'(1);
+        fo_issue_port[0]                = fp_first;
+      end
+      if (fgrant2) begin
+        fo_candidate_grant[1]       = 1'b1;
+        fo_candidate_port[1]        = fp_second;
+        fo_port_valid[fp_second]    = 1'b1;
+        fo_port_candidate[fp_second] = CANDIDATE_INDEX_WIDTH'(1);
+        fo_issue_valid[1]           = 1'b1;
+        fo_issue_candidate[1]       = CANDIDATE_INDEX_WIDTH'(1);
+        fo_issue_port[1]            = fp_second;
+      end
+    end
+
+    if (AGE_ORDERED && (CANDIDATE_COUNT == 2)) begin
+      candidate_grant_o = fo_candidate_grant;
+      candidate_port_o  = fo_candidate_port;
+      port_valid_o      = fo_port_valid;
+      port_candidate_o  = fo_port_candidate;
+      issue_valid_o     = fo_issue_valid;
+      issue_candidate_o = fo_issue_candidate;
+      issue_port_o      = fo_issue_port;
+    end else begin
+      candidate_grant_o = gen_candidate_grant;
+      candidate_port_o  = gen_candidate_port;
+      port_valid_o      = gen_port_valid;
+      port_candidate_o  = gen_port_candidate;
+      issue_valid_o     = gen_issue_valid;
+      issue_candidate_o = gen_issue_candidate;
+      issue_port_o      = gen_issue_port;
+    end
+`ifndef SYNTHESIS
+    if (AGE_ORDERED && (CANDIDATE_COUNT == 2) &&
+        !$isunknown({candidate_valid_i, candidate_sequence_i,
+                     candidate_port_mask_i, port_ready_i})) begin
+      if (candidate_valid_i[0] && candidate_valid_i[CANDIDATE_COUNT-1])
+        assert (!sequence_before(candidate_sequence_i[CANDIDATE_COUNT-1],
+                                 candidate_sequence_i[0]))
+          else $error("AGE_ORDERED arbiter: candidate 1 older than candidate 0");
+      assert ({fo_candidate_grant, fo_candidate_port, fo_port_valid,
+               fo_port_candidate, fo_issue_valid, fo_issue_candidate,
+               fo_issue_port} ==
+              {gen_candidate_grant, gen_candidate_port, gen_port_valid,
+               gen_port_candidate, gen_issue_valid, gen_issue_candidate,
+               gen_issue_port})
+        else $error("AGE_ORDERED arbiter differs from generic search");
+    end
+`endif
 `ifndef SYNTHESIS
     // Keep immediate checks in the producer process.  A separate always_comb
     // can run before this block after upstream candidate changes and compare

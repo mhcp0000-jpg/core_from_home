@@ -179,33 +179,43 @@ module rv_lsq #(
   function automatic logic [LQ_INDEX_WIDTH-1:0] first_free_lq(
     input logic [LQ_ENTRIES-1:0] free_bitmap
   );
-    logic found;
-    logic [LQ_INDEX_WIDTH-1:0] selected;
-    found = 1'b0;
-    selected = '0;
-    for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
-      if (free_bitmap[entry] && !found) begin
-        found = 1'b1;
-        selected = LQ_INDEX_WIDTH'(entry);
-      end
-    end
-    return selected;
+    // PROTOTYPE: binary-search priority encoder instead of an
+    // LQ_ENTRIES-deep first-match ripple.
+    localparam int unsigned LV = $clog2(LQ_ENTRIES);
+    localparam int unsigned LF = 1 << LV;
+    logic any_tree [0:LV][0:LF-1];
+    int unsigned node;
+    for (int unsigned leaf = 0; leaf < LF; leaf++)
+      any_tree[0][leaf] = (leaf < LQ_ENTRIES) ? free_bitmap[leaf] : 1'b0;
+    for (int unsigned level = 1; level <= LV; level++)
+      for (int unsigned n = 0; n < LF; n++)
+        any_tree[level][n] = (n < (LF >> level)) ?
+          (any_tree[level-1][2*n] | any_tree[level-1][2*n+1]) : 1'b0;
+    node = 0;
+    for (int unsigned level = LV; level >= 1; level--)
+      node = any_tree[level-1][2*node] ? (2*node) : (2*node + 1);
+    return LQ_INDEX_WIDTH'(node);
   endfunction
 
   function automatic logic [SQ_INDEX_WIDTH-1:0] first_free_sq(
     input logic [SQ_ENTRIES-1:0] free_bitmap
   );
-    logic found;
-    logic [SQ_INDEX_WIDTH-1:0] selected;
-    found = 1'b0;
-    selected = '0;
-    for (int unsigned entry = 0; entry < SQ_ENTRIES; entry++) begin
-      if (free_bitmap[entry] && !found) begin
-        found = 1'b1;
-        selected = SQ_INDEX_WIDTH'(entry);
-      end
-    end
-    return selected;
+    // PROTOTYPE: binary-search priority encoder instead of an
+    // SQ_ENTRIES-deep first-match ripple.
+    localparam int unsigned LV = $clog2(SQ_ENTRIES);
+    localparam int unsigned LF = 1 << LV;
+    logic any_tree [0:LV][0:LF-1];
+    int unsigned node;
+    for (int unsigned leaf = 0; leaf < LF; leaf++)
+      any_tree[0][leaf] = (leaf < SQ_ENTRIES) ? free_bitmap[leaf] : 1'b0;
+    for (int unsigned level = 1; level <= LV; level++)
+      for (int unsigned n = 0; n < LF; n++)
+        any_tree[level][n] = (n < (LF >> level)) ?
+          (any_tree[level-1][2*n] | any_tree[level-1][2*n+1]) : 1'b0;
+    node = 0;
+    for (int unsigned level = LV; level >= 1; level--)
+      node = any_tree[level-1][2*node] ? (2*node) : (2*node + 1);
+    return SQ_INDEX_WIDTH'(node);
   endfunction
 
   function automatic logic sequence_after(
