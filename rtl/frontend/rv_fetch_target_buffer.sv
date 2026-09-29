@@ -2,37 +2,62 @@ module rv_fetch_target_buffer #(
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned FETCH_BYTES = 16,
   parameter int unsigned ENTRIES     = 16,
+  parameter int unsigned LOOKUP_PORTS = 1,
   localparam int unsigned OFFSET_BITS = $clog2(FETCH_BYTES),
   localparam int unsigned INDEX_BITS  = $clog2(ENTRIES),
-  localparam int unsigned TAG_BITS    = PADDR_WIDTH-OFFSET_BITS-INDEX_BITS
+  localparam int unsigned TAG_BITS    = PADDR_WIDTH-OFFSET_BITS-INDEX_BITS,
+  localparam int unsigned LOOKUP_SELECT_WIDTH =
+    (LOOKUP_PORTS > 1) ? $clog2(LOOKUP_PORTS) : 1
 ) (
   input  logic                         clk_i,
   input  logic                         rst_ni,
   input  logic                         invalidate_i,
 
-  input  logic                         lookup_valid_i,
-  input  logic [PADDR_WIDTH-1:0]       lookup_addr_i,
-  output logic                         lookup_hit_o,
-  output logic [FETCH_BYTES*8-1:0]     lookup_data_o,
+  input  logic [LOOKUP_PORTS-1:0]                         lookup_valid_i,
+  input  logic [LOOKUP_PORTS-1:0][PADDR_WIDTH-1:0]        lookup_addr_i,
+  input  logic [LOOKUP_SELECT_WIDTH-1:0]                  lookup_select_i,
+  output logic                                             lookup_hit_o,
+  output logic [FETCH_BYTES*8-1:0]                        lookup_data_o,
+  output logic [FETCH_BYTES/2-1:0]                        lookup_pmp_allow_o,
 
   input  logic                         fill_valid_i,
   input  logic [PADDR_WIDTH-1:0]       fill_addr_i,
-  input  logic [FETCH_BYTES*8-1:0]     fill_data_i
+  input  logic [FETCH_BYTES*8-1:0]     fill_data_i,
+  input  logic [FETCH_BYTES/2-1:0]     fill_pmp_allow_i
 );
   logic [ENTRIES-1:0] valid_q;
   logic [TAG_BITS-1:0] tag_q [0:ENTRIES-1];
   logic [FETCH_BYTES*8-1:0] data_q [0:ENTRIES-1];
-  logic [INDEX_BITS-1:0] lookup_index, fill_index;
-  logic [TAG_BITS-1:0] lookup_tag, fill_tag;
+  logic [FETCH_BYTES/2-1:0] pmp_allow_q [0:ENTRIES-1];
+  logic [LOOKUP_PORTS-1:0][INDEX_BITS-1:0] lookup_index;
+  logic [LOOKUP_PORTS-1:0][TAG_BITS-1:0] lookup_tag;
+  logic [INDEX_BITS-1:0] selected_lookup_index;
+  logic [TAG_BITS-1:0] selected_lookup_tag;
+  logic selected_lookup_valid;
+  logic [INDEX_BITS-1:0] fill_index;
+  logic [TAG_BITS-1:0] fill_tag;
 
-  assign lookup_index =
-    lookup_addr_i[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
   assign fill_index = fill_addr_i[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
-  assign lookup_tag = lookup_addr_i[PADDR_WIDTH-1:OFFSET_BITS+INDEX_BITS];
   assign fill_tag = fill_addr_i[PADDR_WIDTH-1:OFFSET_BITS+INDEX_BITS];
-  assign lookup_hit_o = lookup_valid_i && valid_q[lookup_index] &&
-                        (tag_q[lookup_index] == lookup_tag);
-  assign lookup_data_o = data_q[lookup_index];
+  for (genvar port = 0; port < LOOKUP_PORTS; port++) begin : g_lookup
+    assign lookup_index[port] =
+      lookup_addr_i[port][OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
+    assign lookup_tag[port] =
+      lookup_addr_i[port][PADDR_WIDTH-1:OFFSET_BITS+INDEX_BITS];
+  end
+
+  // Both candidate addresses are formed ahead of the direction decision, but
+  // only the selected entry reads the wide block RAM.  This keeps direct
+  // target addition out of the direction path without duplicating the
+  // 128-bit data mux (the former two-read implementation was slower/larger).
+  assign selected_lookup_index = lookup_index[lookup_select_i];
+  assign selected_lookup_tag = lookup_tag[lookup_select_i];
+  assign selected_lookup_valid = lookup_valid_i[lookup_select_i];
+  assign lookup_hit_o = selected_lookup_valid &&
+                        valid_q[selected_lookup_index] &&
+                        (tag_q[selected_lookup_index] == selected_lookup_tag);
+  assign lookup_data_o = data_q[selected_lookup_index];
+  assign lookup_pmp_allow_o = pmp_allow_q[selected_lookup_index];
 
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
@@ -40,6 +65,7 @@ module rv_fetch_target_buffer #(
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
         tag_q[entry] <= '0;
         data_q[entry] <= '0;
+        pmp_allow_q[entry] <= '0;
       end
     end else if (invalidate_i) begin
       valid_q <= '0;
@@ -47,15 +73,19 @@ module rv_fetch_target_buffer #(
       valid_q[fill_index] <= 1'b1;
       tag_q[fill_index] <= fill_tag;
       data_q[fill_index] <= fill_data_i;
+      pmp_allow_q[fill_index] <= fill_pmp_allow_i;
     end
   end
 
 `ifndef SYNTHESIS
-  property p_lookup_is_block_aligned;
-    @(posedge clk_i) disable iff (!rst_ni)
-      lookup_valid_i |-> lookup_addr_i[OFFSET_BITS-1:0] == '0;
-  endproperty
-  assert property (p_lookup_is_block_aligned);
+  always_comb begin : p_lookup_is_block_aligned
+    if (rst_ni === 1'b1) begin
+      for (int unsigned port = 0; port < LOOKUP_PORTS; port++) begin
+        if (lookup_valid_i[port])
+          assert (lookup_addr_i[port][OFFSET_BITS-1:0] == '0);
+      end
+    end
+  end
 
   property p_fill_is_block_aligned;
     @(posedge clk_i) disable iff (!rst_ni)
@@ -69,6 +99,10 @@ module rv_fetch_target_buffer #(
       $fatal(1, "Fetch target buffer FETCH_BYTES must be a power of two");
     if ((ENTRIES < 2) || ((ENTRIES & (ENTRIES-1)) != 0))
       $fatal(1, "Fetch target buffer ENTRIES must be a power of two");
+    if (LOOKUP_PORTS == 0)
+      $fatal(1, "Fetch target buffer requires at least one lookup port");
+    if ((LOOKUP_PORTS & (LOOKUP_PORTS-1)) != 0)
+      $fatal(1, "Fetch target buffer lookup ports must be a power of two");
     if (TAG_BITS <= 0)
       $fatal(1, "Fetch target buffer address tag width must be positive");
   end

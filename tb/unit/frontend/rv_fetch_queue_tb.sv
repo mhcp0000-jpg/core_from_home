@@ -89,6 +89,7 @@ module rv_fetch_queue_tb;
     cross_fill_data = '0;
     cross_fill_pmp_allow = '1;
     repeat (2) @(posedge clk);
+    #1;
     rst_n = 1'b1;
 
     // C.NOP, ADDI x1,x0,1, C.EBREAK in little-endian byte order.
@@ -97,6 +98,7 @@ module rv_fetch_queue_tb;
     fill_data[63:48] = 16'h9002;
     fill_valid = 1'b1;
     @(posedge clk);
+    #1;
     fill_valid = 1'b0;
     #1;
     if ((out_valid != 2'b11) || (out_inst_len[0] != INST_LEN_16) ||
@@ -108,6 +110,7 @@ module rv_fetch_queue_tb;
 
     out_ready = 2'b11;
     @(posedge clk);
+    #1;
     out_ready = 2'b00;
     #1;
     if (!out_valid[0] || (out_instruction[0] != 32'h0000_9002) ||
@@ -120,6 +123,7 @@ module rv_fetch_queue_tb;
     cross_fill_data[15*8 +: 8] = 8'h00;
     cross_fill_valid = 1'b1;
     @(posedge clk);
+    #1;
     cross_fill_valid = 1'b0;
     #1;
     if (cross_out_valid[0])
@@ -134,6 +138,7 @@ module rv_fetch_queue_tb;
     cross_fill_pmp_allow = 8'b1111_1110;
     cross_fill_valid = 1'b1;
     @(posedge clk);
+    #1;
     cross_fill_valid = 1'b0;
     #1;
     if (!cross_out_valid[0] ||
@@ -152,6 +157,7 @@ module rv_fetch_queue_tb;
     fill_valid = 1'b1;
     redirect_valid = 1'b1;
     @(posedge clk);
+    #1;
     fill_valid = 1'b0;
     redirect_valid = 1'b0;
     #1;
@@ -164,6 +170,7 @@ module rv_fetch_queue_tb;
     redirect_pc = 32'h3000;
     redirect_valid = 1'b1;
     @(posedge clk);
+    #1;
     redirect_valid = 1'b0;
     #1;
     if (out_valid != 0)
@@ -180,6 +187,7 @@ module rv_fetch_queue_tb;
     fill_valid = 1'b1;
     redirect_valid = 1'b1;
     @(posedge clk);
+    #1;
     fill_valid = 1'b0;
     redirect_valid = 1'b0;
     #1;
@@ -193,6 +201,7 @@ module rv_fetch_queue_tb;
     fill_valid = 1'b1;
     redirect_valid = 1'b1;
     @(posedge clk);
+    #1;
     fill_valid = 1'b0;
     redirect_valid = 1'b0;
     #1;
@@ -208,12 +217,65 @@ module rv_fetch_queue_tb;
     fill_valid = 1'b1;
     redirect_valid = 1'b1;
     @(posedge clk);
+    #1;
     fill_valid = 1'b0;
     redirect_valid = 1'b0;
     #1;
     if (!out_valid[0] || !out_fault[0] ||
         (out_inst_len[0] != INST_LEN_16))
       $fatal(1, "Denied compressed-instruction parcel was not faulted");
+
+    // Exercise circular parcel wrap.  Fill all 32 parcels, consume 20, then
+    // append another block at wrapped indices 0..7 and consume the remaining
+    // 20 instructions.  PC/order must stay linear across the physical wrap.
+    redirect_pc = 32'h6000;
+    redirect_valid = 1'b1;
+    fill_valid = 1'b0;
+    @(posedge clk);
+    #1;
+    redirect_valid = 1'b0;
+    fill_pmp_allow = '1;
+    fill_resp = 2'b00;
+    fill_data = {8{16'h0001}};
+    for (int unsigned block = 0; block < 4; block++) begin
+      @(negedge clk);
+      fill_addr = 32'h6000 + block*16;
+      fill_valid = 1'b1;
+      @(posedge clk);
+      #1;
+      fill_valid = 1'b0;
+    end
+    for (int unsigned pair = 0; pair < 10; pair++) begin
+      #1;
+      if ((out_valid != 2'b11) ||
+          (out_pc[0] != (32'h6000 + pair*4)) ||
+          (out_pc[1] != (32'h6002 + pair*4)))
+        $fatal(1, "Circular queue order failed before wrap at pair %0d", pair);
+      out_ready = 2'b11;
+      @(posedge clk);
+      #1;
+      out_ready = 2'b00;
+    end
+    @(negedge clk);
+    fill_addr = 32'h6040;
+    fill_valid = 1'b1;
+    @(posedge clk);
+    #1;
+    fill_valid = 1'b0;
+    for (int unsigned pair = 10; pair < 20; pair++) begin
+      #1;
+      if ((out_valid != 2'b11) ||
+          (out_pc[0] != (32'h6000 + pair*4)) ||
+          (out_pc[1] != (32'h6002 + pair*4)))
+        $fatal(1, "Circular queue order failed after wrap at pair %0d", pair);
+      out_ready = 2'b11;
+      @(posedge clk);
+      #1;
+      out_ready = 2'b00;
+    end
+    #1;
+    if (out_valid != 0)
+      $fatal(1, "Circular queue did not empty after wrapped stream");
 
     $display("rv_fetch_queue_tb PASS");
     $finish;

@@ -5,9 +5,9 @@
 ## 현재 기준
 
 - Branch: `main`
-- 마지막 RTL commit: `1fef3ae Cut cross-module timing paths and fix D-fabric request stability (v1.18.4-v1.18.9)` (v1.18.9, 2026-09-29, 아직 push 안 함)
+- 마지막 RTL commit: `Shorten frontend prediction refill path (v1.18.10)` (2026-09-30)
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
-- 미커밋 작업 트리: 없음(아래 사용자 소유 untracked 파일과 `debug.txt` 제외)
+- 미커밋 작업 트리: 없음(사용자 소유 untracked 파일과 `debug.txt`는 제외)
 - v1.18.3 서버 STA checkpoint는 IQ/LQ/SQ selector, rename resource-return,
   FPU 4-stage 경계를 포함한다.
 - Core top: `rv_ooo_core` (`rtl/rv_ooo_core.sv`)
@@ -87,6 +87,11 @@
 - [x] 결과: backend **4,438.31 → 3,972.90 ps(−10.5%)**, area 383,862.21 → 383,266.10 um^2. 최장은 ALU back-to-back 루프(`g_fast[0]` → wakeup → select → 중재 → ALU → `g_fast[0]`). CoreMark **477,689 cycles(+4) / IPC 1.206773**, CRC 동일. unit 21종·block 17종·backend int·C/FP ELF·CoreMark 전부 assertion 활성 PASS
 - [x] **측정 맹점 발견:** whole-top macro flow는 `$mem`의 variable-address async read 경로(49개 array: PRF, fetch queue byte, predictor table, load_meta, LSQ/SB, branch_cp 등)를 ABC에서 잘라 낙관적이다. 신규 `scripts/run_analysis_netlist.sh`(reset 비활성 + memory 개별 mapping)로 `rv_frontend` 3,551.26 → **4,194.16 ps**(table flop화 area 365,932 um^2), `rv_backend`(issue 루프 array만 mapping) 4,282.91 ps(최장이 FPU로 보고 = whole-top ABC ±10% 흔들림). ROB/checkpoint/branch info/LSQ·SB는 7 GB 한계로 미mapping — 서버에서 동일 script 권장
 - [x] 신규 `scripts/trace_named_path.py`: pre-ABC 넷리스트에서 named 신호로 경로 단계를 표시(단위 delay, 직렬 loop 과대평가 — 단계 이름 붙이기 용도)
+- [x] v1.18.10 frontend critical feedback 최적화: fetch queue를 64-byte shift 배열에서 32×16-bit circular parcel 구조로 변경(leaf 1,960.94 → 1,635.94 ps, area 27,933.72 → 12,829.45 µm²). 두 lane direct target 후보는 PHT와 병렬 생성하되 FTB wide data read는 선택된 한 번만 수행
+- [x] FTB entry에 current-response PMP allow[7:0]을 data와 함께 저장하고 hit에서 복원. PMP/privilege/FENCE.I 변경은 기존 architectural redirect가 FTB를 invalidate하므로 stale 권한 재사용 없음. `predictor → FTB → IFU PMP → fault_q`에서 PMP 직렬 cone 제거
+- [x] 동일 open-cell A/B: 2-port wide FTB+parcel 4,227.85 ps → **selected 1-read FTB+cached PMP 3,774.23 ps**, area 354,776.17 → 349,936.83 µm². two-wide data read(4,692.21), parcel valid bitmap(합성 폭증), BTB-ahead+verify(4,029.86)는 폐기
+- [x] v1.18.10 CoreMark: **477,680 cycles**(v1.18.9 대비 −9), profiler retired 576,462 기준 normalized IPC 1.206795(기준 1.206773), CRC/status/exit PASS. marker-window 표시는 retired 576,450 기준 IPC 1.206770. 동일 ELF를 `--assert` 활성 full-SoC로 재실행해 동일 perf 수치와 exit 0 확인
+- [ ] 서버 2 nm STA 재측정 필요: 사용자 관측 1.5 ns/666 MHz 경로가 1 ns를 통과하는지는 서버 library/constraint 결과로만 확정한다. 이번 open-cell 수치는 후보 상대 비교이며 1 GHz 보장이 아님
 - [ ] 다음 A(결정 필요): backend issue/execute 분리 + select 시점 ALU wakeup. load/mul/div/FPU 소비자 +1 cycle(E2a 기준 CoreMark 약 +9%), DTIM hit 가정 wakeup + replay로 회수 가능
 - [ ] 다음 B(결정 필요): frontend 예측을 fetch block 주소 기반(ahead)으로 바꾸거나 한 단 등록(taken마다 bubble). predictor table async read → sync read(SRAM) 전환과 함께
 - [ ] 다음 C(area): `branch_*_q`를 ROB sequence(256) 대신 ROB index(48)로 → 약 60k → 11k bit

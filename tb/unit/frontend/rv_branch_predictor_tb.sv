@@ -4,6 +4,7 @@ module rv_branch_predictor_tb;
   logic clk, rst_n;
   logic [1:0] query_valid, prediction_taken, prediction_fire;
   logic [1:0][31:0] query_pc, query_instruction, prediction_target;
+  logic [1:0][31:0] prediction_lookup_target;
   inst_len_e [1:0] query_inst_len;
   prediction_meta_t [1:0] prediction_meta;
   logic redirect_valid, resolve_valid, resolve_taken, resolve_mispredict;
@@ -25,6 +26,7 @@ module rv_branch_predictor_tb;
     .query_inst_len_i(query_inst_len),
     .prediction_taken_o(prediction_taken),
     .prediction_target_o(prediction_target),
+    .prediction_lookup_target_o(prediction_lookup_target),
     .prediction_meta_o(prediction_meta),
     .prediction_fire_i(prediction_fire), .redirect_valid_i(redirect_valid),
     .resolve_valid_i(resolve_valid), .resolve_pc_i(resolve_pc),
@@ -124,6 +126,8 @@ module rv_branch_predictor_tb;
     #1;
     if (prediction_taken[0] || (prediction_target[0] != 32'h0000_0404))
       $fatal(1, "Conditional reset prediction was not weak-not-taken");
+    if (prediction_lookup_target[0] != 32'h0000_0408)
+      $fatal(1, "Conditional ahead target was not direction-independent");
     branch_meta = prediction_meta[0];
 
     @(negedge clk);
@@ -164,6 +168,8 @@ module rv_branch_predictor_tb;
     #1;
     if (prediction_taken[0])
       $fatal(1, "Compressed conditional reset prediction was not weak-not-taken");
+    if (prediction_lookup_target[0] != 32'h0000_04d4)
+      $fatal(1, "Compressed conditional ahead target decode failed");
     branch_meta = prediction_meta[0];
 
     @(negedge clk);

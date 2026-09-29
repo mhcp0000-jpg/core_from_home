@@ -55,6 +55,18 @@ function To-YosysPath([string]$Path) {
   return ([System.IO.Path]::GetFullPath($Path)).Replace("\", "/")
 }
 
+# Yosys/ABC on Windows cannot reopen output paths containing non-ASCII user
+# directory names.  Runs live below the repository by default, so keep those
+# paths relative to the repo working directory instead of expanding them.
+function To-YosysOutputPath([string]$Path) {
+  $full = [System.IO.Path]::GetFullPath($Path)
+  $repo = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd("\")
+  if ($full.StartsWith($repo + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $full.Substring($repo.Length + 1).Replace("\", "/")
+  }
+  return $full.Replace("\", "/")
+}
+
 # Keep repository-owned inputs relative to the repository working directory.
 # The Windows ABC executable cannot reopen a constraint path containing a
 # non-ASCII user/profile directory even though Yosys itself can.
@@ -120,6 +132,10 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     @{ Name = "rv_multiplier"; Top = "rv_multiplier"; Args = ""; Flow = "full" },
     @{ Name = "rv_divider"; Top = "rv_divider"; Args = ""; Flow = "full" },
     @{ Name = "rv_fetch_queue"; Top = "rv_fetch_queue"; Args = ""; Flow = "full" },
+    # Full frontend maps the queue/predictor/target-buffer arrays so the
+    # count -> prediction -> redirect -> refill feedback path is visible.
+    @{ Name = "rv_frontend"; Top = "rv_frontend"; Args = ""; Flow = "full";
+       AbcScript = "trim" },
     @{ Name = "rv_csr_file"; Top = "rv_csr_file"; Args = ""; Flow = "full" }
   )
   if ($IncludeWholeTop) {
@@ -149,9 +165,9 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
   }
 
   foreach ($block in $blocks) {
-    $mappedNetlist = To-YosysPath (
+    $mappedNetlist = To-YosysOutputPath (
       (Join-Path (Join-Path $BuildRoot $block.Name) "mapped.v"))
-    $preAbcRtlil = To-YosysPath (
+    $preAbcRtlil = To-YosysOutputPath (
       (Join-Path (Join-Path $BuildRoot $block.Name) "pre_abc.rtlil"))
     $front =
       "read_slang --std 1800-2017 --single-unit --ignore-assertions " +
@@ -163,7 +179,8 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
       "synth -top $($block.Top) -flatten -noshare -noabc; "
     }
     $abcOption = ""
-    if ($block.AbcScript -eq "trim") {
+    if ($block.ContainsKey("AbcScript") -and
+        ($block.AbcScript -eq "trim")) {
       $blockDir = Join-Path $BuildRoot $block.Name
       New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
       $abcScriptFile = Join-Path $blockDir "abc_trim.scr"

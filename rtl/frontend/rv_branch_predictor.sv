@@ -13,6 +13,7 @@ module rv_branch_predictor #(
   input  rv_ooo_pkg::inst_len_e [1:0]           query_inst_len_i,
   output logic [1:0]                            prediction_taken_o,
   output logic [1:0][XLEN-1:0]                  prediction_target_o,
+  output logic [1:0][XLEN-1:0]                  prediction_lookup_target_o,
   output rv_ooo_pkg::prediction_meta_t [1:0]    prediction_meta_o,
   input  logic [1:0]                            prediction_fire_i,
 
@@ -219,6 +220,7 @@ module rv_branch_predictor #(
     ras_count_work = speculative_ras_count_q;
     prediction_taken_o = '0;
     prediction_target_o = '0;
+    prediction_lookup_target_o = '0;
     prediction_meta_o = '0;
     query_btb_hit = '0;
     query_btb_target = '0;
@@ -292,6 +294,13 @@ module rv_branch_predictor #(
       end
       prediction_meta_o[lane].taken = prediction_taken_o[lane];
       prediction_meta_o[lane].target = 64'(prediction_target_o[lane]);
+      // Direct branch/JAL targets do not depend on the direction tables.
+      // Export them independently so FTB address formation can run in
+      // parallel with the bimodal/gshare direction decision.  Indirects
+      // retain their RAS/BTB predicted target.
+      prediction_lookup_target_o[lane] =
+        (query_conditional[lane] || query_direct_jump[lane]) ?
+        query_direct_target[lane] : prediction_target_o[lane];
 
       // Build the second lane's prediction from the first lane's predicted
       // path, independent of downstream ready. Architectural speculative

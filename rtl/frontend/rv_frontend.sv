@@ -94,6 +94,11 @@ module rv_frontend #(
   logic target_buffer_fill_valid;
   logic target_buffer_lookup_hit;
   logic [FETCH_BYTES*8-1:0] target_buffer_lookup_data;
+  logic [FETCH_BYTES/2-1:0] target_buffer_lookup_pmp_allow;
+  logic target_buffer_lookup_select;
+  logic [1:0][XLEN-1:0] prediction_lookup_target;
+  logic [1:0][PADDR_WIDTH-1:0] prediction_lookup_paddr;
+  logic [1:0][PADDR_WIDTH-1:0] target_buffer_lookup_addr;
   logic redirect_uses_target_buffer;
   logic [PADDR_WIDTH-1:0] queue_fill_addr;
   logic queue_fault_visible;
@@ -107,9 +112,23 @@ module rv_frontend #(
   if (PADDR_WIDTH >= XLEN) begin : g_pc_extend
     assign reset_vector_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, RESET_VECTOR};
     assign redirect_paddr = {{(PADDR_WIDTH-XLEN){1'b0}}, frontend_redirect_pc};
+    for (genvar lane = 0; lane < 2; lane++) begin : g_prediction_extend
+      assign prediction_lookup_paddr[lane] =
+        {{(PADDR_WIDTH-XLEN){1'b0}}, prediction_lookup_target[lane]};
+    end
   end else begin : g_pc_truncate
     assign reset_vector_paddr = RESET_VECTOR[PADDR_WIDTH-1:0];
     assign redirect_paddr = frontend_redirect_pc[PADDR_WIDTH-1:0];
+    for (genvar lane = 0; lane < 2; lane++) begin : g_prediction_truncate
+      assign prediction_lookup_paddr[lane] =
+        prediction_lookup_target[lane][PADDR_WIDTH-1:0];
+    end
+  end
+
+  for (genvar lane = 0; lane < 2; lane++) begin : g_target_lookup_addr
+    assign target_buffer_lookup_addr[lane] =
+      {prediction_lookup_paddr[lane][PADDR_WIDTH-1:FETCH_ADDR_LSB],
+       {FETCH_ADDR_LSB{1'b0}}};
   end
 
   assign redirect_block_addr =
@@ -172,8 +191,14 @@ module rv_frontend #(
   // to the fetched bytes.  The queue then combines one parcel for C and two
   // parcels for a 32-bit instruction, including cross-block instructions.
   for (genvar parcel = 0; parcel < FETCH_BYTES/2; parcel++) begin : g_pmp_parcel
-    assign pmp_check_valid_o[parcel] = queue_fill_valid;
-    assign pmp_check_address_o[parcel] = queue_fill_addr +
+    // Permission is captured with every FTB fill.  On a later FTB hit the
+    // cached parcel mask is consumed instead of putting the PMP comparator
+    // behind predictor -> FTB -> queue in the same cycle.  PMP writes and
+    // privilege-changing traps/returns already cause redirect_valid_i, which
+    // invalidates the complete FTB before the new authority can fetch.
+    assign pmp_check_valid_o[parcel] = memory_fill_valid ||
+                                       target_buffer_fill_valid;
+    assign pmp_check_address_o[parcel] = outstanding_addr_q +
       PADDR_WIDTH'(parcel*2);
   end
   // A current response normally observes queue backpressure.  On any redirect
@@ -202,6 +227,7 @@ module rv_frontend #(
     (prediction_fire[1] && prediction_taken[1]);
   assign predicted_redirect_pc = prediction_taken[0] ?
     prediction_target[0] : prediction_target[1];
+  assign target_buffer_lookup_select = !prediction_taken[0];
   assign frontend_redirect_valid = redirect_valid_i || predicted_redirect_fire;
   assign frontend_redirect_pc = redirect_valid_i ? redirect_pc_i :
                                                   predicted_redirect_pc;
@@ -228,6 +254,7 @@ module rv_frontend #(
     .query_instruction_i(queue_instruction), .query_inst_len_i(queue_inst_len),
     .prediction_taken_o(prediction_taken),
     .prediction_target_o(prediction_target),
+    .prediction_lookup_target_o(prediction_lookup_target),
     .prediction_meta_o(prediction_meta), .prediction_fire_i(prediction_fire),
     .redirect_valid_i(redirect_valid_i),
     .resolve_valid_i(predictor_resolve_valid_i),
@@ -247,16 +274,19 @@ module rv_frontend #(
 
   rv_fetch_target_buffer #(
     .PADDR_WIDTH(PADDR_WIDTH), .FETCH_BYTES(FETCH_BYTES),
-    .ENTRIES(TARGET_BUFFER_ENTRIES)
+    .ENTRIES(TARGET_BUFFER_ENTRIES), .LOOKUP_PORTS(2)
   ) u_target_buffer (
     .clk_i, .rst_ni, .invalidate_i(redirect_valid_i),
-    .lookup_valid_i(predicted_redirect_fire),
-    .lookup_addr_i(redirect_block_addr),
+    .lookup_valid_i(queue_valid),
+    .lookup_addr_i(target_buffer_lookup_addr),
+    .lookup_select_i(target_buffer_lookup_select),
     .lookup_hit_o(target_buffer_lookup_hit),
     .lookup_data_o(target_buffer_lookup_data),
+    .lookup_pmp_allow_o(target_buffer_lookup_pmp_allow),
     .fill_valid_i(target_buffer_fill_valid),
     .fill_addr_i(outstanding_addr_q),
-    .fill_data_i(imem_rsp_data_i)
+    .fill_data_i(imem_rsp_data_i),
+    .fill_pmp_allow_i(pmp_check_allow_i)
   );
 
   rv_fetch_queue #(
@@ -278,7 +308,8 @@ module rv_frontend #(
                          target_buffer_lookup_data : imem_rsp_data_i),
     .fill_resp_i       (redirect_uses_target_buffer ? 2'b00 :
                                                       imem_rsp_resp_i),
-    .fill_pmp_allow_i  (pmp_check_allow_i),
+    .fill_pmp_allow_i  (redirect_uses_target_buffer ?
+                         target_buffer_lookup_pmp_allow : pmp_check_allow_i),
     .redirect_valid_i     (frontend_redirect_valid),
     .redirect_pc_i        (frontend_redirect_pc),
     .new_epoch_i       (epoch_q + 1'b1),

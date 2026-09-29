@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized beginner-readable baseline v1.18.9 (2026-09-24) |
+| 상태 | RTL-synchronized beginner-readable baseline v1.18.10 (2026-09-30) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -501,8 +501,8 @@ lane 0만 유효하거나 lane 1이 decode 단계에서 제거된 경우에는 �
 
 - fetch PC는 2-byte aligned여야 한다.
 - local ITIM fetch block은 16-byte aligned 128-bit이며 bank0/1에서 64-bit씩 같은 cycle에 읽는다.
-- fetch queue는 64 byte를 보유하고 SRAM/AXI 응답과 decode backpressure를 분리한다.
-- block 경계를 넘는 32-bit instruction은 queue의 연속 byte view에서 조립한다.
+- fetch queue는 64 byte를 32개의 16-bit parcel로 보유하고 SRAM/AXI 응답과 decode backpressure를 분리한다. 저장부는 `head_index_q`와 parcel count를 쓰는 circular queue라 consume 때 전체 배열을 shift하지 않는다.
+- block 경계를 넘는 32-bit instruction은 circular queue의 연속 두 parcel에서 조립한다.
 - aligner는 cycle당 최대 2개 architectural instruction을 출력하고, 16/32-bit 길이 조합을 모두 지원한다.
 - 각 instruction에는 `pc`, raw instruction, expanded instruction, original length, prediction metadata, fetch fault를 부착한다.
 - C expansion은 decode 입력에서 canonical 32-bit instruction으로 변환하지만 original raw bits와 length는 trace/exception을 위해 보존한다.
@@ -538,9 +538,11 @@ I local fabric은 IFU request와 Main Xbar inbound access를 Boot ROM 또는 ITI
 
 ### 6.3 Target/loop block buffer
 
-`rv_fetch_target_buffer`는 16-byte fetch block 16개를 보존하는 direct-mapped 구조다. 각 entry는 valid, physical block tag, 128-bit data를 저장하며 기본 용량은 `IF_TARGET_BUFFER_ENTRIES`로 parameter화한다. 이는 일반적인 coherent I-cache가 아니라, 이미 정상 응답을 받은 backward branch target을 짧게 재사용해 correct predicted-taken branch마다 64-byte queue 전체를 다시 채우는 비용을 줄이는 frontend 전용 buffer다.
+`rv_fetch_target_buffer`는 16-byte fetch block 16개를 보존하는 direct-mapped 구조다. 각 entry는 valid, physical block tag, 128-bit data와 fetch 당시의 8-bit PMP parcel allow mask를 저장하며 기본 용량은 `IF_TARGET_BUFFER_ENTRIES`로 parameter화한다. 이는 일반적인 coherent I-cache가 아니라, 이미 정상 응답을 받은 backward branch target을 짧게 재사용해 correct predicted-taken branch마다 64-byte queue 전체를 다시 채우는 비용을 줄이는 frontend 전용 buffer다.
 
-memory response가 current epoch이고 OKAY일 때 `outstanding_addr_q`의 aligned block을 fill한다. predicted redirect의 aligned target을 같은 cycle에 combinational lookup하고 hit이면 `redirect_valid_i`와 `fill_valid_i`를 fetch queue에 함께 보낸다. queue는 old-path byte를 전부 폐기한 뒤 target PC가 가리키는 block offset 이전 byte를 건너뛰고 나머지 block을 같은 edge에 적재한다. 따라서 별도 replay register와 redirect 직후의 강제 empty cycle이 없다. sequential request pointer는 target 다음 block으로 이동한다. miss이면 redirect cycle request slot을 사용할 수 있을 때 target request를 즉시 보낸다. old-epoch response는 queue와 buffer를 갱신하지 않고 slot만 해제한다.
+memory response가 current epoch이고 OKAY일 때 `outstanding_addr_q`의 aligned block과 그 response에 대해 계산한 PMP parcel mask를 fill한다. 두 lane의 direct target은 direction PHT와 병렬로 미리 계산해 두 lookup address를 만들지만, direction이 정해진 뒤 선택된 entry의 128-bit data RAM만 한 번 읽는다. 이는 두 개의 wide read mux와 마지막 128-bit lane mux를 만들지 않으면서 target address 계산을 direction 결정과 겹친다. hit이면 `redirect_valid_i`와 `fill_valid_i`를 fetch queue에 함께 보내고 저장된 PMP mask도 같이 복원한다. queue는 old-path parcel을 전부 폐기한 뒤 target PC가 가리키는 block offset 이전 parcel을 건너뛰고 나머지 block을 같은 edge에 적재한다. 따라서 별도 replay register와 redirect 직후의 강제 empty cycle이 없다. sequential request pointer는 target 다음 block으로 이동한다. miss이면 redirect cycle request slot을 사용할 수 있을 때 target request를 즉시 보낸다. old-epoch response는 queue와 buffer를 갱신하지 않고 slot만 해제한다.
+
+FTB hit에서 PMP comparator를 다시 직렬 통과시키지 않는 것이 timing 최적화의 핵심이다. PMP configuration write, trap/interrupt privilege 진입, `MRET`, `FENCE.I`는 모두 architectural redirect를 만들고 그 redirect가 FTB valid 전체를 먼저 지운다. 따라서 권한이나 privilege가 바뀐 뒤 이전 allow mask가 재사용될 수 없다. 이 invalidate 불변조건을 깨는 새 privilege 전이가 추가된다면 반드시 같은 redirect/invalidate 계약에 포함해야 한다.
 
 direct-mapped 16-entry와 32-entry CoreMark A/B는 각각 548,343 cycle과 548,318 cycle로 차이가 25 cycle뿐이었다. 따라서 추가 256-byte data/tag 면적을 정당화하지 못해 16-entry를 기본값으로 유지했다. 실행 중 Host/LSU가 ITIM을 수정한 뒤에는 반드시 `FENCE.I`를 실행해야 하며, architectural redirect가 buffer 전체를 invalidate하므로 self-modifying code가 stale block을 재사용하지 않는다.
 
@@ -1460,7 +1462,7 @@ SoC의 기본 firmware contract를 바꾸지 않는다.
 | `rv_clint` | Implemented | single clock, sync active-low reset | base/size, clock/timebase Hz |
 | `rv_d_fabric` | Implemented | single clock, sync active-low reset | DTIM/CLINT map, ROB sequence, fairness bound |
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
-| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 64-byte queue, 16-entry atomic target refill, 2-byte PMP parcel metadata | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
+| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 32×16-bit circular parcel queue, 16-entry single-read atomic target refill, cached 2-byte PMP parcel metadata | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Integrated baseline: RV32IMFC directed/CoreMark/PMP-boundary regression PASS; ISA sign-off pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
@@ -1979,21 +1981,21 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 
 | Port group | exact signal | 계약 |
 |---|---|---|
-| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 64-byte byte-addressed queue에 최대 4 block과 2-byte parcel별 PMP 결과 보관 |
+| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 32-entry circular parcel queue에 최대 4 block과 2-byte parcel별 PMP 결과 보관 |
 | consume | `out_valid_o[1:0]/out_ready_i[1:0]`, lane별 `out_pc_o`, `out_instruction_o[31:0]`, `out_inst_len_o`, `out_fault_o` | C는 low 16-bit만 유효한 raw instruction을 program order로 출력 |
 | control | `redirect_valid_i`, `redirect_pc_i`, `new_epoch_i[3:0]`, `empty_o`, `byte_count_o[6:0]` | redirect가 consume보다 우선; 동시 fill은 새 target block으로 수락 |
 
-queue는 같은 cycle fill과 최대 8-byte consume를 허용한다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`로 설정하며, aligned `fill_addr_i`부터 redirect PC 이전 byte를 제외한 target block만 index 0부터 저장한다. 이 동시 fill은 queue의 기존 점유량과 무관하게 ready여야 한다. fabric response error는 fill의 모든 byte에, `fill_pmp_allow_i[n]=0`은 parcel `n`의 두 byte에 fault로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 그 이후 sequential fetch는 redirect까지 정지한다.
+queue는 같은 cycle fill과 최대 4-parcel consume를 허용한다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`로 설정하며, aligned `fill_addr_i`부터 redirect PC 이전 parcel을 제외한 target block을 고정 parcel slot 0~7에 저장하고 head index만 target offset으로 둔다. 일반 fill은 `tail = old_head + old_count`에 circular write한다. 이 동시 fill은 queue의 기존 점유량과 무관하게 ready여야 한다. fabric response error 또는 `fill_pmp_allow_i[n]=0`은 parcel `n`의 fault bit 하나로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 그 이후 sequential fetch는 redirect까지 정지한다.
 
 #### `rv_fetch_target_buffer`
 
 | Port group | exact signal | 계약 |
 |---|---|---|
-| lookup | `lookup_valid_i`, `lookup_addr_i[PADDR_WIDTH-1:0]`, `lookup_hit_o`, `lookup_data_o[FETCH_BYTES*8-1:0]` | aligned predicted target을 조합 조회 |
-| fill | `fill_valid_i`, `fill_addr_i[PADDR_WIDTH-1:0]`, `fill_data_i[FETCH_BYTES*8-1:0]` | current-epoch OKAY memory response만 해당 direct-map entry에 기록 |
+| lookup | `lookup_valid_i[LOOKUP_PORTS-1:0]`, lane별 `lookup_addr_i[PADDR_WIDTH-1:0]`, `lookup_select_i`, `lookup_hit_o`, `lookup_data_o[FETCH_BYTES*8-1:0]`, `lookup_pmp_allow_o[FETCH_BYTES/2-1:0]` | 두 target 후보의 index/tag를 먼저 만들고 선택된 후보만 wide data/PMP mask를 조합 조회 |
+| fill | `fill_valid_i`, `fill_addr_i[PADDR_WIDTH-1:0]`, `fill_data_i[FETCH_BYTES*8-1:0]`, `fill_pmp_allow_i[FETCH_BYTES/2-1:0]` | current-epoch OKAY memory response와 당시 PMP parcel 결과를 해당 direct-map entry에 기록 |
 | control | `clk_i`, `rst_ni`, `invalidate_i` | reset 또는 architectural redirect에서 모든 valid clear |
 
-parameter는 `PADDR_WIDTH`, `FETCH_BYTES`, `ENTRIES`이며 `FETCH_BYTES`와 `ENTRIES`는 2의 거듭제곱이어야 한다. index는 `address[OFFSET_BITS +: INDEX_BITS]`, tag는 그 상위 address bit다. lookup/fill 주소는 block aligned여야 하고, 같은 cycle invalidate와 fill이면 invalidate가 우선한다. data RAM은 1 read/1 write 형태로 합성 가능하며 기본 16-entry 저장량은 data 256 bytes와 valid/tag다.
+parameter는 `PADDR_WIDTH`, `FETCH_BYTES`, `ENTRIES`, `LOOKUP_PORTS`이며 모두 필요한 값은 2의 거듭제곱이어야 한다. index는 `address[OFFSET_BITS +: INDEX_BITS]`, tag는 그 상위 address bit다. lookup/fill 주소는 block aligned여야 하고, 같은 cycle invalidate와 fill이면 invalidate가 우선한다. 주소 후보는 두 개지만 선택 후 wide array read는 하나이므로 data RAM은 논리적으로 1R1W이며, 기본 16-entry 저장량은 data 256 bytes, PMP mask 16 bytes와 valid/tag다.
 
 #### `rv_c_expander`
 
@@ -2007,7 +2009,7 @@ bits가 `2'b11`이면 사용하지 않는다. legal RV32C를 canonical RV32 inst
 | Port group | exact signal | 계약 |
 |---|---|---|
 | lookup | `query_valid_i[1:0]`, lane별 `query_pc_i`, raw `query_instruction_i[31:0]`, `query_inst_len_i` | cycle당 두 명령을 분류하고 조회 |
-| prediction | `prediction_taken/target_o[1:0]`, `prediction_meta_o[1:0]`, `prediction_fire_i[1:0]` | 첫 taken lane 이후 lane은 frontend가 무효화; accept된 branch만 speculative state 진행 |
+| prediction | `prediction_taken/target_o[1:0]`, `prediction_lookup_target_o[1:0]`, `prediction_meta_o[1:0]`, `prediction_fire_i[1:0]` | direct target 후보는 direction과 독립적으로 FTB에 제공; 첫 taken lane 이후 lane은 frontend가 무효화; accept된 branch만 speculative state 진행 |
 | resolve | `resolve_valid_i`, PC/raw instruction/length, actual taken/target, mispredict, original prediction meta | raw encoding과 length는 반드시 일치; PHT/BTB 학습 및 snapshot+actual GHR/RAS 복구 |
 | commit | lane별 `commit_valid_i`, PC/raw instruction/length/taken | precise fallback용 committed GHR/RAS 갱신 |
 | flush | `redirect_valid_i` | resolve-mispredict가 아닌 full architectural redirect는 committed history/RAS로 복구 |
@@ -2154,7 +2156,7 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 각 PMP entry의 cfg/mode와 exclusive `[region_low, region_high)`는 port loop 밖에서 한 번 predecode한다. 특히 NAPOT trailing-one scan과 TOR previous-entry bound를 IFU/LSU check port마다 복제하지 않는다. 각 port에는 predecoded bound와 access range/permission 비교만 남으며 낮은 index priority와 partial-match deny 의미는 이전과 동일하다.
 
-IFU frontend exact interface는 `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_check_address_o[FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]`, `pmp_check_allow_i[FETCH_BYTES/2-1:0]`이다. 모든 valid port의 size는 `3'd1`(2 bytes), access는 execute, privilege는 current privilege로 core가 고정한다. memory response 또는 target-buffer hit가 fetch queue에 실제 fill되는 cycle에만 valid이며, allow vector는 `rv_fetch_queue.fill_pmp_allow_i`로 전달된다. fetch queue는 byte별 fabric response error와 parcel deny를 OR하여 보존하고 instruction 길이에 맞춰 `out_fault_o`를 만든다. denied instruction은 외부에 architecturally visible한 실행이나 register/memory side effect를 만들지 않지만, side-effect-free local memory transport request 자체는 16 bytes로 유지된다.
+IFU frontend exact interface는 `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_check_address_o[FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]`, `pmp_check_allow_i[FETCH_BYTES/2-1:0]`이다. 모든 valid port의 size는 `3'd1`(2 bytes), access는 execute, privilege는 current privilege로 core가 고정한다. current memory response가 queue 또는 target buffer에 받아들여질 때 valid이며, allow vector는 queue와 target buffer 양쪽에 기록된다. 이후 target-buffer hit는 저장된 mask를 `rv_fetch_queue.fill_pmp_allow_i`로 되돌려 보내므로 predictor redirect 경로에서 PMP를 다시 계산하지 않는다. fetch queue는 fabric response error와 parcel deny를 OR하여 parcel fault로 보존하고 instruction 길이에 맞춰 `out_fault_o`를 만든다. denied instruction은 외부에 architecturally visible한 실행이나 register/memory side effect를 만들지 않지만, side-effect-free local memory transport request 자체는 16 bytes로 유지된다.
 
 #### `rv_trap_controller`
 
@@ -2699,15 +2701,16 @@ PC 선택부터 instruction 두 개가 backend에 전달될 때까지 따라간�
 
 ![rv_fetch_queue block diagram](diagrams/modules/rv_fetch_queue.svg)
 
-**목적.** 16-byte fetch block들을 byte queue로 보관하고 C/32-bit instruction 두 개를 정렬한다.
+**목적.** 16-byte fetch block들을 16-bit parcel circular queue로 보관하고 C/32-bit instruction 두 개를 정렬한다.
 
 **Step-by-step.**
 
-1. block 주소와 queue tail 사이의 byte offset을 계산한다.
-2. 유효 byte와 parcel fault bit를 FIFO에 기록한다.
-3. head에서 길이를 읽고 소비된 byte만 pointer/count에서 제거한다.
+1. block 주소와 queue tail 사이의 parcel offset을 계산한다.
+2. 8개 parcel과 parcel별 fault bit를 `head+count` 위치에 circular write한다.
+3. head의 low parcel로 길이를 판정하고 C는 1개, 32-bit는 연속 2개 parcel을 조립한다.
+4. 최대 두 instruction이 소비한 1~4 parcel 수만큼 head index/PC/count만 이동하며 저장 배열 전체는 shift하지 않는다.
 
-**타이밍.** fill edge 뒤 저장 byte가 보이며 consume과 compatible fill은 같은 edge에 처리된다. 처리율은 공간과 instruction boundary가 허용하면 최대 2 instruction/cycle이다. Backpressure/flush 규칙은 공간 부족 시 fill을 거부하고 backend stall 시 head/data를 유지한다.
+**타이밍.** fill edge 뒤 저장 parcel이 보이며 consume과 compatible fill은 같은 edge에 처리된다. redirect+FTB hit는 고정 slot 0~7에 쓰고 head index만 target offset으로 선택해 variable tail write cone을 피한다. 처리율은 공간과 instruction boundary가 허용하면 최대 2 instruction/cycle이다. Backpressure/flush 규칙은 공간 부족 시 fill을 거부하고 backend stall 시 head/data를 유지한다.
 
 **코너케이스.** queue wrap, halfword 끝의 32-bit instruction, redirect flush를 검사해야 한다.
 
@@ -2724,10 +2727,11 @@ PC 선택부터 instruction 두 개가 backend에 전달될 때까지 따라간�
 **Step-by-step.**
 
 1. target block 주소로 index/tag를 만든다.
-2. valid tag가 맞으면 저장 block을 frontend에 즉시 반환한다.
-3. memory response 또는 replay block을 해당 entry에 채운다.
+2. 두 lane target 후보의 index/tag는 병렬 생성하되 direction으로 선택된 한 entry의 wide data만 읽는다.
+3. valid tag가 맞으면 저장 block과 fetch 당시 PMP parcel allow mask를 frontend에 즉시 반환한다.
+4. current memory response의 block/data/PMP mask를 해당 entry에 채운다.
 
-**타이밍.** lookup은 조합, fill/invalidate는 clock edge에서 반영된다. 처리율은 매 cycle 한 lookup, 한 fill을 처리한다. Backpressure/flush 규칙은 FENCE.I/PMP redirect invalidate가 fill보다 우선한다.
+**타이밍.** 후보 주소 계산과 tag 준비는 direction PHT와 병렬이고, 선택된 128-bit data read는 하나다. lookup은 조합, fill/invalidate는 clock edge에서 반영된다. FTB hit의 fault metadata는 cached PMP mask를 사용해 predictor→FTB 뒤에 8-port PMP comparator를 직렬 연결하지 않는다. 처리율은 매 cycle 한 선택 lookup, 한 fill을 처리한다. Backpressure/flush 규칙은 FENCE.I/PMP/privilege redirect invalidate가 fill보다 우선한다.
 
 **코너케이스.** alias tag, 같은 cycle invalidate/fill, wrong-path block 재사용을 막아야 한다.
 
@@ -4740,7 +4744,7 @@ primary input으로 보므로 **variable-address async read의 주소→데이�
 빠진다.** 해당 array가 49개이며 중요 경로에 걸린 것은:
 
 - frontend: `pht_q`/`global_pht_q`/`chooser_q`(2048×2, async read 6 port), `btb_q`,
-  RAS, fetch target buffer, **fetch queue `byte_q`**(head 명령 추출)
+  RAS, fetch target buffer, **fetch queue `parcel_q`**(16-bit circular parcel head 명령 추출)
 - backend: **PRF 2개**(operand read), **`load_meta_*`**(D-bus 응답 id → 목적지/live),
   LSQ/SB 주소·sequence, `branch_cp_q`(flush 경로), rename checkpoint, ROB
 
@@ -4760,6 +4764,44 @@ backend analysis에서 FPU 경로가 최장으로 나온 것은 같은 RTL에서
 넷리스트 차이로 ±10% 정도 흔들린다는 뜻이기도 하다(macro flow에서는 FPU 경로가 3,973 ps
 이하였다). ROB/checkpoint/branch 정보/LSQ·SB array는 sandbox 메모리 안에 mapping되지
 않아 아직 macro로 남아 있다. 서버에서 동일 script로 전체를 돌리면 이 공백이 없어진다.
+
+###### 4-1. v1.18.10 frontend feedback 경로 단축 (IPC stage 추가 없음)
+
+서버의 `fetch_queue/count_q_reg2 → branch predictor → target buffer →
+fetch_queue/fault_q_reg` 1.5 ns급 경로를 대상으로, predicted-taken branch의 cycle을
+늘리지 않는 변경만 적용했다.
+
+1. 64-entry byte shift queue를 32-entry 16-bit circular parcel queue로 바꿨다. C는 한
+   parcel, 32-bit는 두 parcel을 읽고 consume은 head/count만 이동한다. redirect refill은
+   고정 slot 0~7에 쓰고 head index로 target offset을 선택한다.
+2. 두 lane의 direct target 후보는 direction PHT와 병렬로 계산한다. FTB는 후보별
+   index/tag를 준비하되 direction 선택 뒤 128-bit data RAM은 하나만 읽는다.
+3. current response의 8-bit PMP allow mask를 FTB entry에 data와 함께 저장한다. hit 때
+   mask를 복원하므로 `predictor → FTB → 8개 PMP comparator → queue fault FF`의 직렬
+   PMP 부분이 사라진다. PMP/privilege/FENCE.I 변화는 architectural redirect에서 FTB를
+   전부 invalidate한다.
+4. prediction 또는 refill pipeline register는 추가하지 않았다. 따라서 taken branch
+   hit의 target instruction visible cycle과 mispredict penalty는 바뀌지 않는다.
+
+동일 Windows open-cell screening의 후보 A/B 결과는 다음과 같다. 이 숫자는 서버 2 nm
+sign-off 수치가 아니라 구조 후보를 같은 조건에서 비교하기 위한 값이다.
+
+| 후보 | frontend delay | area | 결정 |
+| --- | ---: | ---: | --- |
+| two-wide FTB data read, byte queue | 4,692.21 ps | 365,997.65 µm² | wide read 두 개와 마지막 lane mux 때문에 폐기 |
+| two-wide FTB data read, parcel queue | 4,227.85 ps | 354,776.17 µm² | queue 개선 확인, FTB 구조는 폐기 |
+| **selected single FTB read + cached PMP + parcel queue** | **3,774.23 ps** | **349,936.83 µm²** | 채택 |
+| BTB target ahead lookup + verify | 4,029.86 ps | 352,535.65 µm² | 4-way BTB read/compare 비용으로 폐기 |
+
+fetch queue leaf 자체는 기존 byte queue 1,960.94 ps / 27,933.72 µm²에서 parcel queue
+1,635.94 ps / 12,829.45 µm²로 **delay 16.6%, area 54.1% 감소**했다. CoreMark 2-iteration
+최종 run은 477,680 cycle로 v1.18.9의 477,689보다 9 cycle 짧고 CRC/status가 모두
+동일하다. profiler retired 576,462를 같은 기준으로 나누면 IPC는 1.206773 →
+1.206795로 감소하지 않는다. 결과 파일의 marker-window IPC 1.206770은 종료 marker
+밖 12 instruction을 제외한 576,450을 사용한 표기 차이다. 동일 ELF는
+RTL assertion을 활성한 full-SoC Verilator 재실행에서도 동일 profiler 수치와 exit 0을 냈다. 실제 1 GHz 통과 여부는
+서버의 동일 constraint/library에서 다시 확인해야 하며, 이 변경만으로 1 ns를
+보장한다고 간주하지 않는다.
 
 ###### 5. 도구
 
@@ -5157,3 +5199,4 @@ interface 확장 지점만 정의됐고 구현 완료 범위가 아니다.
 | v1.18.7 | whole-backend 경로를 모듈 경계 단위로 추적하는 `scripts/find_comb_chains.py`로 `FU 결과 reg → writeback arbiter → IQ wakeup/select → issue arbiter → PRF → FU`가 한 cycle 조합 루프이고 load는 그 앞에 LSQ forwarding까지 붙어 있음을 확인했다. writeback wakeup을 단순 등록하면 CoreMark +18.96%, fast source만 직접 두면 +9.27%(전부 load 기인)로 측정됐다. 대신 목적지를 쓰는 source가 스스로 wakeup하고 PRF에 써질 때까지 bypass하는 producer-side wakeup으로 바꾸고(source 2..9 skid, fast result buffer `DEPTH=2`, PRF `WRITE_BYPASS=0`, squash된 outstanding load 응답은 `load_meta_live_q`로 claim 제거, system op는 등록 wakeup, IQ payload flush 게이트 제거), store→load forwarding 완료를 `forward_q`로 등록했다. whole-backend 8,072.33 → 5,687.73 ps(−29.5%), start-point가 LSQ candidate에서 `fetch_instr_i → decode → rename → dispatch → IQ age matrix`로 이동했다. CoreMark 468,967 cycles(+0.119%), 명령 본문 commit trace 동일. check_rtl·unit(신규 depth2 TB 포함)·block·backend integration·C/FP ELF PASS, assertion 활성 재실행 PASS. 검증 중 `rv_local_mem_if` D-bus 요청 안정성 assertion이 `be78fec`에서도 실패하는 기존 문제를 발견했다(기존 스크립트가 모두 -DSYNTHESIS라 가려져 있었다). |
 | v1.18.8 | v1.18.7의 최장 경로 `fetch → decode → rename → dispatch → IQ age matrix`를 `rv_backend`의 1-bundle decode→dispatch register로 끊었다. flush는 register를 비우고, older serializing op가 끝날 때까지 새 bundle을 받지 않아 decode 시점 `mstatus.FS` 판단이 기존과 같다. 이어서 드러난 `rename free-list encoder → 수락 판정`을 `{any, ≥2}` 병렬 판정으로, `data PMP → AGU ready → issue select`를 `rv_lsu_pipe DEPTH=2`(기본 1 유지)로 끊었다. whole-backend 5,687.73 → 4,438.31 ps(−22.0%), area +1.9%, 최장 경로는 load 응답 same-cycle wakeup → select → ALU로 이동. CoreMark 477,581 cycles / IPC 1.207046(+1.84%, 대부분 redirect penalty +1 cycle, RAS wrong-path 덮어쓰기로 return mispredict +149). check_rtl·unit 20종(신규 `rv_lsu_pipe_depth2_tb`)·block·backend integration·C/FP ELF·CoreMark PASS. v1.18.7에서 비활성화했던 `rv_local_mem_if` stall 안정성 assertion 실패의 원인(`rv_d_fabric` outbound 선택이 stall 중 older request로 바뀜)을 CLINT/outbound 선택 고정으로 고쳐 **모든 assertion 활성** 상태에서 전 회귀와 CoreMark(CRC 일치)가 통과한다. 최종 CoreMark 477,685 cycles / IPC 1.206783. |
 | v1.18.9 | `rv_ooo_core`를 Top으로 합성(4,685.99 ps, 최장은 frontend fetch queue → 예측 → FTB → IFU PMP → queue fill). D-bus 응답 경로가 긴 이유를 경로 이름 추적 도구(`scripts/trace_named_path.py`)로 분해했다: 한 cycle에 wakeup+select+port 중재+payload+operand+실행. 그중 `rv_issue_arbiter`를 age 보장 기반 `AGE_ORDERED` 경로로(block 988.72 → 571.38 ps), serializing bundle 분리로 barrier 비교를 issue 경로에서 제거해 backend 4,438.31 → 3,972.90 ps(−10.5%). CoreMark 477,689 cycles(+4), 전 assertion 활성 회귀 PASS. whole-top macro flow가 memory의 variable-address async read(PRF, fetch queue, predictor table, load_meta 등 49개)를 잘라 낙관적임을 확인하고 analysis flow(`scripts/run_analysis_netlist.sh`)로 frontend 4,194.16 ps, backend 4,282.91 ps를 측정했다. 남은 개선은 issue/execute 분리와 frontend ahead 예측 같은 IPC 비용이 있는 구조 변경이다. |
+| v1.18.10 | frontend feedback critical path를 cycle 추가 없이 단축했다. byte-shift queue를 16-bit circular parcel queue로 바꾸고, 두 direct-target 후보의 주소/tag 준비와 direction prediction을 병렬화하되 FTB wide data read는 선택된 한 번만 수행한다. FTB entry에 response 당시 PMP parcel mask를 저장해 hit 시 PMP 재검사를 제거하며 PMP/privilege/FENCE.I redirect가 mask를 invalidate한다. open-cell 후보 A/B 최선은 frontend 3,774.23 ps, parcel queue leaf 1,635.94 ps/12,829.45 µm²(기존 byte queue 대비 −16.6%/−54.1%). CoreMark 477,680 cycles(−9), normalized IPC 비감소, CRC/status PASS. 2-port wide FTB, count valid bitmap, BTB-ahead 후보는 timing/area가 나빠 폐기했다. |

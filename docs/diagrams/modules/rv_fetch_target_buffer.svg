@@ -18,16 +18,16 @@
 <text x="40" y="105" class="subtitle"><tspan x="40" dy="0">최근 predicted-taken target의 16-byte block을 보관해 redirect 재요청 latency를 없앤다.</tspan></text>
 <rect x="40" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="60" y="180" class="label">Inputs / events</text>
-<text x="60" y="218" class="body"><tspan x="60" dy="0">lookup address; fill block;</tspan><tspan x="60" dy="25">invalidate</tspan></text>
+<text x="60" y="218" class="body"><tspan x="60" dy="0">2 target candidates + select;</tspan><tspan x="60" dy="25">fill block/PMP; invalidate</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">direct-map index</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">tag+valid+block array</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">hit compare/data mux</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">2 candidate index/tag (parallel)</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">tag + 128b block + PMP[7:0]</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">direction select → single wide read</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
-<text x="990" y="218" class="body"><tspan x="990" dy="0">lookup hit와 block data</tspan></text>
+<text x="990" y="218" class="body"><tspan x="990" dy="0">hit + block + cached PMP</tspan></text>
 <path d="M310 255 H350 V255 H370" class="wire"/>
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: lookup은 조합, fill/invalidate는 clock edge에서 반영된다.</tspan><tspan x="60" dy="24">Throughput: 매 cycle 한 lookup, 한 fill을 처리한다.</tspan><tspan x="60" dy="24">Stall/flush: FENCE.I/PMP redirect invalidate가 fill보다 우선한다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: candidate 준비는 PHT와 병렬, 선택된 wide read만 조합으로 수행한다.</tspan><tspan x="60" dy="24">Throughput: 매 cycle 한 selected lookup과 한 fill을 처리한다.</tspan><tspan x="60" dy="24">Stall/flush: FENCE.I/PMP/privilege redirect invalidate가 fill보다 우선한다.</tspan></text>
 </svg>
