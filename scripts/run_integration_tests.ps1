@@ -2,6 +2,7 @@ param(
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [string]$BuildRoot = "C:\rv_build\backend_int",
+  [switch]$RtlAssertions,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4
 )
@@ -72,7 +73,8 @@ try {
   $oldVerilatorRoot = $env:VERILATOR_ROOT
   try {
     $env:VERILATOR_ROOT = $VerilatorRoot
-    & $verilator --cc --exe --timing --main -DSYNTHESIS -Wno-fatal `
+    $assertionOption = if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
+    & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
       --top-module rv_backend_int_tb --Mdir $BuildRoot @mappedSources
     if ($LASTEXITCODE -ne 0) {
       throw "Verilator code generation failed."

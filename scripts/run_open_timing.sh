@@ -40,20 +40,32 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
   blocks=(
     "rv_writeback_arbiter|rv_writeback_arbiter|-G SOURCE_COUNT=11|full"
     "rv_lsq|rv_lsq||macro"
-    "rv_fpu|rv_fpu||full"
-    "rv_issue_queue|rv_issue_queue|-G ENTRIES=56|macro"
-    "rv_rob|rv_rob||macro"
+    "rv_fpu|rv_fpu|-G LATENCY=5|full"
+    "rv_issue_queue|rv_issue_queue|-G ENTRIES=56 -G WRITEBACK_PORTS=8|macro"
+    "rv_rob|rv_rob|-G LIVE_QUERY_PORTS=11|macro"
     "rv_rename2|rv_rename2||full"
     "rv_pmp|rv_pmp|-G CHECK_PORTS=8|full"
-    "rv_issue_arbiter|rv_issue_arbiter|-G CANDIDATE_COUNT=2|full"
+    "rv_issue_arbiter|rv_issue_arbiter|-G CANDIDATE_COUNT=2 -G AGE_ORDERED=1|full"
     # 아래 6개는 원래 screening list에 없었다.  실제 최장 block이었던
     # rv_store_buffer / rv_lsu_cluster가 그 때문에 보이지 않았다.
     "rv_store_buffer|rv_store_buffer||full"
-    "rv_lsu_cluster|rv_lsu_cluster||macro"
+    "rv_lsu_cluster|rv_lsu_cluster|-G AGU_DEPTH=2|macro"
     "rv_multiplier|rv_multiplier||full"
     "rv_divider|rv_divider||full"
     "rv_fetch_queue|rv_fetch_queue||full"
+    "rv_frontend|rv_frontend||full|trim"
     "rv_csr_file|rv_csr_file||full"
+    "rv_int_alu|rv_int_alu||full"
+    "rv_int_alu64|rv_int_alu|-G XLEN=64|full"
+    "rv_branch_unit|rv_branch_unit||full"
+    "rv_decode2|rv_decode2||full"
+    "rv_trap_controller|rv_trap_controller||full"
+    "rv_branch_recovery|rv_branch_recovery||full"
+    "rv_int_prf|rv_phys_regfile|-G PHYS_REGS=80 -G READ_PORTS=8 -G ZERO_REGISTER=1 -G WRITE_BYPASS=0|full"
+    "rv_fp_prf|rv_phys_regfile|-G PHYS_REGS=80 -G READ_PORTS=8 -G WRITE_BYPASS=0|full"
+    "rv_lsu_pipe|rv_lsu_pipe|-G DEPTH=2|full"
+    "rv_exec_result_buffer|rv_exec_result_buffer|-G DEPTH=2|full"
+    "rv_fence_controller|rv_fence_controller||full"
   )
   # Whole-backend / whole-core는 block 단위 측정이 볼 수 없는 cross-module
   # 경로(LSQ -> store_buffer -> writeback -> IQ -> mul)를 잡는다.  단, yosys
@@ -65,10 +77,32 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
       "rv_ooo_core|rv_ooo_core||macro|trim"
     )
   fi
-  printf 'block,flow,delay_ps,area_um2_excluding_memories,log\n' \
+  # Comma-separated BLOCK_FILTER is optional, matching the PowerShell runner.
+  requested_blocks=()
+  if [[ -n "${BLOCK_FILTER:-}" ]]; then
+    IFS=',' read -r -a requested_blocks <<<"$BLOCK_FILTER"
+    for requested in "${requested_blocks[@]}"; do
+      found=0
+      for spec in "${blocks[@]}"; do
+        [[ "${spec%%|*}" != "$requested" ]] || found=1
+      done
+      if [[ "$found" == "0" ]]; then
+        echo "Unknown BLOCK_FILTER entry: $requested" >&2
+        exit 2
+      fi
+    done
+  fi
+  printf 'block,flow,parameters,memory_model,delay_ps,area_um2_excluding_memories,log\n' \
     >"$build_root/timing_summary.csv"
   for spec in "${blocks[@]}"; do
     IFS='|' read -r name top args flow abc_mode <<<"$spec"
+    if [[ "${#requested_blocks[@]}" != "0" ]]; then
+      selected=0
+      for requested in "${requested_blocks[@]}"; do
+        [[ "$name" != "$requested" ]] || selected=1
+      done
+      [[ "$selected" != "0" ]] || continue
+    fi
     abc_option=""
     if [[ "$abc_mode" == "trim" ]]; then
       mkdir -p "$build_root/$name"
@@ -95,7 +129,9 @@ SCR
     log="$build_root/$name/synth.log"
     delay="$(grep -Eo 'Delay[[:space:]]*=[[:space:]]*[0-9.]+[[:space:]]*ps' "$log" | tail -1 | grep -Eo '[0-9.]+' || true)"
     area="$(grep -Eo "Chip area for module '[^']+':[[:space:]]*[0-9.]+" "$log" | tail -1 | grep -Eo '[0-9.]+$' || true)"
-    printf '%s,%s,%s,%s,%s\n' "$name" "$flow" "$delay" "$area" "$log" \
+    memory_model="mapped flops"
+    [[ "$flow" != "macro" ]] || memory_model="unmapped arrays; read paths omitted"
+    printf '%s,%s,%s,%s,%s,%s,%s\n' "$name" "$flow" "$args" "$memory_model" "$delay" "$area" "$log" \
       >>"$build_root/timing_summary.csv"
   done
   echo "Timing summary: $build_root/timing_summary.csv"

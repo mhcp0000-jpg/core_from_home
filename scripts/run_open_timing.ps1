@@ -116,19 +116,19 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     @{ Name = "rv_writeback_arbiter"; Top = "rv_writeback_arbiter";
        Args = "-G SOURCE_COUNT=11"; Flow = "full" },
     @{ Name = "rv_lsq"; Top = "rv_lsq"; Args = ""; Flow = "macro" },
-    @{ Name = "rv_fpu"; Top = "rv_fpu"; Args = ""; Flow = "full" },
+    @{ Name = "rv_fpu"; Top = "rv_fpu"; Args = "-G LATENCY=5"; Flow = "full" },
     @{ Name = "rv_issue_queue"; Top = "rv_issue_queue";
-       Args = "-G ENTRIES=56"; Flow = "macro" },
-    @{ Name = "rv_rob"; Top = "rv_rob"; Args = ""; Flow = "macro" },
+       Args = "-G ENTRIES=56 -G WRITEBACK_PORTS=8"; Flow = "macro" },
+    @{ Name = "rv_rob"; Top = "rv_rob"; Args = "-G LIVE_QUERY_PORTS=11"; Flow = "macro" },
     @{ Name = "rv_rename2"; Top = "rv_rename2"; Args = ""; Flow = "full" },
     @{ Name = "rv_pmp"; Top = "rv_pmp"; Args = "-G CHECK_PORTS=8"; Flow = "full" },
     @{ Name = "rv_issue_arbiter"; Top = "rv_issue_arbiter";
-       Args = "-G CANDIDATE_COUNT=2"; Flow = "full" },
+       Args = "-G CANDIDATE_COUNT=2 -G AGE_ORDERED=1"; Flow = "full" },
     # These leaves were missing from the screening list, which is how
     # rv_store_buffer (6,014 ps) and rv_lsu_cluster (6,198 ps) stayed
     # invisible while shorter blocks were being optimized.
     @{ Name = "rv_store_buffer"; Top = "rv_store_buffer"; Args = ""; Flow = "full" },
-    @{ Name = "rv_lsu_cluster"; Top = "rv_lsu_cluster"; Args = ""; Flow = "macro" },
+    @{ Name = "rv_lsu_cluster"; Top = "rv_lsu_cluster"; Args = "-G AGU_DEPTH=2"; Flow = "macro" },
     @{ Name = "rv_multiplier"; Top = "rv_multiplier"; Args = ""; Flow = "full" },
     @{ Name = "rv_divider"; Top = "rv_divider"; Args = ""; Flow = "full" },
     @{ Name = "rv_fetch_queue"; Top = "rv_fetch_queue"; Args = ""; Flow = "full" },
@@ -136,7 +136,24 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     # count -> prediction -> redirect -> refill feedback path is visible.
     @{ Name = "rv_frontend"; Top = "rv_frontend"; Args = ""; Flow = "full";
        AbcScript = "trim" },
-    @{ Name = "rv_csr_file"; Top = "rv_csr_file"; Args = ""; Flow = "full" }
+    @{ Name = "rv_csr_file"; Top = "rv_csr_file"; Args = ""; Flow = "full" },
+    # Cover the execution/control/read-array logic in addition to queues.
+    # PRF is fully mapped: macro flow would hide its asynchronous read mux.
+    @{ Name = "rv_int_alu"; Top = "rv_int_alu"; Args = ""; Flow = "full" },
+    @{ Name = "rv_int_alu64"; Top = "rv_int_alu"; Args = "-G XLEN=64"; Flow = "full" },
+    @{ Name = "rv_branch_unit"; Top = "rv_branch_unit"; Args = ""; Flow = "full" },
+    @{ Name = "rv_decode2"; Top = "rv_decode2"; Args = ""; Flow = "full" },
+    @{ Name = "rv_trap_controller"; Top = "rv_trap_controller"; Args = ""; Flow = "full" },
+    @{ Name = "rv_branch_recovery"; Top = "rv_branch_recovery"; Args = ""; Flow = "full" },
+    @{ Name = "rv_int_prf"; Top = "rv_phys_regfile";
+       Args = "-G PHYS_REGS=80 -G READ_PORTS=8 -G ZERO_REGISTER=1 -G WRITE_BYPASS=0";
+       Flow = "full" },
+    @{ Name = "rv_fp_prf"; Top = "rv_phys_regfile";
+       Args = "-G PHYS_REGS=80 -G READ_PORTS=8 -G WRITE_BYPASS=0"; Flow = "full" },
+    @{ Name = "rv_lsu_pipe"; Top = "rv_lsu_pipe"; Args = "-G DEPTH=2"; Flow = "full" },
+    @{ Name = "rv_exec_result_buffer"; Top = "rv_exec_result_buffer";
+       Args = "-G DEPTH=2"; Flow = "full" },
+    @{ Name = "rv_fence_controller"; Top = "rv_fence_controller"; Args = ""; Flow = "full" }
   )
   if ($IncludeWholeTop) {
     # Whole-backend/core runs retain inferred memories as macro boundaries.
@@ -158,10 +175,13 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     )
   }
   if ($BlockFilter) {
-    $blocks = @($blocks | Where-Object { $_.Name -eq $BlockFilter })
-    if ($blocks.Count -eq 0) {
-      throw "Unknown BlockFilter: $BlockFilter"
+    $requestedBlocks = @($BlockFilter.Split(',') | ForEach-Object { $_.Trim() })
+    foreach ($requested in $requestedBlocks) {
+      if ($requested -notin @($blocks | ForEach-Object { $_.Name })) {
+        throw "Unknown BlockFilter: $requested"
+      }
     }
+    $blocks = @($blocks | Where-Object { $_.Name -in $requestedBlocks })
   }
 
   foreach ($block in $blocks) {
@@ -218,6 +238,8 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     $results += [pscustomobject]@{
       Block = $block.Name
       Flow = $block.Flow
+      Parameters = $block.Args
+      MemoryModel = if ($block.Flow -eq "macro") { "unmapped arrays; read paths omitted" } else { "mapped flops" }
       DelayPs = $delay
       AreaUm2ExcludingMemories = $area
       CriticalPath = if ($pathMatch.Success) {

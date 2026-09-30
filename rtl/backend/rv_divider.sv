@@ -65,6 +65,7 @@ module rv_divider #(
   logic [COUNT_WIDTH-1:0] request_iterations;
 
   logic [XLEN:0] trial_remainder;
+  logic [XLEN+1:0] trial_difference;
   logic [XLEN:0] reduced_remainder;
   logic [XLEN-1:0] quotient_next;
   logic [XLEN-1:0] signed_quotient_next;
@@ -114,18 +115,19 @@ module rv_divider #(
                       (&operand_b_effective);
 
     trial_remainder = remainder_q;
+    trial_difference = '0;
     reduced_remainder = remainder_q;
     quotient_next = quotient_q;
     if (iteration_q != 0) begin
-      trial_remainder = {remainder_q[XLEN-1:0],
-                         dividend_q[iteration_q-1'b1]};
-      if (trial_remainder >= {1'b0, divisor_q}) begin
-        reduced_remainder = trial_remainder - {1'b0, divisor_q};
-        quotient_next[iteration_q-1'b1] = 1'b1;
-      end else begin
-        reduced_remainder = trial_remainder;
-        quotient_next[iteration_q-1'b1] = 1'b0;
-      end
+      // Shift the dividend and accumulated quotient one place each step.
+      // This replaces iteration-indexed read/write muxes with fixed wiring.
+      // One widened subtract supplies both the trial value and its borrow;
+      // no independent wide magnitude comparator precedes the selection.
+      trial_remainder = {remainder_q[XLEN-1:0], dividend_q[XLEN-1]};
+      trial_difference = {1'b0, trial_remainder} - {2'b00, divisor_q};
+      reduced_remainder = trial_difference[XLEN+1] ? trial_remainder :
+                                                       trial_difference[XLEN:0];
+      quotient_next = {quotient_q[XLEN-2:0], !trial_difference[XLEN+1]};
     end
 
     signed_quotient_next = quotient_negative_q ?
@@ -194,7 +196,10 @@ module rv_divider #(
         quotient_negative_q <= signed_operation &&
                                (dividend_negative ^ divisor_negative);
         remainder_negative_q <= signed_operation && dividend_negative;
-        dividend_q <= dividend_absolute;
+        // DIVW/REMW consume only 32 bits; align them to the same fixed MSB
+        // as a full-width request without changing the 32-step latency.
+        dividend_q <= ((XLEN == 64) && word_operation_i) ?
+                       (dividend_absolute << (XLEN-32)) : dividend_absolute;
         divisor_q <= divisor_absolute;
         remainder_q <= '0;
         quotient_q <= '0;
@@ -221,6 +226,7 @@ module rv_divider #(
                    (flush_all_i || sequence_is_younger(rob_sequence_q,
                                                        flush_sequence_i)))) begin
         remainder_q <= reduced_remainder;
+        dividend_q <= {dividend_q[XLEN-2:0], 1'b0};
         quotient_q <= quotient_next;
         iteration_q <= iteration_q - 1'b1;
         if (iteration_q == 1) begin

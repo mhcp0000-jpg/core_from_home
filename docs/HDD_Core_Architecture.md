@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized frontend timing checkpoint v1.18.11 (2026-09-30) |
+| 상태 | RTL-synchronized backend timing candidates v1.18.12; whole-path timing unresolved (2026-09-30) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -4843,6 +4843,82 @@ arrival time ≤0.8142 ns 여부와 새로운 start/end point를 확인해야 �
 남은 구조 후보는 fill 시 direct-branch target/index를 미리 저장하는 predecode다.
 cross-block instruction, FTB refill metadata, PMP invalidation까지 함께 다뤄야 하며
 아직 RTL에 구현하지 않았다.
+
+###### 4-3. Backend timing experiments (2026-09-30)
+
+서버 목표는 **최소 1 GHz, 도전 목표 1.2 GHz 이상**이다. 1.2 GHz의 clock
+period는 0.8333 ns이다. 이전 1 GHz constraint에서의 조합 arrival limit
+0.8142 ns가 동일한 clock/setup overhead를 뜻한다면 1.2 GHz limit은 약
+0.6475 ns지만, 이는 추정일 뿐 서버 SDC/STA에서 다시 확인해야 한다.
+아래 공개 Nangate45 수치를 2 nm 주파수로 환산하지 않는다.
+
+현재 후보는 issue/execute/writeback latency를 늘리지 않는 조합망 변경이다.
+
+| 블록 | 변경 전 delay(ps) | 후보 delay(ps) | 변경 전/후 area(µm²) | 구현 |
+| --- | ---: | ---: | ---: | --- |
+| ALU RV32 | 1,096.49 | 994.88 | 1,314.572 / 1,336.384 | 4-bit carry-select + parallel group carry |
+| ALU RV64 | 2,118.34 | 993.54 | 3,133.214 / 3,207.694 | 같은 prefix, ADDW/SUBW low 32-bit 재사용 |
+| DIV RV32 | 2,232.56 | 1,901.92 | 2,756.026 / 2,737.672 | fixed-MSB shift, widened subtract borrow |
+| MUL RV32 | 2,675.43 | 2,378.11 | 17,535.784 / 9,434.222 | 공통 signed (XLEN+1)×(XLEN+1) multiplier |
+| WB 11-source | 2,048.74 | 1,691.00 | 12,565.308 / 10,543.442 | balanced rank popcount + masked payload OR |
+
+ALU는 각 4-bit slice의 carry=0/1 합을 병렬로 구한 뒤 group propagate/generate
+prefix로 carry를 선택한다. ADD/SUB 의미와 word sign extension은 유지된다.
+DIV는 dividend MSB를 매 cycle 소비하고 quotient를 shift-in한다. RV64 W-op은
+32-bit dividend를 상단에 배치한다. subtraction의 추가 비트가 borrow와 비교를
+동시에 제공한다. request/result handshake, 32/64 iteration 및 특수값 shortcut은 유지한다.
+MUL은 operand sign-extension bit를 MUL/MULH/MULHSU/MULHU에 따라 선택한다.
+공통 product의 low 2×XLEN bit로 low/high 결과를 얻으며, operand register→product
+register의 기존 2-stage latency와 cycle당 1개 throughput은 유지한다.
+WB는 live ROB sequence window 안에서 age rank가 유일하다는 전제하에 payload를
+one-hot masked OR로 선택한다. flush, exception, class별 2-port grant, ROB 4-port
+completion과 전체 source-ready 출력은 기존 동작과 같아야 한다.
+
+MUL 결과 stall assertion에는 `disable iff (!rst_ni || flush_valid_i)`를 적용한다.
+flush는 대기 중 결과를 합법적으로 취소할 수 있으므로 flush cycle까지 출력 유지를
+강제하면 안 된다. reference baseline의 기존 assertion에는 이 예외가 없다.
+
+**단위 개선은 전체 개선을 보장하지 않는다.** 전체 backend macro screening은
+baseline 4,369.34 ps / 322,203.672 µm², 위 변경과 parallel operand bypass를 함께
+적용한 후보 4,495.60 ps / 314,537.818 µm²로 delay가 2.9% 악화됐다. bypass만의
+isolated delay는 1,877.06→1,817.31 ps였지만 이 이유만으로 채택하지 않는다.
+현재 bypass 데이터 선택은 원래 priority mux로 되돌렸다. 이 ablation은
+4,444.72 ps / 322,502.390 µm²로 여전히 baseline 대비 delay +1.7%, area +0.09%다.
+따라서 leaf 개선 후보를 전체 timing 개선 완료판으로 취급하지 않는다.
+해당 macro flow의 최장 시작점은 `u_iq.valid_vec[43]`이며, memory output이
+pseudo-input으로 처리된 경로이므로 실제 physical start/end point는 서버 STA로 확인한다.
+live direct producer의 class/tag 중복 금지 assertion은 유지한다.
+
+측정 조건은 `TargetDelayPs=1000`, 동일 library/ABC flow다. PRF leaf는 실제
+80 entries/8 read ports/WRITE_BYPASS=0이고, IQ 56/WB 8, ROB live query 11,
+FPU LATENCY=5, LSU AGU_DEPTH=2를 사용한다. whole backend 및 macro queue는
+array read path를 제외한 추정치이며 wire/placement/clock signoff가 아니다.
+catalog에는 branch, decode, trap/recovery, PRF, LSU pipe, result buffer, fence도
+포함한다. `BlockFilter`/`BLOCK_FILTER`는 comma-separated 목록을 받는다.
+
+검증 baseline은 git `8f1c6ba`. `scripts/run_backend_timing_equivalence.ps1`가
+해당 commit의 reference RTL을 ignored `out/`에 생성해 interface/cycle 결과를 비교한다.
+이 등가 fuzz run은 baseline MUL의 flush 미고려 SVA를 회피하기 위해 `SYNTHESIS`로
+내장 SVA만 제외하고, TB의 모든 출력 equality/`$fatal` 검사는 유지한다. SVA-enabled
+실행은 별도의 block/integration/SoC 회귀이며 두 검증을 혼동하지 않는다.
+ALU/DIV/MUL은 RV32/RV64 각 150,000 vector/cycle, WB는 11-source 30,000 vector로
+word-op/극값/sequence wrap/backpressure/flush를 확인한다. assertion-enabled
+block 17종 및 backend integration PASS. 전체 후보 SoC CoreMark는
+477,687 cycles / 576,450 instret / IPC 1.206753, 직전 v1.18.11과 모든 profiler
+counter가 동일하다. 최신 소스로 재빌드한 C/FP/load-store ELF도 signature
+`0x009e00b9`, exit=0으로 통과했다. 예전 C ELF는 CLINT 주소 또는 FS enable이
+현재 startup과 달라 trap loop를 만들 수 있으므로 재빌드가 필요하다.
+
+로컬 결과: `out/backend_timing_coremark.log`, `out/backend_timing_coremark_perf.json`,
+`out/backend_timing_fp_current.log`, `out/backend_equivalence_repro.log`,
+`out/timing_whole_backend_candidate/timing_summary.csv`. 서버 목표는 아직 미달/미확인이다.
+최종 priority bypass RTL의 assertion-enabled 재회귀도 CoreMark cycle/profile 동일,
+C/FP exit=0, Yosys `rv_ooo_core` structural check PASS다. 최종 로그는
+`out/backend_timing_final_coremark.log`, `out/backend_timing_final_coremark_perf.json`,
+`out/backend_timing_final_fp.log`, `out/backend_timing_final_check.log`다.
+후속 우선순위는 (1) whole backend 연결 경로/후보 ablation, (2) IQ wakeup→select
+및 LSQ/SB arbitration 경계, (3) FPU arithmetic/normalization과 CSR 64-bit counter,
+(4) frontend feedback이다. IPC 개선은 timing/precise trap 회귀를 통과한 이후 별도 A/B로 진행한다.
 
 ###### 5. 도구
 

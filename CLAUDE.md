@@ -5,8 +5,8 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 RTL checkpoint: `Store fetch responses in a circular block queue (v1.18.11)` (2026-09-30)
-- 비교 기준 RTL commit: `4097fe6 Shorten frontend prediction refill path (v1.18.10)`
+- 현재 RTL checkpoint: backend leaf timing candidates v1.18.12; whole-path regression unresolved (2026-09-30)
+- 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
 - v1.18.3 서버 STA checkpoint는 IQ/LQ/SQ selector, rename resource-return,
@@ -18,6 +18,13 @@
 - 목표: RV32IMFC, 2-wide dual issue, OoO execute/in-order dual commit, dual LSU/LSQ, precise trap/interrupt, RV64 확장 가능 구조
 
 ## 작업 체크리스트
+
+- [ ] 서버 목표: 최소 1 GHz, 도전 1.2 GHz 이상. 같은 overhead 가정 시 1.2 GHz arrival 약 0.6475 ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
+- [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.
+- [x] 전체 후보 CoreMark assertion-enabled PASS, 477687/576450/IPC1.206753, v1.18.11과 profiler 전체 counter 동일. block17/backend integration/최신 C FP signature009e00b9 exit0 PASS.
+- [ ] **전체 backend regression 발견**: 4369.34→4495.60 ps(+2.9%), area322203.672→314537.818. parallel bypass leaf 개선만으로 채택 불가. priority bypass 원복 ablation은4444.72ps/322502.390(+1.7%delay), macro start=`u_iq.valid_vec[43]`. 다음은 IQ→연결 경로. 1.2 GHz 달성 주장 금지.
+- [x] 최종 priority bypass RTL 재회귀: CoreMark 모든 profiler counter 동일, assertion-enabled C FP exit0, Yosys whole-core structural check PASS. randomized equivalence ALU/DIV/MUL RV32/RV64 각150000 및WB30000 PASS. baseline MUL stall SVA는 flush예외가 누락되어 수정; baseline fuzz는 SYNTHESIS로 built-inSVA만 끄고 equality/$fatal 유지.
+- [ ] 재현: `powershell -ExecutionPolicy Bypass -File scripts/run_backend_timing_equivalence.ps1` (reference git8f1c6ba, ignored out/, RV32/64 ALU/DIV/MUL150000 each, WB30000). 단위 수치와 전체/서버 STA를 반드시 분리할 것.
 
 - [x] v1.18.11 후보: 32×16-bit parcel ring → 4×128-bit block ring + direct redirect offset. frontend 3,774.23 → 2,940.50 ps(−22.1%), area 349,936.83 → 342,718.92 µm²(−2.1%). unit PASS, CoreMark CRC/status/exit PASS.
 - [x] 후보 비교: one-hot pointer(queue 1,807.10 ps), fixed-head shift(frontend 4,164.89 ps), 8-entry FTB(3,917.58 ps), parallel availability threshold(4,182.80 ps)는 모두 timing 악화로 원복. threshold/block-ring 30,000 random cycle equivalence + threshold assertion-enabled full SoC CoreMark PASS.

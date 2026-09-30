@@ -1751,6 +1751,17 @@ module rv_backend #(
   end
 
 `ifndef SYNTHESIS
+  for (genvar lhs = 0; lhs < DIRECT_SOURCE_PORTS; lhs++) begin : g_direct_unique_lhs
+    for (genvar rhs = lhs + 1; rhs < DIRECT_SOURCE_PORTS; rhs++) begin : g_direct_unique_rhs
+      property p_direct_unique_tag;
+        @(posedge clk_i) disable iff (!rst_ni || flush_valid)
+          direct_wake_valid[lhs] && direct_wake_valid[rhs] &&
+          (direct_wake_class[lhs] == direct_wake_class[rhs]) |->
+          (direct_wake_phys[lhs] != direct_wake_phys[rhs]);
+      endproperty
+      assert property (p_direct_unique_tag);
+    end
+  end
   // No direct wakeup may come from a result the ROB no longer holds.
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin

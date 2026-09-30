@@ -59,13 +59,12 @@ module rv_multiplier #(
   multiply_result_t stage1_q;
   logic stage1_advance;
 
-  logic signed [PRODUCT_WIDTH-1:0] signed_a_ext;
-  logic signed [PRODUCT_WIDTH-1:0] signed_b_ext;
-  logic signed [PRODUCT_WIDTH-1:0] unsigned_a_as_signed;
-  logic signed [PRODUCT_WIDTH-1:0] unsigned_b_as_signed;
-  logic [PRODUCT_WIDTH-1:0] product_ss;
-  logic [PRODUCT_WIDTH-1:0] product_su;
-  logic [PRODUCT_WIDTH-1:0] product_uu;
+  // One (XLEN+1)-bit signed multiply represents all three signedness cases.
+  // The extra bit is the sign for a signed operand and zero for an unsigned
+  // operand. The architectural result uses only the low 2*XLEN bits.
+  logic signed [XLEN:0] multiplicand, multiplier;
+  logic signed [PRODUCT_WIDTH+1:0] product_shared;
+  logic signed_a, signed_b;
   logic [XLEN-1:0] selected_result;
   logic [31:0] word_result;
 
@@ -79,22 +78,22 @@ module rv_multiplier #(
   endfunction
 
   always_comb begin
-    signed_a_ext = $signed({{XLEN{stage0_q.operand_a[XLEN-1]}}, stage0_q.operand_a});
-    signed_b_ext = $signed({{XLEN{stage0_q.operand_b[XLEN-1]}}, stage0_q.operand_b});
-    unsigned_a_as_signed = $signed({{XLEN{1'b0}}, stage0_q.operand_a});
-    unsigned_b_as_signed = $signed({{XLEN{1'b0}}, stage0_q.operand_b});
-    product_ss = $unsigned(signed_a_ext * signed_b_ext);
-    product_su = $unsigned(signed_a_ext * unsigned_b_as_signed);
-    product_uu = $unsigned(unsigned_a_as_signed * unsigned_b_as_signed);
+    signed_a = (stage0_q.operation == MUL_HIGH_SS) ||
+               (stage0_q.operation == MUL_HIGH_SU);
+    signed_b = (stage0_q.operation == MUL_HIGH_SS);
+    multiplicand = $signed({signed_a && stage0_q.operand_a[XLEN-1],
+                            stage0_q.operand_a});
+    multiplier = $signed({signed_b && stage0_q.operand_b[XLEN-1],
+                          stage0_q.operand_b});
+    product_shared = multiplicand * multiplier;
 
     case (stage0_q.operation)
-      MUL_LOW:     selected_result = product_uu[XLEN-1:0];
-      MUL_HIGH_SS: selected_result = product_ss[PRODUCT_WIDTH-1:XLEN];
-      MUL_HIGH_SU: selected_result = product_su[PRODUCT_WIDTH-1:XLEN];
-      MUL_HIGH_UU: selected_result = product_uu[PRODUCT_WIDTH-1:XLEN];
+      MUL_LOW:     selected_result = product_shared[XLEN-1:0];
+      MUL_HIGH_SS, MUL_HIGH_SU, MUL_HIGH_UU:
+                   selected_result = product_shared[PRODUCT_WIDTH-1:XLEN];
       default:     selected_result = '0;
     endcase
-    word_result = product_uu[31:0];
+    word_result = product_shared[31:0];
     if ((XLEN == 64) && stage0_q.word_operation)
       selected_result = {{(XLEN-32){word_result[31]}}, word_result};
   end
@@ -151,7 +150,7 @@ module rv_multiplier #(
 
 `ifndef SYNTHESIS
   property p_result_stable_when_stalled;
-    @(posedge clk_i) disable iff (!rst_ni)
+    @(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
       result_valid_o && !result_ready_i |=> result_valid_o &&
       $stable({result_o, result_sequence_o, result_destination_valid_o,
                result_destination_phys_o});

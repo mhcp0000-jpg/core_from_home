@@ -2,6 +2,7 @@ param(
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [string]$BuildRoot = "C:\rv_build\block_tests",
+  [switch]$RtlAssertions,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4
 )
@@ -167,7 +168,8 @@ try {
       }
 
       Write-Host "`n=== $($test.Top) ==="
-      & $verilator --cc --exe --timing --main -DSYNTHESIS -Wno-fatal `
+      $assertionOption = if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
+      & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
         -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module $test.Top `
         --Mdir $testBuild @mappedSources
       if ($LASTEXITCODE -ne 0) {
