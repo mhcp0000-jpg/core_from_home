@@ -5,9 +5,10 @@
 ## 현재 기준
 
 - Branch: `main`
-- 마지막 RTL commit: `Shorten frontend prediction refill path (v1.18.10)` (2026-09-30)
+- 현재 RTL checkpoint: `Store fetch responses in a circular block queue (v1.18.11)` (2026-09-30)
+- 비교 기준 RTL commit: `4097fe6 Shorten frontend prediction refill path (v1.18.10)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
-- 미커밋 작업 트리: 없음(사용자 소유 untracked 파일과 `debug.txt`는 제외)
+- v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
 - v1.18.3 서버 STA checkpoint는 IQ/LQ/SQ selector, rename resource-return,
   FPU 4-stage 경계를 포함한다.
 - Core top: `rv_ooo_core` (`rtl/rv_ooo_core.sv`)
@@ -17,6 +18,11 @@
 - 목표: RV32IMFC, 2-wide dual issue, OoO execute/in-order dual commit, dual LSU/LSQ, precise trap/interrupt, RV64 확장 가능 구조
 
 ## 작업 체크리스트
+
+- [x] v1.18.11 후보: 32×16-bit parcel ring → 4×128-bit block ring + direct redirect offset. frontend 3,774.23 → 2,940.50 ps(−22.1%), area 349,936.83 → 342,718.92 µm²(−2.1%). unit PASS, CoreMark CRC/status/exit PASS.
+- [x] 후보 비교: one-hot pointer(queue 1,807.10 ps), fixed-head shift(frontend 4,164.89 ps), 8-entry FTB(3,917.58 ps), parallel availability threshold(4,182.80 ps)는 모두 timing 악화로 원복. threshold/block-ring 30,000 random cycle equivalence + threshold assertion-enabled full SoC CoreMark PASS.
+- [ ] v1.18.11 official CoreMark 477,687 cycles / 576,450 instret / IPC 1.206753. v1.18.10 477,680 대비 +7 cycle(+0.0015%); 엄밀한 IPC 비감소 조건은 미충족. profiler는 477,743/576,462. 서버 0.8142 ns target 미확인.
+- [ ] 다음 frontend 후보: fill/predecode에서 direct target 또는 FTB index를 register에 미리 저장해 queue read→target add→FTB read 직렬 경로 제거. cross-block 명령과 FTB refill metadata/PMP invalidation까지 설계 후 측정.
 
 - [x] ROB/RAT/RRAT/free-list/PRF/IQ/WB/branch recovery 기본 구조 구현
 - [x] dual LSU, LQ/SQ, store-to-load forwarding, commit-only store visibility 구현

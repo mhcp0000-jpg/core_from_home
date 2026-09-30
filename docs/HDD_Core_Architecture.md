@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized beginner-readable baseline v1.18.10 (2026-09-30) |
+| 상태 | RTL-synchronized frontend timing checkpoint v1.18.11 (2026-09-30) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -501,7 +501,7 @@ lane 0만 유효하거나 lane 1이 decode 단계에서 제거된 경우에는 �
 
 - fetch PC는 2-byte aligned여야 한다.
 - local ITIM fetch block은 16-byte aligned 128-bit이며 bank0/1에서 64-bit씩 같은 cycle에 읽는다.
-- fetch queue는 64 byte를 32개의 16-bit parcel로 보유하고 SRAM/AXI 응답과 decode backpressure를 분리한다. 저장부는 `head_index_q`와 parcel count를 쓰는 circular queue라 consume 때 전체 배열을 shift하지 않는다.
+- fetch queue는 64 byte를 4개의 128-bit aligned block으로 보유하고 SRAM/AXI 응답과 decode backpressure를 분리한다. `head_block_q`, `tail_block_q`, `block_count_q`, `head_parcel_offset_q`가 위치와 점유량을 나타낸다. consume 때 전체 배열을 shift하지 않고 현재/다음 block을 이어 붙여 최대 4개의 16-bit parcel을 추출한다.
 - block 경계를 넘는 32-bit instruction은 circular queue의 연속 두 parcel에서 조립한다.
 - aligner는 cycle당 최대 2개 architectural instruction을 출력하고, 16/32-bit 길이 조합을 모두 지원한다.
 - 각 instruction에는 `pc`, raw instruction, expanded instruction, original length, prediction metadata, fetch fault를 부착한다.
@@ -1462,7 +1462,7 @@ SoC의 기본 firmware contract를 바꾸지 않는다.
 | `rv_clint` | Implemented | single clock, sync active-low reset | base/size, clock/timebase Hz |
 | `rv_d_fabric` | Implemented | single clock, sync active-low reset | DTIM/CLINT map, ROB sequence, fairness bound |
 | `rv_lsq_order_check` | Implemented | single clock, sync active-low reset | PADDR/data/SQ/age width |
-| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 32×16-bit circular parcel queue, 16-entry single-read atomic target refill, cached 2-byte PMP parcel metadata | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
+| `rv_frontend`, `rv_fetch_queue`, `rv_fetch_target_buffer` | Implemented/verified: 2-wide redirect, 4×128-bit circular block queue, 16-entry single-read atomic target refill, cached 2-byte PMP parcel metadata | single clock, sync active-low reset | XLEN/PADDR/fetch bytes/queue/buffer/epoch |
 | `rv_c_expander`, `rv_decode2`, `rv_divider` | Implemented standalone | 조합 또는 core clock/reset | XLEN, ISA enable, ROB sequence/tag |
 | `rv_branch_predictor` | Implemented: BTB/tournament/RAS resolve+commit paths | core clock/reset | BTB/bimodal/global/chooser/RAS entries |
 | `rv_backend`, `rv_ooo_core` | Integrated baseline: RV32IMFC directed/CoreMark/PMP-boundary regression PASS; ISA sign-off pending | single clock, sync active-low reset | XLEN/PADDR/window/resource sizes |
@@ -1981,11 +1981,15 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 
 | Port group | exact signal | 계약 |
 |---|---|---|
-| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 32-entry circular parcel queue에 최대 4 block과 2-byte parcel별 PMP 결과 보관 |
+| fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 4-entry circular block queue에 aligned block과 2-byte parcel별 PMP 결과 보관 |
 | consume | `out_valid_o[1:0]/out_ready_i[1:0]`, lane별 `out_pc_o`, `out_instruction_o[31:0]`, `out_inst_len_o`, `out_fault_o` | C는 low 16-bit만 유효한 raw instruction을 program order로 출력 |
 | control | `redirect_valid_i`, `redirect_pc_i`, `new_epoch_i[3:0]`, `empty_o`, `byte_count_o[6:0]` | redirect가 consume보다 우선; 동시 fill은 새 target block으로 수락 |
 
-queue는 같은 cycle fill과 최대 4-parcel consume를 허용한다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`로 설정하며, aligned `fill_addr_i`부터 redirect PC 이전 parcel을 제외한 target block을 고정 parcel slot 0~7에 저장하고 head index만 target offset으로 둔다. 일반 fill은 `tail = old_head + old_count`에 circular write한다. 이 동시 fill은 queue의 기존 점유량과 무관하게 ready여야 한다. fabric response error 또는 `fill_pmp_allow_i[n]=0`은 parcel `n`의 fault bit 하나로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 그 이후 sequential fetch는 redirect까지 정지한다.
+queue는 같은 cycle fill과 최대 4-parcel consume를 허용한다. 저장 상태는 `block_data_q[0:3]`(각 128-bit), `block_fault_q[0:3]`(각 8-bit), 2-bit head/tail, 3-bit block count, 3-bit parcel offset, XLEN-bit head PC다. `redirect_valid_i && fill_valid_i`이면 old queue와 consume 결과를 모두 무시하고 `head_pc=redirect_pc_i`, head=0, tail=1, count=1로 설정한다. target block 전체를 slot 0에 저장하고 offset은 redirect PC의 `[3:1]`에서 직접 얻는다. 이 동시 fill은 기존 점유량과 무관하게 ready다.
+
+일반 fill은 기존 tail slot에 쓴 뒤 tail을 modulo 4로 증가시킨다. consume은 PC와 offset을 1~4 parcel만큼 이동하고 offset이 8을 넘으면 head를 한 block 증가시키며 count를 하나 줄인다. 같은 edge에 fill도 수락하면 count는 `old_count - consumed_block + 1`이다. full 상태에서도 block 하나를 consume하면 fill을 수락할 수 있다. 현재/다음 block을 concatenate하고 offset만큼 shift해 추출하므로 byte 14에서 시작하는 32-bit 명령도 다음 block의 첫 parcel과 결합한다. 다음 block이 없으면 해당 명령은 valid가 되지 않는다.
+
+empty 상태에서는 redirect offset이 0이 아니더라도 available parcel과 `byte_count_o`를 반드시 0으로 둔다. 이를 빼먹으면 unsigned subtraction underflow로 stale instruction이 발행될 수 있다. empty 이후 첫 정상 response의 offset은 retained head PC와 aligned fill 주소로 구한다. `empty_o`는 block count=0, byte count는 nonempty일 때 `block_count*16-offset*2`다. id/epoch stale response filtering은 frontend가 수행하며 queue 자체에서는 metadata를 사용하지 않는다. fabric response error 또는 `fill_pmp_allow_i[n]=0`은 parcel `n`의 fault bit 하나로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 frontend가 이후 sequential fetch를 redirect까지 정지한다.
 
 #### `rv_fetch_target_buffer`
 
@@ -4744,7 +4748,7 @@ primary input으로 보므로 **variable-address async read의 주소→데이�
 빠진다.** 해당 array가 49개이며 중요 경로에 걸린 것은:
 
 - frontend: `pht_q`/`global_pht_q`/`chooser_q`(2048×2, async read 6 port), `btb_q`,
-  RAS, fetch target buffer, **fetch queue `parcel_q`**(16-bit circular parcel head 명령 추출)
+  RAS, fetch target buffer, **fetch queue `block_data_q`**(circular block과 parcel offset으로 head 명령 추출)
 - backend: **PRF 2개**(operand read), **`load_meta_*`**(D-bus 응답 id → 목적지/live),
   LSQ/SB 주소·sequence, `branch_cp_q`(flush 경로), rename checkpoint, ROB
 
@@ -4802,6 +4806,43 @@ fetch queue leaf 자체는 기존 byte queue 1,960.94 ps / 27,933.72 µm²에서
 RTL assertion을 활성한 full-SoC Verilator 재실행에서도 동일 profiler 수치와 exit 0을 냈다. 실제 1 GHz 통과 여부는
 서버의 동일 constraint/library에서 다시 확인해야 하며, 이 변경만으로 1 ns를
 보장한다고 간주하지 않는다.
+
+###### 4-2. v1.18.11 circular block queue timing checkpoint
+
+서버가 보고한 `head_index_q → predictor → target buffer → parcel_q` 경로의
+array mux fan-in을 32에서 4로 줄였다. pipeline stage와 FTB hit refill cycle은 그대로다.
+redirect+FTB fill에서는 offset을 target PC의 low bits에서 직접 가져와 address
+subtract/compare가 prediction feedback 경로에 들어가지 않도록 했다.
+
+| 동일 Nangate45 screening | frontend delay | frontend area | 판정 |
+| --- | ---: | ---: | --- |
+| v1.18.10 parcel ring | 3,774.23 ps | 349,936.83 µm² | 비교 기준 |
+| block ring + direct redirect offset | 2,940.50 ps | 342,718.92 µm² | 현재 checkpoint; delay −22.1%, area −2.1% |
+| fixed-head block shift | 4,164.89 ps | 338,989.60 µm² | count/consume→wide write 경로 악화, 폐기 |
+| 8-entry FTB | 3,917.58 ps | 328,918.04 µm² | 전체 timing 악화, 폐기 |
+| parallel parcel availability threshold | 4,182.80 ps | 338,094.25 µm² | 기능 등가이나 전체 timing 악화, 폐기 |
+
+one-hot block pointer도 queue leaf 1,807.10 ps로 악화돼 폐기했다. 이 수치들은
+동일 flow의 상대 비교이며 2 nm 서버 delay로 환산하거나 1 GHz 달성으로 간주하지 않는다.
+
+CoreMark 동일 ELF/2 iteration은 official marker window 기준 477,687 cycle /
+576,450 instret / IPC 1.206753, profiler 기준 477,743 cycle / 576,462 instret다.
+v1.18.10 official 477,680보다 **7 cycle 증가(+0.0015%)**하므로 엄밀한 IPC
+비감소 조건은 아직 충족하지 않았다. CRC seed/list/matrix/state/final은
+0xe9f5/0xe714/0x1fd7/0x8e3a/0x72be, status=0x9, exit=0으로 일치한다.
+mixed C/32, cross-block PMP fault, atomic redirect/fill, unaligned empty redirect,
+ring wrap, single-lane distinct-word consume 단위 회귀가 통과했다. 폐기한 threshold
+후보는 현재 block ring과 30,000 randomized cycle에서 모든 출력/handshake가 일치했고,
+assertion-enabled full SoC CoreMark에서도 동일 cycle/CRC/exit가 확인됐다.
+
+현재 후보 로그는 `out/block_fifo_direct_coremark.log`, profile은
+`out/block_fifo_direct_perf.json`, 합성 요약은
+`out/timing_frontend_direct_offset/timing_summary.csv`다. `out/`은 로컬 artifact다.
+서버에서는 기존 core filelist와 `rv_ooo_core` top으로 같은 constraint를 적용해
+arrival time ≤0.8142 ns 여부와 새로운 start/end point를 확인해야 한다.
+남은 구조 후보는 fill 시 direct-branch target/index를 미리 저장하는 predecode다.
+cross-block instruction, FTB refill metadata, PMP invalidation까지 함께 다뤄야 하며
+아직 RTL에 구현하지 않았다.
 
 ###### 5. 도구
 

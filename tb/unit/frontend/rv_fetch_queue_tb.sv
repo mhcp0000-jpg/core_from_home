@@ -167,7 +167,10 @@ module rv_fetch_queue_tb;
         (out_instruction[1] != 32'h0010_0093))
       $fatal(1, "Atomic redirect/fill did not expose target instructions");
 
-    redirect_pc = 32'h3000;
+    // An unaligned-within-block redirect may leave a nonzero start offset
+    // while the replacement block is still outstanding.  The empty queue
+    // must not underflow its available-parcel count and expose stale storage.
+    redirect_pc = 32'h3002;
     redirect_valid = 1'b1;
     @(posedge clk);
     #1;
@@ -276,6 +279,43 @@ module rv_fetch_queue_tb;
     #1;
     if (out_valid != 0)
       $fatal(1, "Circular queue did not empty after wrapped stream");
+
+    // Exercise the single-lane consume pattern used by serial CSR/system
+    // instructions. Every word is distinct so a block-index or partial-write
+    // error is visible immediately rather than looking like valid code.
+    redirect_pc = 32'h7000;
+    redirect_valid = 1'b1;
+    fill_valid = 1'b0;
+    @(posedge clk);
+    #1;
+    redirect_valid = 1'b0;
+    for (int unsigned block = 0; block < 4; block++) begin
+      fill_data = '0;
+      for (int unsigned word = 0; word < 4; word++)
+        fill_data[word*32 +: 32] =
+          32'h0000_0013 | ((block*4 + word) << 12);
+      @(negedge clk);
+      fill_addr = 32'h7000 + block*16;
+      fill_valid = 1'b1;
+      @(posedge clk);
+      #1;
+      fill_valid = 1'b0;
+    end
+    for (int unsigned word = 0; word < 16; word++) begin
+      #1;
+      if (!out_valid[0] ||
+          (out_pc[0] != (32'h7000 + word*4)) ||
+          (out_instruction[0] !=
+           (32'h0000_0013 | (word << 12))))
+        $fatal(1, "Single-lane block stream failed at word %0d pc=%h insn=%h",
+               word, out_pc[0], out_instruction[0]);
+      out_ready = 2'b01;
+      @(posedge clk);
+      #1;
+      out_ready = 2'b00;
+    end
+    if (out_valid != 0)
+      $fatal(1, "Single-lane block stream did not empty");
 
     $display("rv_fetch_queue_tb PASS");
     $finish;
