@@ -173,6 +173,27 @@ module rv_csr_file_tb;
   initial begin : p_test
     logic [31:0] value;
     logic illegal;
+    logic [63:0] counter_vector;
+    logic [63:0] counter_expected;
+    // Independent arithmetic oracle: all increment values and every byte
+    // carry boundary, including modulo-2^64 wrap. No clock/state mutation.
+    for (int byte_boundary = 1; byte_boundary <= 8; byte_boundary++) begin
+      counter_vector = (64'hffff_ffff_ffff_ffff >> (64-byte_boundary*8));
+      for (int inc = 0; inc < 4; inc++) begin
+        counter_expected = counter_vector + 64'(inc);
+        if (u_dut.increment_counter(counter_vector, 2'(inc)) !== counter_expected)
+          $fatal(1, "CSR counter byte carry boundary %0d increment %0d", byte_boundary, inc);
+      end
+    end
+    for (int sample = 0; sample < 100000; sample++) begin
+      counter_vector = {$urandom, $urandom};
+      for (int inc = 0; inc < 4; inc++) begin
+        counter_expected = counter_vector + 64'(inc);
+        if (u_dut.increment_counter(counter_vector, 2'(inc)) !== counter_expected)
+          $fatal(1, "CSR counter arithmetic mismatch vector=%h increment=%0d", counter_vector, inc);
+      end
+    end
+    $display("CSR counter 400032 arithmetic vectors PASS");
     clk = 1'b0;
     rst_n = 1'b0;
     idle_inputs();

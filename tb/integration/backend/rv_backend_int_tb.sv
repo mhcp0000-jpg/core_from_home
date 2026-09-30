@@ -1,4 +1,5 @@
-module rv_backend_int_tb;
+module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
+                          parameter bit CompatiblePairSelect = 1'b0);
   import rv_ooo_pkg::*;
 
   logic clk, rst_n;
@@ -64,7 +65,9 @@ module rv_backend_int_tb;
     return (address >= 32'h8000_0000) && (address < 32'h8004_0000);
   endfunction
 
-  rv_backend #(.XLEN(32), .PADDR_WIDTH(32), .MEM_DATA_WIDTH(64)) u_dut (
+  rv_backend #(.XLEN(32), .PADDR_WIDTH(32), .MEM_DATA_WIDTH(64),
+               .EARLY_LOAD_SELECT(EarlyLoadSelect),
+               .COMPATIBLE_PAIR_SELECT(CompatiblePairSelect)) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .fetch_valid_i(fetch_valid),
     .fetch_ready_o(fetch_ready), .fetch_pc_i(fetch_pc),
     .fetch_instr_i(fetch_instr), .fetch_inst_len_i(fetch_len),

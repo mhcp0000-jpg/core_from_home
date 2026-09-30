@@ -1,4 +1,8 @@
 module rv_issue_queue #(
+  // Experimental lookahead without extra candidates/PRF read ports: when
+  // oldest has one static port, choose the oldest second uop that can use
+  // another port. All alternatives are formed in parallel with oldest.
+  parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
   parameter int unsigned XLEN = 32,
   parameter int unsigned ENTRIES = 24,
   parameter int unsigned PHYS_TAG_WIDTH = 7,
@@ -213,7 +217,10 @@ module rv_issue_queue #(
   localparam int unsigned CNT_LEAVES = 1 << CNT_LEVELS;
   logic [COUNT_WIDTH-1:0] cnt_tree [0:CNT_LEVELS][0:CNT_LEAVES-1];
   logic [ENTRIES-1:0] available_slots;
-  logic [ENTRIES-1:0] allocation_slots_work;
+  logic [ENTRIES-1:0] alloc_first_hot, alloc_second_hot;
+  logic [1:0][ENTRIES-1:0] allocation_hot;
+  logic [2*CNT_LEAVES-1:1] alloc_any, alloc_ge2;
+  logic [2*CNT_LEAVES-1:1] alloc_prefix_none, alloc_prefix_one;
   logic [1:0] allocation_found;
   logic [SELECT_WIDTH-1:0] candidate_final_phase;
   logic [2:0] requested_dispatch_count;
@@ -319,10 +326,42 @@ module rv_issue_queue #(
         end
       end
       assign am_first[age_e]  = ready_now[age_e] & ~age_any[age_e][AGE_LEVELS][0];
-      assign am_second[age_e] = ready_now[age_e] &  age_any[age_e][AGE_LEVELS][0]
-                                                  & ~age_ge2[age_e][AGE_LEVELS][0];
+      if (!COMPATIBLE_PAIR_SELECT) begin : g_plain_second
+        assign am_second[age_e] = ready_now[age_e] & age_any[age_e][AGE_LEVELS][0]
+                                  & ~age_ge2[age_e][AGE_LEVELS][0];
+      end
     end
   endgenerate
+
+  if (COMPATIBLE_PAIR_SELECT) begin : g_compatible_pair
+    logic [EXEC_PORTS-1:0] first_ports;
+    logic first_single_port;
+    logic [EXEC_PORTS-1:0][ENTRIES-1:0] alternative_ready, alternative_oldest;
+    always_comb begin
+      first_ports = '0;
+      for (int entry = 0; entry < ENTRIES; entry++)
+        first_ports |= port_mask_q[entry] & {EXEC_PORTS{am_first[entry]}};
+      first_single_port = (first_ports != '0) &&
+                           ((first_ports & (first_ports - EXEC_PORTS'(1))) == '0);
+    end
+    for (genvar port = 0; port < EXEC_PORTS; port++) begin : g_port
+      for (genvar entry = 0; entry < ENTRIES; entry++) begin : g_entry
+        assign alternative_ready[port][entry] = ready_now[entry] &&
+          (|(port_mask_q[entry] & ~(EXEC_PORTS'(1) << port)));
+        assign alternative_oldest[port][entry] = alternative_ready[port][entry] &&
+          !(|(age_matrix_q[entry] & alternative_ready[port]));
+      end
+    end
+    for (genvar entry = 0; entry < ENTRIES; entry++) begin : g_second
+      logic [EXEC_PORTS-1:0] chosen;
+      for (genvar port = 0; port < EXEC_PORTS; port++) begin : g_choose
+        assign chosen[port] = first_ports[port] & alternative_oldest[port][entry];
+      end
+      assign am_second[entry] = first_single_port ? (|chosen) :
+        (ready_now[entry] & age_any[entry][AGE_LEVELS][0] &
+         ~age_ge2[entry][AGE_LEVELS][0]);
+    end
+  end
 
   // Age-matrix oldest-two selection.  Both winners come out of a single
   // saturating count tree instead of two chained NOR reductions.
@@ -474,9 +513,39 @@ module rv_issue_queue #(
     end
   end
 
+  // Lowest two free slots, independent of dispatch handshake. Upward
+  // saturating counts and downward prefix counts avoid two serial priority
+  // scans. Keep the winner one-hot through age-matrix row/column updates;
+  // binary indices are only an interface/payload-write representation.
+  for (genvar leaf = 0; leaf < CNT_LEAVES; leaf++) begin : g_alloc_leaf
+    if (leaf < ENTRIES) begin : g_present
+      assign available_slots[leaf] = !valid_q[leaf];
+      assign alloc_any[CNT_LEAVES+leaf] = available_slots[leaf];
+      assign alloc_first_hot[leaf] = available_slots[leaf] &&
+                                    alloc_prefix_none[CNT_LEAVES+leaf];
+      assign alloc_second_hot[leaf] = available_slots[leaf] &&
+                                     alloc_prefix_one[CNT_LEAVES+leaf];
+    end else begin : g_padding
+      assign alloc_any[CNT_LEAVES+leaf] = 1'b0;
+    end
+    assign alloc_ge2[CNT_LEAVES+leaf] = 1'b0;
+  end
+  for (genvar node = 1; node < CNT_LEAVES; node++) begin : g_alloc_node
+    assign alloc_any[node] = alloc_any[node*2] || alloc_any[node*2+1];
+    assign alloc_ge2[node] = alloc_ge2[node*2] || alloc_ge2[node*2+1] ||
+                            (alloc_any[node*2] && alloc_any[node*2+1]);
+    assign alloc_prefix_none[node*2] = alloc_prefix_none[node];
+    assign alloc_prefix_one[node*2] = alloc_prefix_one[node];
+    assign alloc_prefix_none[node*2+1] = alloc_prefix_none[node] &&
+                                        !alloc_any[node*2];
+    assign alloc_prefix_one[node*2+1] =
+      (alloc_prefix_one[node] && !alloc_any[node*2]) ||
+      (alloc_prefix_none[node] && alloc_any[node*2] && !alloc_ge2[node*2]);
+  end
+  assign alloc_prefix_none[1] = 1'b1;
+  assign alloc_prefix_one[1] = 1'b0;
+
   always_comb begin
-    for (int unsigned entry = 0; entry < ENTRIES; entry++)
-      available_slots[entry] = !valid_q[entry];
 
     // Do not recycle an entry accepted for issue until the following cycle.
     // Same-cycle recycling connected execution-result backpressure through
@@ -485,22 +554,18 @@ module rv_issue_queue #(
     // makes dispatch allocation independent of candidate_accept_i.  A full IQ
     // may therefore pause dispatch for one cycle while accepted entries are
     // released; normal non-full operation and issue throughput are unchanged.
-    allocation_slots_work = available_slots;
-    allocation_found      = '0;
+    allocation_hot[0] = alloc_first_hot & {ENTRIES{dispatch_valid_i[0]}};
+    allocation_hot[1] = (dispatch_valid_i[0] ? alloc_second_hot : alloc_first_hot) &
+                         {ENTRIES{dispatch_valid_i[1]}};
+    allocation_found[0] = !dispatch_valid_i[0] || alloc_any[1];
+    allocation_found[1] = !dispatch_valid_i[1] ||
+                         (dispatch_valid_i[0] ? alloc_ge2[1] : alloc_any[1]);
     dispatch_index_o      = '0;
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      if (dispatch_valid_i[lane]) begin
-        for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-          if (allocation_slots_work[entry] && !allocation_found[lane]) begin
-            dispatch_index_o[lane] = INDEX_WIDTH'(entry);
-            allocation_found[lane] = 1'b1;
-          end
-        end
-        if (allocation_found[lane])
-          allocation_slots_work[dispatch_index_o[lane]] = 1'b0;
-      end else begin
-        allocation_found[lane] = 1'b1;
-      end
+      for (int unsigned bit_index = 0; bit_index < INDEX_WIDTH; bit_index++)
+        for (int unsigned entry = 0; entry < ENTRIES; entry++)
+          if (entry[bit_index])
+            dispatch_index_o[lane][bit_index] |= allocation_hot[lane][entry];
     end
 
     requested_dispatch_count = {2'b0, dispatch_valid_i[0]} +
@@ -741,22 +806,19 @@ module rv_issue_queue #(
     end else if (dispatch_fire) begin
       logic [ENTRIES-1:0][ENTRIES-1:0] am_next;
       logic [ENTRIES-1:0] onehot0, onehot1;
-      logic d0v, d1v;
 
       am_next = age_matrix_q;
-      d0v = dispatch_valid_i[0];
-      d1v = dispatch_valid_i[1];
-      onehot0 = '0;
-      onehot1 = '0;
-      if (d0v) onehot0[dispatch_index_o[0]] = 1'b1;
-      if (d1v) onehot1[dispatch_index_o[1]] = 1'b1;
+      onehot0 = allocation_hot[0];
+      onehot1 = allocation_hot[1];
 
       for (int unsigned row = 0; row < ENTRIES; row++)
         am_next[row] = am_next[row] & ~onehot0 & ~onehot1;
-      if (d0v)
-        am_next[dispatch_index_o[0]] = valid_vec & ~onehot0 & ~onehot1;
-      if (d1v)
-        am_next[dispatch_index_o[1]] = (valid_vec | onehot0) & ~onehot1;
+      for (int unsigned row = 0; row < ENTRIES; row++) begin
+        if (onehot0[row])
+          am_next[row] = valid_vec & ~onehot0 & ~onehot1;
+        if (onehot1[row])
+          am_next[row] = (valid_vec | onehot0) & ~onehot1;
+      end
 
       age_matrix_q <= am_next;
     end

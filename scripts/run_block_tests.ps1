@@ -31,6 +31,11 @@ if (!$drive) { throw "No unused drive letter is available." }
 
 $tests = @(
   @{
+    Top = "rv_csr_file_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_csr_file.sv",
+              "tb/unit/backend/rv_csr_file_tb.sv")
+  },
+  @{
     Top = "rv_rob_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_rob.sv",
               "tb/unit/backend/rv_rob_tb.sv")
@@ -44,6 +49,12 @@ $tests = @(
     Top = "rv_issue_arbiter_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_arbiter.sv",
               "tb/unit/backend/rv_issue_arbiter_tb.sv")
+  },
+  @{
+    Top = "rv_issue_queue_tb"
+    ParameterArgs = @("-GCompatiblePairSelect=1")
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_queue.sv",
+              "tb/unit/backend/rv_issue_queue_tb.sv")
   },
   @{
     Top = "rv_decode2_tb"
@@ -66,6 +77,12 @@ $tests = @(
     Files = @("rtl/rv_ooo_pkg.sv",
               "rtl/backend/rv_writeback_arbiter.sv",
               "tb/unit/backend/rv_writeback_arbiter_tb.sv")
+  },
+  @{
+    Top = "rv_lsq_tb"
+    ParameterArgs = @("-GEarlyLoadSelect=1")
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_lsq.sv",
+              "tb/unit/backend/rv_lsq_tb.sv")
   },
   @{
     Top = "rv_multiplier_tb"
@@ -169,15 +186,17 @@ try {
 
       Write-Host "`n=== $($test.Top) ==="
       $assertionOption = if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
+      [string[]]$testArgs = @()
+      if ($test.ContainsKey("ParameterArgs")) { $testArgs = @($test.ParameterArgs) }
       & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
         -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module $test.Top `
-        --Mdir $testBuild @mappedSources
+        --Mdir $testBuild @testArgs @mappedSources
       if ($LASTEXITCODE -ne 0) {
         throw "Verilator code generation failed: $($test.Top)"
       }
 
       & $make -j $BuildJobs -C $testBuild -f "V$($test.Top).mk" `
-        CXX=g++ CC=gcc LINK=g++
+        CXX=g++ CC=gcc LINK=g++ VM_PARALLEL_BUILDS=1
       if ($LASTEXITCODE -ne 0) {
         throw "Verilator C++ build failed: $($test.Top)"
       }

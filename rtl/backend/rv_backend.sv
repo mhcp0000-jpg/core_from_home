@@ -1,4 +1,6 @@
 module rv_backend #(
+  parameter bit EARLY_LOAD_SELECT = 1'b1,
+  parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
@@ -751,6 +753,7 @@ module rv_backend #(
   logic [1:0] cand_store_address_valid, cand_store_data_valid;
 
   rv_issue_queue #(
+    .COMPATIBLE_PAIR_SELECT(COMPATIBLE_PAIR_SELECT),
     .XLEN(XLEN), .ENTRIES(IQ_ENTRIES), .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),
     .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH), .WRITEBACK_PORTS(DIRECT_WAKE_PORTS),
     .SELECT_WIDTH(2), .EXEC_PORTS(EXEC_PORTS), .LQ_INDEX_WIDTH(LQ_WIDTH),
@@ -1240,7 +1243,7 @@ module rv_backend #(
     .DTIM_BASE_ADDR(DTIM_BASE_ADDR), .DTIM_SIZE_KB(DTIM_SIZE_KB),
     // Two-entry AGU buffers: LSU issue_ready no longer carries the
     // PMP check / completion-port decision into issue selection.
-    .AGU_DEPTH(2)
+    .AGU_DEPTH(2), .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT)
   ) u_lsu_cluster (
     .clk_i, .rst_ni,
     .dispatch_valid_i(dec_valid & (dec_is_load | dec_is_store)),

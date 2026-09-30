@@ -1470,6 +1470,39 @@ module rv_fpu #(
 
   // Stage 2 of the split arithmetic path: the wide signed accumulate plus the
   // exact-zero sign rule and magnitude extraction.
+  function automatic logic [MAGW:0] accumulate_sliced(
+    input logic [MAGW:0] lhs,
+    input logic [MAGW:0] rhs,
+    input logic carry_in
+  );
+    localparam int GROUPS = (MAGW+4)/4;
+    localparam int PADW = GROUPS*4;
+    logic [PADW-1:0] ax, bx, assembled;
+    logic [GROUPS-1:0] propagate, generate_carry, carry;
+    logic [4:0] sum0 [0:GROUPS-1];
+    logic [4:0] sum1 [0:GROUPS-1];
+    logic term;
+    ax = PADW'(lhs); bx = PADW'(rhs);
+    for (int group = 0; group < GROUPS; group++) begin
+      sum0[group] = {1'b0,ax[group*4 +: 4]} + {1'b0,bx[group*4 +: 4]};
+      sum1[group] = {1'b0,ax[group*4 +: 4]} + {1'b0,bx[group*4 +: 4]} + 5'd1;
+      propagate[group] = &(ax[group*4 +: 4] ^ bx[group*4 +: 4]);
+      generate_carry[group] = sum0[group][4];
+    end
+    for (int group = 0; group < GROUPS; group++) begin
+      term = carry_in;
+      for (int earlier = 0; earlier < group; earlier++) term &= propagate[earlier];
+      carry[group] = term;
+      for (int source = 0; source < group; source++) begin
+        term = generate_carry[source];
+        for (int between = source+1; between < group; between++) term &= propagate[between];
+        carry[group] |= term;
+      end
+      assembled[group*4 +: 4] = carry[group] ? sum1[group][3:0] : sum0[group][3:0];
+    end
+    return assembled[MAGW:0];
+  endfunction
+
   function automatic fp_precalc_t fp_align_finish(
     input fp_align_t al
   );
@@ -1488,9 +1521,9 @@ module rv_fpu #(
     wx = {1'b0, al.mag_x};
     wy = {1'b0, al.mag_y};
     same_sign = (al.neg_x == al.neg_y);
-    sum_add   = wx + wy;
-    dif_xy    = wx - wy;
-    dif_yx    = wy - wx;
+    sum_add   = accumulate_sliced(wx, wy, 1'b0);
+    dif_xy    = accumulate_sliced(wx, ~wy, 1'b1);
+    dif_yx    = accumulate_sliced(wy, ~wx, 1'b1);
     x_ge      = ~dif_xy[MAGW];
     sum_zero  = same_sign ? ((al.mag_x | al.mag_y) == '0)
                           : (al.mag_x == al.mag_y);

@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: dispatch/AGU update는 edge에서 반영되고 다음 scheduler cycle에 issue/forward 후보가 된다.</tspan><tspan x="60" dy="24">Throughput: 최대 LQ/SQ allocate2, update2, commit2 및 load candidate2/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: unknown older store와 partial overlap에서 load를 hold하며 outstanding killed LQ는 tombstone 유지다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60">EARLY_LOAD_SELECT=1: AGU raw preview → identity register; 다음 cycle resident LQ 검사 후 issue.</tspan><tspan x="60" dy="24">preview ≠ accepted update: 주소 미등록 / fault / killed / stale sequence이면 외부 read 금지.</tspan><tspan x="60" dy="24">2 candidates/cycle; unknown older memory / partial overlap stall, commit-only store, tombstone 유지.</tspan></text>
 </svg>

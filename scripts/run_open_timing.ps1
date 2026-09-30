@@ -6,6 +6,8 @@
   [string]$BuildRoot = "",
   [string]$BlockFilter = "",
   [int]$TargetDelayPs = 10000,
+  [switch]$EarlyLoadSelect = $true,
+  [switch]$CompatiblePairSelect,
   [switch]$IncludeWholeTop
 )
 
@@ -185,6 +187,12 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
   }
 
   foreach ($block in $blocks) {
+    if ($CompatiblePairSelect -and $block.Top -in @("rv_issue_queue", "rv_backend", "rv_ooo_core")) {
+      $block.Args += " -G COMPATIBLE_PAIR_SELECT=1"
+    }
+    if ($block.Top -in @("rv_lsq", "rv_lsu_cluster", "rv_backend", "rv_ooo_core")) {
+      $block.Args += " -G EARLY_LOAD_SELECT=$(if ($EarlyLoadSelect) { 1 } else { 0 })"
+    }
     $mappedNetlist = To-YosysOutputPath (
       (Join-Path (Join-Path $BuildRoot $block.Name) "mapped.v"))
     $preAbcRtlil = To-YosysOutputPath (

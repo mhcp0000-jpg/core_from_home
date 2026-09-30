@@ -9,6 +9,10 @@ param(
   [string]$PerfPath = "",
   [switch]$Htif,
   [switch]$RtlAssertions,
+  [ValidateRange(2, 32)]
+  [int]$CoreBranchCheckpoints = 8,
+  [switch]$CoreEarlyLoadSelect = $true,
+  [switch]$CoreCompatiblePairSelect,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -66,6 +70,9 @@ try {
     $verilatorArgs += @("-Wno-fatal", "-Werror-UNOPTFLAT",
                         "-Wno-WIDTHEXPAND", "-Wno-WIDTHTRUNC",
                         "--top-module", $topModule, "--Mdir", $BuildRoot)
+    $verilatorArgs += "-GCoreBranchCheckpoints=$CoreBranchCheckpoints"
+    $verilatorArgs += "-GCoreEarlyLoadSelect=$(if ($CoreEarlyLoadSelect) { 1 } else { 0 })"
+    $verilatorArgs += "-GCoreCompatiblePairSelect=$(if ($CoreCompatiblePairSelect) { 1 } else { 0 })"
     $verilatorArgs += $mappedSources
     & $verilator @verilatorArgs
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }

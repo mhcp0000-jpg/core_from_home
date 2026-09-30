@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized backend timing candidates v1.18.12; whole-path timing unresolved (2026-09-30) |
+| 상태 | RTL-synchronized IQ/LSU/FPU/CSR timing candidates v1.18.13; server STA and IPC targets pending (2026-09-30) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -4908,6 +4908,141 @@ block 17종 및 backend integration PASS. 전체 후보 SoC CoreMark는
 counter가 동일하다. 최신 소스로 재빌드한 C/FP/load-store ELF도 signature
 `0x009e00b9`, exit=0으로 통과했다. 예전 C ELF는 CLINT 주소 또는 FS enable이
 현재 startup과 달라 trap loop를 만들 수 있으므로 재빌드가 필요하다.
+
+###### 5-1. v1.18.13: IQ allocation, early-load preview, wide arithmetic
+
+**동시 목표**는 서버 2 nm STA에서 1.2 GHz 이상, 동일 CoreMark 2-iteration ELF에서
+official IPC 1.3 이상이다. 현재 early-load 실험은 469,739 cycles / 576,450 instret /
+IPC 1.227171이다. 목표 cycle 상한은 443,423이며 26,316 cycle을 더 줄여야 한다.
+profiler 구간은 469,795 cycles / 576,462 instret로 boot/측정 overhead가 포함되므로
+official IPC 계산에 혼용하지 않는다. 공개 Nangate45 수치를 2 nm Fmax로 환산하지 않는다.
+서버에서 1 GHz arrival budget 0.8142 ns였던 동일 clock overhead를 가정하면
+1.2 GHz budget은 약 0.6475 ns지만, 이는 실제 SDC 확인 전 추정치다.
+
+**IQ allocation 목적/상태/전이.** 56-entry IQ의 기존 두 직렬 first-free scan과
+binary index decode는 `valid -> allocation -> age_matrix` 경로를 길게 만들었다.
+새 allocator는 64-leaf tree(padding leaf는 free=0)를 사용한다. 각 node는 free entry의
+`any`(1개 이상)/`ge2`(2개 이상)를 위로 전달한다. 아래로 전달하는 prefix는
+앞쪽 subtree의 free 개수가 0개인지 정확히 1개인지를 표현한다. 각 실제 leaf의
+`free & prefix_none`이 첫 free one-hot, `free & prefix_one`이 두 번째 one-hot이다.
+lane0이 유효하면 lane1은 두 번째, 아니면 첫 번째 one-hot을 받는다. binary index는
+각 index bit에 해당하는 winner들을 OR해 얻는다. age matrix row/column도 이
+one-hot으로 직접 갱신해 binary-to-one-hot 경로를 반복하지 않는다.
+
+edge 전 registered-valid 상태로만 할당한다. 같은 edge에 issue로 비워지는 slot을
+재사용하지 않으며 dispatch handshake/순서/flush/occupancy는 이전 RTL과 같다.
+lane1-only bundle은 ready=0이라는 기존 계약도 유지한다. 예를 들어 free={2,9,15}이면
+두 dispatch는 {2,9}에 쓰고, 다음 edge부터 각 new entry가 기존 live entry보다 younger,
+lane1은 lane0보다 younger라는 age 관계를 보관한다. selector는 여전히 oldest-two ready,
+실행 폭은 2이다. allocator tree 추가는 leaf area 약 +4.3%와 delay 개선의 trade-off다.
+4/7/56 entry 구성별 30,000 randomized cycles에서 baseline과 모든 output을 비교했다.
+
+**LSQ early-load preview 계약.** 검증 및 whole-backend timing 비교 후 `EARLY_LOAD_SELECT=1`을
+기본으로 채택했다. `0`은 기존 selector latency와 비교하는 A/B 설정이다.
+`rv_lsu_cluster`의 등록된 AGU head `agu_update_valid`를 새로운 LSQ 입력
+`agu_preview_valid_i[1:0]`로 전달한다. 이 신호는 preview identity/sequence/index 선택만
+허용하며 PMP 허가나 SQ/LQ update 수락을 의미하지 않는다. 실제 `agu_valid_i`는 기존처럼
+PMP/exception/completion backpressure를 반영한 update handshake다. 두 신호를 혼동하면 안 된다.
+
+| edge/cycle | 기존 selector | early preview selector |
+|---|---|---|
+| C: AGU head에 load 주소 준비 | 아직 LQ address_valid=0 | raw preview로 candidate identity 예약 가능 |
+| C edge: 실제 AGU update 수락 | LQ 주소/exception 등록 | 동일한 LQ 주소/exception 등록 |
+| C+1 | 등록된 LQ를 보고 candidate 선택 | candidate가 live/sequence 일치/address_valid/무예외인지 재검사 |
+| C+1 edge | candidate register 기록 | older-memory 순서 검사 통과 시 forwarding/request 수락 가능 |
+| C+2 | 순서 검사 후 request 가능 | 이후 처리 latency는 동일 |
+
+preview가 실제 update보다 먼저 보였지만 update가 stall되면 `candidate_resident=0`으로
+request/forwarding을 금지한다. fault/PMP deny, killed entry, stale sequence, 이미 완료/발행된
+load도 resident가 아니다. invalid preview는 release/reselect할 수 있으며 외부 메모리에
+투기적 read를 내보내지 않는다. unknown older store뿐 아니라 기존 unknown older-load/device
+직렬화도 유지한다. store forwarding은 youngest older overlapping store를 찾고, data 미정/
+partial overlap 시 대기한다. store는 ROB commit 전에 외부에 쓰지 않는다. replay 정책을
+새로 도입한 것이 아니다. flush/tombstone/late response 복구 계약은 불변이다.
+
+PMP-qualified AGU valid를 selection tree에 직접 넣는 첫 실험은 LSU cluster 3,648.78 ps로
+악화되어 폐기했다. raw preview와 다음 cycle의 registered resident 검사를 분리한 후보는
+2,377.18 ps(기준 2,343.90 ps)다. 보류된 update와 access fault preview가 외부 read를
+만들지 않는 directed test 및 SVA-enabled backend integration이 통과했다.
+LSU returned-load payload의 metadata/data 선택은 response identity로 하고 valid/replay는
+completion-valid에만 적용한다. valid=0 payload는 소비 금지이며 active response ID는
+LQ 범위 안이어야 한다. 이 변경은 handshake/event를 바꾸지 않는다.
+
+**FPU arithmetic.** `fp_align_finish`의 81-bit magnitude add/sub는 21개의 4-bit slice에
+carry=0/1 결과를 병렬 준비하고 group generate/propagate prefix로 실제 carry를 결정한다.
+`x+y`, `x-y`, `y-x` 세 후보가 기존 부호/크기 규칙에 따라 선택된다. stage 수, LATENCY=5,
+throughput, rounding/fflags 및 signed-zero 규칙은 변경하지 않는다. static와 dynamic RM 각각
+113,600 RV32F vector가 reference와 일치했다. CoreMark ELF는 soft-float이므로 이것만으로
+FPU를 검증했다고 간주하지 않고 실제 FP 명령이 포함된 C/load-store ELF도 실행한다.
+
+**CSR counter arithmetic.** `increment_counter`는 low byte의 increment(0..3)과 carry를
+계산하고 나머지 7 byte의 +1을 병렬 준비한다. 앞쪽 모든 byte가 0xff일 때만 carry를
+선택한다. `mcycle += 1`, `minstret += retire_count`의 modulo-64bit semantics와 CSR write
+우선순위는 동일하다. 각 byte 경계/64bit wrap 및 random value를 builtin 64bit addition과
+비교하는 400,032-vector oracle을 기존 CSR unit에 추가했다.
+
+| 동일 Nangate45/ABC 1000 ps screening | 이전 delay ps | 후보 delay ps | 해석 |
+|---|---:|---:|---|
+| IQ macro leaf | 2443.77 | 1181.50 | allocator/age-update 개선; array read 경로 제외 |
+| 전체 backend: priority bypass + IQ만 | 4444.72 | 3619.99 | 전체 연결 경로에서도 개선 확인 |
+| 전체 backend: IQ + preview + LSU payload | 3619.99 | 3710.52 | IPC와 timing trade-off +2.5% |
+| 같은 후보 + parallel operand bypass | 3710.52 | 3790.32 | timing 악화, priority mux 원복 |
+| FPU leaf LATENCY=5 | 2712.96 | 2241.24 | area 27012.034→27505.198 µm² |
+| CSR leaf | 1870.55 | 1263.57 | counter arithmetic/architectural 회귀 PASS |
+| 전체 backend: IQ + preview + FPU + CSR, priority bypass | 4444.72 | 3360.45 | area 322502.390→316996.722 µm², −24.4% delay |
+
+IQ+preview+parallel bypass+FPU의 intermediate whole-backend는 3702.34 ps였다.
+이 값은 **CSR 추가 및 priority bypass 원복 후 최종 결과가 아니다**. 해당 변경을 모두
+합친 후보는 3360.45 ps이며 `out/timing_backend_iq_preview_fpu_csr_final/timing_summary.csv`에 기록했다.
+macro flow는 unmapped arrays의 read 경로, 배치/배선, clock uncertainty를 제외한다.
+leaf 단위 개선만으로 1.2 GHz 달성/서버 최장 경로 해결을 주장하지 않는다.
+
+**IPC 실험과 다음 병목.** checkpoint를 8→16으로 늘려 capacity stall을 없애도 같은 ELF는
+477,764 cycles로 기준 477,687보다 77 cycle 느렸다. ROB/LQ/SQ 압박이 증가하므로 기본 8을
+유지한다. early-load 후보는 7,948 cycle을 줄였지만 ROB-head load wait=90,284,
+operand wait=80,625, frontend empty=52,103, port conflict single-issue=20,523이 남았다.
+이 counter들은 중첩되므로 합계가 곧 추가 절감량은 아니다. 후속 후보는 general-purpose
+load-use latency/issue pair 충돌/redirect refill 구조로 한정하며 predictor benchmark tuning이나
+메모리 latency 모델 변경으로 수치를 부풀리지 않는다.
+
+재현: `run_soc_elf_test.ps1 -CoreEarlyLoadSelect -RtlAssertions`와
+`run_open_timing.ps1 -Mode Blocks -IncludeWholeTop -BlockFilter rv_backend -EarlyLoadSelect
+-TargetDelayPs 1000`. 이들은 현재 기본 early-load 설정이다. 이전 동작을 재현하려면 PS
+`-CoreEarlyLoadSelect:$false` / integration·timing `-EarlyLoadSelect:$false`, Linux timing
+`EARLY_LOAD_SELECT=0`을 사용한다. parameter를 명시한 사용자 test top도 설정을 확인한다.
+새 LSQ preview input은 cluster 외 직접 instantiation에서도 연결해야 한다.
+IQ 등가는 `run_backend_timing_equivalence.ps1`; FPU는 `run_fpu_corners.py --simulator verilator`
+(`--verilator`, `--make`, `--jobs` 지정 가능)로 실행한다. block runner의 make는
+`VM_PARALLEL_BUILDS=1`로 Python includer 의존 없이 각 C++ source를 직접 빌드한다.
+최신 CoreMark/C-FP/CSR/block log는 `out/iq_preview_fpu_csr_final_coremark.log`,
+`out/iq_preview_fpu_csr_final_perf.json`, `out/iq_preview_fpu_csr_final_fp.log`,
+`out/iq_fpu_csr_final_blocks3.log`(기존17 + CSR 추가18 PASS); 최신 runner는 LSQ preview와
+IQ pair on/off를 함께 검사하는20 runs PASS(`out/iq_compatible_pair_blocks3.log`)다.
+default early-load whole-core structural check도 PASS. generated out/는 Git에 포함하지 않는다.
+
+**추가 opt-in issue-pair 실험.** `COMPATIBLE_PAIR_SELECT=0`이 기본이다. `1`은 oldest
+후보의 static port mask가 singleton일 때 같은 포트밖에 못 쓰는 second-oldest 대신,
+다른 포트가 가능한 oldest-ready 명령을 두 번째 후보로 고른다. oldest 후보 자체는
+바꾸지 않는다. 각 excluded-port별 oldest-ready를 age matrix에서 **동시에** 계산하고
+oldest의 포트로 최종 one-hot을 선택하므로 후보 수/PRF read port/실제 issue 폭은 모두
+기존 2 그대로다. 첫 mask가 multiple-port이면 기존 second-oldest를 쓴다. 포트 ready는
+여전히 downstream arbiter에서 검사하므로 선택했다고 반드시 2개 issue하는 것은 아니다.
+동일 singleton-port밖에 남지 않으면 lane1 candidate는 invalid이며 lane0만 실행한다.
+skipped 명령은 IQ에 남아 향후 발행되고, sequence wrap/flush/store-address 분리 규칙은 동일하다.
+
+이 실험은 static mask 기준이므로 runtime resource busy에 따른 최적 pair까지 찾지 않는다.
+예를 들어 B0(port0), B1(port0), ADD(port0/1)가 ready라면 B0+ADD 후보를 내고 B1은 보존한다.
+8bit sequence {fe,ff,00} wrap을 포함한 directed skip/resident 검사, assertion-enabled block
+19 runs 및 backend integration PASS. 동일 CoreMark+early preview에서 468042 cycles /
+576450 instret / IPC1.231620, CRC/exit PASS; preview 단독 대비1697 cycle 감소다.
+profiler468098/576462, port-conflict20523→3088, mispredict7235→7283이다. counter 중첩과
+OoO 실행/resolve 순서 변화 때문에 port conflict 감소량이 cycle 절감량과 같지 않다.
+predictor 크기/알고리즘/학습 정책 자체는 바꾸지 않았다. 아직 whole timing 검토 전이므로
+기본 선택 정책을 바꾸지 않는다. IQ leaf는1181.50→1592.44 ps, area109886.994→137375.434 µm²로
+증가했으므로 IPC 이득만 보고 채택하면 안 된다. PS `-CoreCompatiblePairSelect`, integration/timing
+`-CompatiblePairSelect`, Linux timing `COMPATIBLE_PAIR_SELECT=1`로만 실험한다.
+결과: `out/iq_compatible_preview_coremark_perf.json`, `out/iq_compatible_pair_blocks2.log`,
+`out/iq_compatible_preview_integration.log`, `out/timing_iq_compatible_pair/timing_summary.csv`.
 
 로컬 결과: `out/backend_timing_coremark.log`, `out/backend_timing_coremark_perf.json`,
 `out/backend_timing_fp_current.log`, `out/backend_equivalence_repro.log`,

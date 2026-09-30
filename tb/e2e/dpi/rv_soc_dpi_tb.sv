@@ -1,4 +1,8 @@
-module rv_soc_dpi_tb;
+module rv_soc_dpi_tb #(
+  parameter int unsigned CoreBranchCheckpoints = 8,
+  parameter bit CoreEarlyLoadSelect = 1'b1,
+  parameter bit CoreCompatiblePairSelect = 1'b0
+);
   import rv_soc_pkg::*;
 
   logic clk, rst_n, soc_ready, boot_wait, load_done, load_failed;
@@ -32,6 +36,9 @@ module rv_soc_dpi_tb;
   always #5 clk = ~clk;
 
   rv_soc_top #(
+    .BR_CHECKPOINTS(CoreBranchCheckpoints),
+    .EARLY_LOAD_SELECT(CoreEarlyLoadSelect),
+    .COMPATIBLE_PAIR_SELECT(CoreCompatiblePairSelect),
     .BOOTROM_INIT_FILE("tb/fixtures/bootrom/bootrom_wait.hex")
   ) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .external_irq_i(external_irq),

@@ -1,7 +1,11 @@
 // Xcelium/server-facing ELF test top.
 // Runtime communication uses the 64-bit TOHOST/FROMHOST words in DTIM while
 // the existing HostIF is used only as the Boot ROM entry mailbox.
-module rv_soc_htif_dpi_tb;
+module rv_soc_htif_dpi_tb #(
+  parameter int unsigned CoreBranchCheckpoints = 8,
+  parameter bit CoreEarlyLoadSelect = 1'b1,
+  parameter bit CoreCompatiblePairSelect = 1'b0
+);
   import rv_soc_pkg::*;
 
   localparam int unsigned IFU_PMP_PORTS = 8;
@@ -252,6 +256,9 @@ module rv_soc_htif_dpi_tb;
   always #5 clk = ~clk;
 
   rv_soc_top #(
+    .BR_CHECKPOINTS(CoreBranchCheckpoints),
+    .EARLY_LOAD_SELECT(CoreEarlyLoadSelect),
+    .COMPATIBLE_PAIR_SELECT(CoreCompatiblePairSelect),
     // This ROM wakes on MSIP, clears CLINT.msip, reads HOSTIF.BOOT_ENTRY and
     // jumps there. Consequently the ELF entry need not contain a trap stub.
     .BOOTROM_INIT_FILE ("tb/fixtures/bootrom/bootrom_host_jump.hex")

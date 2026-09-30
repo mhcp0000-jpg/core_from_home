@@ -1,4 +1,4 @@
-module rv_issue_queue_tb;
+module rv_issue_queue_tb #(parameter bit CompatiblePairSelect = 1'b0);
   import rv_ooo_pkg::*;
 
   localparam int unsigned ENTRIES = 4;
@@ -80,6 +80,7 @@ module rv_issue_queue_tb;
   always #5 clk = ~clk;
 
   rv_issue_queue #(
+    .COMPATIBLE_PAIR_SELECT(CompatiblePairSelect),
     .ENTRIES         (ENTRIES),
     .PHYS_TAG_WIDTH  (TAG_WIDTH),
     .WRITEBACK_PORTS (2)
@@ -384,6 +385,38 @@ module rv_issue_queue_tb;
     if (!empty)
       $fatal(1, "Final store-data phase did not release IQ entry");
 
+    if (CompatiblePairSelect) begin : p_pair_test
+      // Branch/branch/ALU across sequence wrap: skip the conflicting second
+      // branch but leave it live. The execution width remains two.
+      dispatch_valid = 2'b11;
+      dispatch_sequence[0] = 8'hfe;
+      dispatch_sequence[1] = 8'hff;
+      dispatch_port_mask[0] = 5'b00001;
+      dispatch_port_mask[1] = 5'b00001;
+      dispatch_src_ready = '1;
+      @(posedge clk);
+      @(negedge clk);
+      clear_inputs();
+      dispatch_valid = 2'b01;
+      dispatch_sequence[0] = 8'h00;
+      dispatch_port_mask[0] = 5'b00011;
+      dispatch_src_ready = '1;
+      @(posedge clk);
+      @(negedge clk);
+      clear_inputs();
+      #1;
+      if (candidate_valid != 2'b11 || candidate_sequence[0] != 8'hfe ||
+          candidate_sequence[1] != 8'h00)
+        $fatal(1, "Compatible pair did not skip singleton-port conflict");
+      candidate_accept = 2'b11;
+      @(posedge clk);
+      @(negedge clk);
+      clear_inputs();
+      #1;
+      if (count != 1 || candidate_valid != 2'b01 || candidate_sequence[0] != 8'hff)
+        $fatal(1, "Compatible pair lost skipped older entry");
+      $display("IQ compatible pair wrap/skip/resident PASS");
+    end
     $display("rv_issue_queue_tb PASS");
     $finish;
   end

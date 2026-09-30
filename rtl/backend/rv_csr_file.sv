@@ -115,6 +115,32 @@ module rv_csr_file #(
   logic [XLEN-1:0] enabled_interrupts;
   logic interrupt_global_enable;
 
+  // Parallel byte increments with a propagate prefix. Counter writes below
+  // retain priority; this only replaces the modulo-64 autonomous increment.
+  function automatic logic [63:0] increment_counter(
+    input logic [63:0] value,
+    input logic [1:0] increment
+  );
+    logic [8:0] low_sum;
+    logic [7:0] propagate, carry;
+    logic [7:0] plus_one [0:7];
+    low_sum = {1'b0, value[7:0]} + {7'b0, increment};
+    increment_counter[7:0] = low_sum[7:0];
+    carry = '0; propagate = '0;
+    for (int group = 1; group < 8; group++) begin
+      propagate[group] = &value[group*8 +: 8];
+      plus_one[group] = value[group*8 +: 8] + 8'd1;
+    end
+    plus_one[0] = '0;
+    for (int group = 1; group < 8; group++) begin
+      carry[group] = low_sum[8];
+      for (int earlier = 1; earlier < group; earlier++)
+        carry[group] &= propagate[earlier];
+      increment_counter[group*8 +: 8] = carry[group] ?
+        plus_one[group] : value[group*8 +: 8];
+    end
+  endfunction
+
   function automatic logic [XLEN-1:0] build_misa;
     logic [XLEN-1:0] value;
     value = '0;
@@ -352,8 +378,8 @@ module rv_csr_file #(
         pmpaddr_q[entry] <= '0;
       end
     end else begin
-      mcycle_q <= mcycle_q + 1'b1;
-      minstret_q <= minstret_q + retire_count_i;
+      mcycle_q <= increment_counter(mcycle_q, 2'd1);
+      minstret_q <= increment_counter(minstret_q, retire_count_i);
       if (fflags_accrue_valid_i)
         fflags_q <= fflags_q | fflags_accrue_i;
 

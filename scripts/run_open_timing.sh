@@ -96,6 +96,14 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
     >"$build_root/timing_summary.csv"
   for spec in "${blocks[@]}"; do
     IFS='|' read -r name top args flow abc_mode <<<"$spec"
+    case "$top" in
+      rv_lsq|rv_lsu_cluster|rv_backend|rv_ooo_core) args+=" -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1}" ;;
+    esac
+    if [[ "${COMPATIBLE_PAIR_SELECT:-0}" == "1" ]]; then
+      case "$top" in
+        rv_issue_queue|rv_backend|rv_ooo_core) args+=" -G COMPATIBLE_PAIR_SELECT=1" ;;
+      esac
+    fi
     if [[ "${#requested_blocks[@]}" != "0" ]]; then
       selected=0
       for requested in "${requested_blocks[@]}"; do

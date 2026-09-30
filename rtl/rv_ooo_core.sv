@@ -1,4 +1,6 @@
 module rv_ooo_core #(
+  parameter bit EARLY_LOAD_SELECT = 1'b1,
+  parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
   parameter int unsigned XLEN             = 32,
   parameter int unsigned PADDR_WIDTH      = 32,
   parameter int unsigned MEM_DATA_WIDTH   = 64,
@@ -348,6 +350,8 @@ module rv_ooo_core #(
     .SQ_ENTRIES      (SQ_ENTRIES),
     .STORE_BUFFER_ENTRIES (STORE_BUFFER_ENTRIES),
     .BR_CHECKPOINTS  (BR_CHECKPOINTS),
+    .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT),
+    .COMPATIBLE_PAIR_SELECT(COMPATIBLE_PAIR_SELECT),
     .ITIM_BASE_ADDR  (ITIM_BASE_ADDR),
     .ITIM_SIZE_KB    (ITIM_SIZE_KB),
     .DTIM_BASE_ADDR  (DTIM_BASE_ADDR),

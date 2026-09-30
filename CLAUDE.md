@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 RTL checkpoint: backend leaf timing candidates v1.18.12; whole-path regression unresolved (2026-09-30)
+- 현재 RTL checkpoint: IQ/LSU preview/FPU/CSR candidates v1.18.13 (2026-09-30). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -19,7 +19,16 @@
 
 ## 작업 체크리스트
 
-- [ ] 서버 목표: 최소 1 GHz, 도전 1.2 GHz 이상. 같은 overhead 가정 시 1.2 GHz arrival 약 0.6475 ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
+- [ ] 동시 목표: 서버 2 nm STA **1.2 GHz 이상 + 동일 CoreMark official IPC 1.3 이상**. 같은 overhead 가정 시 1.2 GHz arrival 약 0.6475 ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
+- [x] IQ allocator: 직렬 first-free 2회 → saturating any/ge2 + prefix tree one-hot. age-matrix update에 allocator one-hot 직접 사용. IQ 2443.77→1181.50 ps, whole backend(priority bypass, IQ만)4444.72→3619.99 ps. 4/7/56 entries ×30000 cycle equality PASS.
+- [x] early-load `EARLY_LOAD_SELECT=1` 기본 채택: registered AGU raw preview로 identity를 예약하고 다음 cycle resident LQ로만 request 허용. fault/withheld-update/sequence/flush guard 및 conservative ordering 불변. A/B baseline은 PS `-CoreEarlyLoadSelect:$false` / timing·integration `-EarlyLoadSelect:$false`, Linux timing `EARLY_LOAD_SELECT=0`.
+- [x] 같은 ELF official469739/576450/IPC1.227171, profiler469795/576462. CRC/exit PASS. 1.3 목표443423 cycles까지26316 cycle 추가 절감 필요. 최신 `out/iq_preview_fpu_csr_final_perf.json`. C/FP signature009e00b9 exit0 PASS.
+- [x] FPU 81-bit add/sub를4-bit carry-select/prefix로:2712.96→2241.24 ps, area+1.8%. LATENCY5 불변. static/dynamic 각113600 RV32F vectors PASS. `run_fpu_corners.py --simulator verilator` 재현 가능.
+- [x] CSR byte-parallel counter increment:1870.55→1263.57 ps. 400032-vector builtin-add oracle +기존 CSR architectural tests PASS, assertion-enabled block18 runs PASS (`out/iq_fpu_csr_final_blocks3.log`).
+- [x] priority bypass+IQ+preview+FPU+CSR whole3360.45 ps/316996.722 µm²: `out/timing_backend_iq_preview_fpu_csr_final/timing_summary.csv`. v12 대비 delay−24.4%. preview+LSU payload whole3710.52 ps였고 parallel bypass3790.32로 악화해 원복했다. parallel+FPU intermediate3702.34는 최종값 아님.
+- [x] opt-in `COMPATIBLE_PAIR_SELECT=1`: singleton oldest port와 충돌하지 않는 oldest-ready second 후보를 parallel age matrix로 고름. issue폭/PRF port수2 불변. `-CoreCompatiblePairSelect` / integration·timing `-CompatiblePairSelect`. CoreMark468042/576450/IPC1.231620, preview 대비−1697cycles, conflict20523→3088. block19runs/integration PASS.
+- [ ] pair 후보 whole timing `out/timing_iq_compatible_pair/timing_summary.csv` 확인 전 기본0 유지. IQ leaf1181.50→1592.44ps/area+25%: IPC 이득만 보고 채택 금지. 현재 defaults EARLY_LOAD_SELECT=1/COMPATIBLE_PAIR_SELECT=0, 기본IPC1.227171. block20runs/default whole-core structural PASS.
+- [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.
 - [x] 전체 후보 CoreMark assertion-enabled PASS, 477687/576450/IPC1.206753, v1.18.11과 profiler 전체 counter 동일. block17/backend integration/최신 C FP signature009e00b9 exit0 PASS.
 - [ ] **전체 backend regression 발견**: 4369.34→4495.60 ps(+2.9%), area322203.672→314537.818. parallel bypass leaf 개선만으로 채택 불가. priority bypass 원복 ablation은4444.72ps/322502.390(+1.7%delay), macro start=`u_iq.valid_vec[43]`. 다음은 IQ→연결 경로. 1.2 GHz 달성 주장 금지.

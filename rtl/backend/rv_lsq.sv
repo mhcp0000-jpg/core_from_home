@@ -1,4 +1,5 @@
 module rv_lsq #(
+  parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter int unsigned PADDR_WIDTH    = 32,
   parameter int unsigned DATA_WIDTH     = 64,
   parameter int unsigned LQ_ENTRIES     = 24,
@@ -33,6 +34,9 @@ module rv_lsq #(
   output logic [1:0][SQ_INDEX_WIDTH-1:0]        dispatch_sq_index_o,
 
   input  logic [1:0]                            agu_valid_i,
+  // Registered AGU head presence before PMP/completion-ready qualification.
+  // Preview may reserve an identity, never authorize an external access.
+  input  logic [1:0]                            agu_preview_valid_i,
   output logic [1:0]                            agu_ready_o,
   input  logic [1:0][SEQ_WIDTH-1:0]             agu_sequence_i,
   input  logic [1:0]                            agu_lq_valid_i,
@@ -323,9 +327,21 @@ module rv_lsq #(
     // 24x24 compare/popcount rank matrix with O(N) compare hardware and
     // logarithmic selection depth before the registered candidate boundary.
     for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
+      logic address_ready;
+      address_ready = lq_address_valid_q[entry];
+      // Capture a newly addressed load identity on the SAME edge as its
+      // LQ address/mask/device state. Ordering/forwarding still happens only
+      // next cycle from registered LQ/SQ state; no speculative memory read.
+      if (EARLY_LOAD_SELECT)
+        for (int unsigned agu = 0; agu < 2; agu++)
+          if (agu_preview_valid_i[agu] && agu_lq_valid_i[agu] &&
+              (agu_lq_index_i[agu] == LQ_INDEX_WIDTH'(entry)) &&
+              (agu_sequence_i[agu] == lq_sequence_q[entry]) &&
+              agu_address_valid_i[agu])
+            address_ready = 1'b1;
       eligible_work[entry] =
         lq_valid_q[entry] && !lq_killed_q[entry] &&
-        lq_address_valid_q[entry] && !lq_issued_q[entry] &&
+        address_ready && !lq_issued_q[entry] &&
         !lq_completed_q[entry] && !lq_exception_q[entry] &&
         !(candidate_found[0] &&
           (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
@@ -421,7 +437,19 @@ module rv_lsq #(
     end
   end
 
+  logic [1:0] candidate_resident;
   always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      candidate_resident[lane] = candidate_found[lane];
+      if (EARLY_LOAD_SELECT && candidate_found[lane])
+        candidate_resident[lane] = lq_valid_q[candidate_index[lane]] &&
+          !lq_killed_q[candidate_index[lane]] &&
+          (lq_sequence_q[candidate_index[lane]] == candidate_sequence[lane]) &&
+          lq_address_valid_q[candidate_index[lane]] &&
+          !lq_exception_q[candidate_index[lane]] &&
+          !lq_completed_q[candidate_index[lane]] &&
+          !lq_issued_q[candidate_index[lane]];
+    end
     // A candidate blocked by an unresolved older access must not reserve a
     // slot indefinitely.  Capture that condition for one cycle, then replace
     // it only when the selector has another eligible identity.  This lets a
@@ -433,10 +461,12 @@ module rv_lsq #(
     // candidate_blocked_q instead of feeding candidate identity D in the same
     // cycle; that feedback was the LSQ's dominant timing cone.
     candidate_replace[0] = !candidate_found[0] ||
+                           (EARLY_LOAD_SELECT && !candidate_resident[0]) ||
                            load_candidate_ready_i[0] ||
                            (candidate_blocked_q[0] &&
                             selected_candidate_found[0]);
     candidate_replace[1] = !candidate_found[1] ||
+                           (EARLY_LOAD_SELECT && !candidate_resident[1]) ||
                            load_candidate_ready_i[1] ||
                            (candidate_blocked_q[1] &&
                             (candidate_replace[0] ?
@@ -512,7 +542,7 @@ module rv_lsq #(
     // compares this sequence against the ROB head) cannot feed back through
     // the same procedural block that produces the sequence.
     always_comb begin
-      load_candidate_present_o[lane] = candidate_found[lane] && !flush_valid_i;
+      load_candidate_present_o[lane] = candidate_resident[lane] && !flush_valid_i;
       load_candidate_index_o[lane] = candidate_index[lane];
       load_candidate_sequence_o[lane] = candidate_sequence[lane];
       load_candidate_address_o[lane] = '0;
@@ -565,7 +595,7 @@ module rv_lsq #(
       sq_match_data_valid = 1'b0;
       sq_forward_data = '0;
 
-      candidate_present = candidate_found[lane];
+      candidate_present = candidate_resident[lane];
       candidate_valid = 1'b0;
       selected_index = candidate_index[lane];
       selected_sequence = candidate_sequence[lane];

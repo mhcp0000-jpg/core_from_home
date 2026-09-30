@@ -1,4 +1,4 @@
-module rv_lsq_tb;
+module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
   import rv_ooo_pkg::*;
 
   localparam int unsigned LQ_INDEX_WIDTH = 2;
@@ -36,6 +36,7 @@ module rv_lsq_tb;
   logic [1:0] agu_store_data_valid;
   logic [1:0] agu_device;
   logic [1:0] agu_exception_valid;
+  logic [1:0] agu_preview_override = '0;
   exception_code_e [1:0] agu_exception_cause;
 
   logic [1:0] load_candidate_present;
@@ -86,6 +87,7 @@ module rv_lsq_tb;
   always #5 clk = ~clk;
 
   rv_lsq #(
+    .EARLY_LOAD_SELECT(EarlyLoadSelect),
     .PADDR_WIDTH    (32),
     .DATA_WIDTH     (64),
     .LQ_ENTRIES     (4),
@@ -111,6 +113,7 @@ module rv_lsq_tb;
     .dispatch_sq_valid_o           (dispatch_sq_valid),
     .dispatch_sq_index_o           (dispatch_sq_index),
     .agu_valid_i                   (agu_valid),
+    .agu_preview_valid_i           (agu_valid | agu_preview_override),
     .agu_ready_o                   (agu_ready),
     .agu_sequence_i                (agu_sequence),
     .agu_lq_valid_i                (agu_lq_valid),
@@ -171,6 +174,7 @@ module rv_lsq_tb;
     dispatch_valid = '0;
     dispatch_accept = 1'b1;
     agu_valid = '0;
+    agu_preview_override = '0;
     agu_device = '0;
     load_candidate_ready = '0;
     load_response_valid = '0;
@@ -617,6 +621,32 @@ module rv_lsq_tb;
     if (sq_count != 0)
       $fatal(1, "Completed device store did not release SQ entry");
 
+    if (EarlyLoadSelect) begin
+      reset_dut();
+      dispatch_single_load(8'd100);
+      @(negedge clk);
+      agu_valid = '0; agu_preview_override = 2'b01;
+      agu_sequence[0] = 8'd100; agu_lq_valid = 2'b01;
+      agu_lq_index[0] = saved_lq1; agu_sq_valid = '0;
+      agu_address_valid = 2'b01; agu_address[0] = 32'hffff_ffcc;
+      agu_mask[0] = 8'h0f; agu_exception_valid = '0;
+      @(posedge clk); @(negedge clk); #1;
+      if ((|load_candidate_valid) || (|load_memory_read))
+        $fatal(1, "AGU preview issued before registered address/PMP acceptance");
+      // PMP/completion backpressure eventually reports an access fault.
+      // Preview must not issue a read, even though an identity was reserved.
+      agu_valid = 2'b01; agu_exception_valid = 2'b01;
+      agu_exception_cause[0] = EXC_LOAD_ACCESS_FAULT;
+      @(posedge clk); @(negedge clk);
+      agu_valid = '0; agu_preview_override = '0;
+      repeat(3) begin
+        #1;
+        if ((|load_candidate_valid) || (|load_memory_read))
+          $fatal(1, "Faulted preview generated an external load");
+        @(posedge clk); @(negedge clk);
+      end
+      $display("LSQ preview withheld-update/access-fault safety PASS");
+    end
     $display("rv_lsq_tb PASS");
     $finish;
   end

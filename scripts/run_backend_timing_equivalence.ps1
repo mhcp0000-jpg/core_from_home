@@ -19,7 +19,7 @@ try {
   $env:VERILATOR_ROOT = $VerilatorRoot
   $root = "$drive`:/"
   Push-Location $root
-  $cases = @(@("alu", "rv_int_alu"), @("divider", "rv_divider"), @("multiplier", "rv_multiplier"), @("wb", "rv_writeback_arbiter"))
+  $cases = @(@("alu", "rv_int_alu"), @("divider", "rv_divider"), @("multiplier", "rv_multiplier"), @("wb", "rv_writeback_arbiter"), @("iq", "rv_issue_queue"))
   foreach ($case in $cases) {
     $name, $module = $case
     $build = "${root}out/timing_equivalence/$name"

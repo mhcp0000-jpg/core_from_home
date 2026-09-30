@@ -1,4 +1,5 @@
 module rv_lsu_cluster #(
+  parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter int unsigned XLEN                 = 32,
   parameter int unsigned PADDR_WIDTH          = 32,
   parameter int unsigned MEM_DATA_WIDTH       = 64,
@@ -374,6 +375,7 @@ module rv_lsu_cluster #(
   end
 
   rv_lsq #(
+    .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT),
     .PADDR_WIDTH(PADDR_WIDTH), .DATA_WIDTH(MEM_DATA_WIDTH),
     .LQ_ENTRIES(LQ_ENTRIES), .SQ_ENTRIES(SQ_ENTRIES),
     .SEQ_WIDTH(ROB_SEQ_WIDTH), .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)
@@ -386,6 +388,7 @@ module rv_lsu_cluster #(
     .dispatch_lq_valid_o, .dispatch_lq_index_o,
     .dispatch_sq_valid_o, .dispatch_sq_index_o,
     .agu_valid_i(agu_to_lsq_valid), .agu_ready_o(agu_lsq_ready),
+    .agu_preview_valid_i(agu_update_valid),
     .agu_sequence_i(agu_update_sequence),
     .agu_lq_valid_i(agu_update_lq_valid), .agu_lq_index_i(agu_update_lq_index),
     .agu_sq_valid_i(agu_update_sq_valid), .agu_sq_index_i(agu_update_sq_index),
@@ -530,9 +533,13 @@ module rv_lsu_cluster #(
         completion_destination_phys_o[2+lane] =
           forward_q[lane].destination_phys;
         completion_data_o[2+lane] = forward_q[lane].data;
-      end else if (dmem_rsp_valid_i[lane] && response_is_load[lane] &&
-          (dmem_rsp_replay_i[lane] == 0)) begin
-        completion_valid_o[2+lane] = 1'b1;
+      end else if (response_is_load[lane] &&
+                   (response_lq_index[lane] < LQ_ENTRIES)) begin
+        // Valid/replay qualifies the event, not the entire data/tag mux.
+        // Keeping inactive payload unspecified avoids replay -> metadata ->
+        // wakeup tag compare -> IQ select -> ALU in one control cone.
+        completion_valid_o[2+lane] = dmem_rsp_valid_i[lane] &&
+                                     (dmem_rsp_replay_i[lane] == 0);
         completion_sequence_o[2+lane] =
           load_meta_sequence_q[response_lq_index[lane]];
         completion_destination_valid_o[2+lane] =
