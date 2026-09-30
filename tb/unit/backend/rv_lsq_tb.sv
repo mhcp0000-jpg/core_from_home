@@ -1,8 +1,10 @@
-module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
+module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0,
+                   parameter bit AguLoadBypass = 1'b0);
   import rv_ooo_pkg::*;
 
   localparam int unsigned LQ_INDEX_WIDTH = 2;
   localparam int unsigned SQ_INDEX_WIDTH = 2;
+  localparam int unsigned FIRST_FORWARD_LANE = AguLoadBypass ? 1 : 0;
 
   logic clk;
   logic rst_n;
@@ -44,6 +46,7 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
   logic [1:0] load_candidate_ready;
   logic [1:0][LQ_INDEX_WIDTH-1:0] load_candidate_index;
   logic [1:0][7:0] load_candidate_sequence;
+  logic [1:0][31:0] load_candidate_address;
   logic [1:0] load_memory_read;
   logic [1:0] load_forward_valid;
   logic [1:0][63:0] load_forward_data;
@@ -88,6 +91,7 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
 
   rv_lsq #(
     .EARLY_LOAD_SELECT(EarlyLoadSelect),
+    .AGU_LOAD_BYPASS(AguLoadBypass),
     .PADDR_WIDTH    (32),
     .DATA_WIDTH     (64),
     .LQ_ENTRIES     (4),
@@ -133,6 +137,7 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
     .load_candidate_ready_i        (load_candidate_ready),
     .load_candidate_index_o        (load_candidate_index),
     .load_candidate_sequence_o     (load_candidate_sequence),
+    .load_candidate_address_o      (load_candidate_address),
     .load_memory_read_o            (load_memory_read),
     .load_forward_valid_o          (load_forward_valid),
     .load_forward_data_o           (load_forward_data),
@@ -338,12 +343,12 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
     update_store_load(8'd1, 8'd2, 1'b1, 1'b1,
                       64'h0000_0000_dead_beef);
     #1;
-    if (!load_candidate_present[0] || !load_candidate_valid[0] ||
-        !load_forward_valid[0] || load_memory_read[0] ||
-        (load_forward_data[0] != 64'h0000_0000_dead_beef))
+    if (!load_candidate_present[FIRST_FORWARD_LANE] || !load_candidate_valid[FIRST_FORWARD_LANE] ||
+        !load_forward_valid[FIRST_FORWARD_LANE] || load_memory_read[FIRST_FORWARD_LANE] ||
+        (load_forward_data[FIRST_FORWARD_LANE] != 64'h0000_0000_dead_beef))
       $fatal(1, "Store-to-load forwarding failed");
 
-    load_candidate_ready = 2'b01;
+    load_candidate_ready = 2'b01 << FIRST_FORWARD_LANE;
     @(posedge clk);
     @(negedge clk);
     load_candidate_ready = '0;
@@ -621,6 +626,85 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0);
     if (sq_count != 0)
       $fatal(1, "Completed device store did not release SQ entry");
 
+    if (AguLoadBypass) begin
+      reset_dut();
+      dispatch_single_load(8'd90);
+      @(negedge clk);
+      agu_valid = 2'b01; agu_lq_valid = 2'b01; agu_sq_valid = '0;
+      agu_sequence[0] = 8'd90; agu_lq_index[0] = saved_lq1;
+      agu_address_valid = 2'b01; agu_exception_valid = '0;
+      agu_address[0] = 32'h8002_0080; agu_mask[0] = 8'h0f;
+      load_candidate_ready = '0;
+      #1;
+      if (!load_memory_read[0] || load_candidate_index[0] != saved_lq1 ||
+          load_candidate_address[0] != 32'h8002_0080)
+        $fatal(1, "Accepted AGU load did not fall through vacant candidate");
+      @(posedge clk); @(negedge clk);
+      agu_valid = '0; agu_lq_valid = '0;
+      repeat (3) begin
+        #1;
+        if (!load_memory_read[0] || load_candidate_sequence[0] != 8'd90 ||
+            load_candidate_address[0] != 32'h8002_0080)
+          $fatal(1, "Backpressured AGU bypass changed request identity/address");
+        @(posedge clk); @(negedge clk);
+      end
+      load_candidate_ready = 2'b01;
+      @(posedge clk); @(negedge clk);
+      load_candidate_ready = '0;
+      repeat (3) begin
+        #1;
+        if (|load_memory_read)
+          $fatal(1, "Consumed bypass identity generated a duplicate read");
+        @(posedge clk); @(negedge clk);
+      end
+
+      reset_dut();
+      dispatch_store_load(8'hfe, 8'hff);
+      @(negedge clk);
+      agu_valid = 2'b10; agu_lq_valid = 2'b10; agu_sq_valid = '0;
+      agu_sequence[1] = 8'hff; agu_lq_index[1] = saved_lq0;
+      agu_address_valid = 2'b10; agu_exception_valid = '0;
+      agu_address[1] = 32'h8002_0000; agu_mask[1] = 8'h0f;
+      #1;
+      if ((|load_memory_read) || load_stall_reason[1] != LSQ_STALL_UNKNOWN_ADDR)
+        $fatal(1, "AGU bypass escaped unresolved older store");
+      @(posedge clk); @(negedge clk);
+      agu_valid = '0; agu_lq_valid = '0;
+      $display("LSQ AGU bypass/backpressure/no-duplicate/older-store safety PASS");
+
+      reset_dut();
+      @(negedge clk);
+      dispatch_valid = 2'b11; dispatch_is_load = 2'b11; dispatch_is_store = '0;
+      dispatch_sequence[0] = 8'hff; dispatch_sequence[1] = 8'h00;
+      dispatch_destination_valid = 2'b11; dispatch_size[0] = 3'd2; dispatch_size[1] = 3'd2;
+      #1;
+      if (dispatch_lq_valid != 2'b11) $fatal(1, "Dual bypass test allocation failed");
+      saved_lq0 = dispatch_lq_index[0]; saved_lq1 = dispatch_lq_index[1];
+      @(posedge clk); @(negedge clk);
+      dispatch_valid = '0; dispatch_is_load = '0;
+      agu_valid = 2'b11; agu_lq_valid = 2'b11; agu_sq_valid = '0;
+      agu_sequence[0] = 8'hff; agu_sequence[1] = 8'h00;
+      agu_lq_index[0] = saved_lq0; agu_lq_index[1] = saved_lq1;
+      agu_address_valid = 2'b11; agu_exception_valid = '0;
+      agu_address[0] = 32'h8002_0080; agu_address[1] = 32'h8002_0088;
+      agu_mask[0] = 8'h0f; agu_mask[1] = 8'h0f;
+      #1;
+      if (load_memory_read != 2'b01 || load_stall_reason[1] != LSQ_STALL_UNKNOWN_ADDR)
+        $fatal(1, "Dual AGU load bypass violated conservative older-load/sequence-wrap order");
+      @(posedge clk); @(negedge clk);
+      agu_valid = '0; agu_lq_valid = '0;
+      #1;
+      if (load_memory_read != 2'b11 || load_candidate_index[0] == load_candidate_index[1])
+        $fatal(1, "Two addressed/backpressured loads did not reach distinct candidate lanes");
+      load_candidate_ready = 2'b11;
+      @(posedge clk); @(negedge clk); load_candidate_ready = '0;
+      repeat (3) begin
+        #1;
+        if (|load_memory_read) $fatal(1, "Dual bypass read was issued twice");
+        @(posedge clk); @(negedge clk);
+      end
+      $display("LSQ dual bypass/sequence-wrap/conservative ordering PASS");
+    end
     if (EarlyLoadSelect) begin
       reset_dut();
       dispatch_single_load(8'd100);

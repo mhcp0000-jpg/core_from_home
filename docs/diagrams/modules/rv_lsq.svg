@@ -21,7 +21,9 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">dispatch2; AGU update2; load</tspan><tspan x="60" dy="25">response; commit2; flush</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">LQ24 parallel age-rank 0/1 + SQ16</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">registered load candidate identity</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">older-SQ ordering/forward + recovery</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">LQ24 oldest-two tournament + SQ16</tspan></text>
+<rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">candidate register / optional same-lane AGU</tspan></text>
+<rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">ordering/forward → final permission gate</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">load issue/forward;</tspan><tspan x="990" dy="25">SQ→SB/direct store;</tspan><tspan x="990" dy="25">occupancy</tspan></text>
@@ -29,5 +31,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60">EARLY_LOAD_SELECT=1: AGU raw preview → identity register; 다음 cycle resident LQ 검사 후 issue.</tspan><tspan x="60" dy="24">preview ≠ accepted update: 주소 미등록 / fault / killed / stale sequence이면 외부 read 금지.</tspan><tspan x="60" dy="24">2 candidates/cycle; unknown older memory / partial overlap stall, commit-only store, tombstone 유지.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60">Default AGU_LOAD_BYPASS=0: preview → identity register → resident LQ ordering → request/forward.</tspan><tspan x="60" dy="24">Opt-in bypass=1: vacant same-lane AGU → ordering parallel with PMP → final authorization; ready=0 captures identity.</tspan><tspan x="60" dy="24">Unknown older memory/partial overlap stall, no unauthorized/duplicate read, commit-only store, tombstone 유지.</tspan></text>
 </svg>

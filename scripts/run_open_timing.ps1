@@ -7,6 +7,7 @@
   [string]$BlockFilter = "",
   [int]$TargetDelayPs = 10000,
   [switch]$EarlyLoadSelect = $true,
+  [switch]$AguLoadBypass,
   [switch]$CompatiblePairSelect,
   [switch]$IncludeWholeTop
 )
@@ -107,7 +108,10 @@ function Invoke-YosysRun([string]$Name, [string]$Command) {
 if (($Mode -eq "Check") -or ($Mode -eq "All")) {
   $checkCommand =
     "read_slang --std 1800-2017 --single-unit --ignore-assertions " +
-    "--ignore-initial --top rv_ooo_core -f $sourceList; " +
+    "--ignore-initial --top rv_ooo_core " +
+    "-G EARLY_LOAD_SELECT=$(if ($EarlyLoadSelect) { 1 } else { 0 }) " +
+    "-G AGU_LOAD_BYPASS=$(if ($AguLoadBypass) { 1 } else { 0 }) " +
+    "-G COMPATIBLE_PAIR_SELECT=$(if ($CompatiblePairSelect) { 1 } else { 0 }) -f $sourceList; " +
     "hierarchy -check -top rv_ooo_core; proc; check; stat"
   $checkLog = Invoke-YosysRun "rv_ooo_core_check" $checkCommand
   Write-Host "PASS rv_ooo_core structural check: $checkLog"
@@ -192,6 +196,7 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     }
     if ($block.Top -in @("rv_lsq", "rv_lsu_cluster", "rv_backend", "rv_ooo_core")) {
       $block.Args += " -G EARLY_LOAD_SELECT=$(if ($EarlyLoadSelect) { 1 } else { 0 })"
+      $block.Args += " -G AGU_LOAD_BYPASS=$(if ($AguLoadBypass) { 1 } else { 0 })"
     }
     $mappedNetlist = To-YosysOutputPath (
       (Join-Path (Join-Path $BuildRoot $block.Name) "mapped.v"))

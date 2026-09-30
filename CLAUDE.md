@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 RTL checkpoint: IQ/LSU preview/FPU/CSR candidates v1.18.13 (2026-09-30). 서버 STA 목표는 미확인.
+- 현재 pushed checkpoint: `55f2712` v1.18.13. working v1.18.14 branch factoring + opt-in AGU_LOAD_BYPASS (2026-10-01). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -27,7 +27,19 @@
 - [x] CSR byte-parallel counter increment:1870.55→1263.57 ps. 400032-vector builtin-add oracle +기존 CSR architectural tests PASS, assertion-enabled block18 runs PASS (`out/iq_fpu_csr_final_blocks3.log`).
 - [x] priority bypass+IQ+preview+FPU+CSR whole3360.45 ps/316996.722 µm²: `out/timing_backend_iq_preview_fpu_csr_final/timing_summary.csv`. v12 대비 delay−24.4%. preview+LSU payload whole3710.52 ps였고 parallel bypass3790.32로 악화해 원복했다. parallel+FPU intermediate3702.34는 최종값 아님.
 - [x] opt-in `COMPATIBLE_PAIR_SELECT=1`: singleton oldest port와 충돌하지 않는 oldest-ready second 후보를 parallel age matrix로 고름. issue폭/PRF port수2 불변. `-CoreCompatiblePairSelect` / integration·timing `-CompatiblePairSelect`. CoreMark468042/576450/IPC1.231620, preview 대비−1697cycles, conflict20523→3088. block19runs/integration PASS.
-- [ ] pair 후보 whole timing `out/timing_iq_compatible_pair/timing_summary.csv` 확인 전 기본0 유지. IQ leaf1181.50→1592.44ps/area+25%: IPC 이득만 보고 채택 금지. 현재 defaults EARLY_LOAD_SELECT=1/COMPATIBLE_PAIR_SELECT=0, 기본IPC1.227171. block20runs/default whole-core structural PASS.
+- [x] pair 후보 whole4152.96ps/336974.386µm² vs3360.45/316996.722: delay+23.6%, area+6.3%, 기본 채택 거부. opt-in만 남김(`out/timing_iq_compatible_pair/timing_summary.csv`). IQ leaf1181.50→1592.44ps/area+25%. 현재 defaults EARLY_LOAD_SELECT=1/COMPATIBLE_PAIR_SELECT=0, 기본IPC1.227171. block20runs/default whole-core structural PASS.
+- [x] branch 비교/target 계산을 두 IQ 후보에서 port 중재와 병렬 수행 후 결과 선택: whole3360.45→3288.92 ps, area316996.722→320850.530. 1 logical branch issue port/2 combinational evaluator이며 latency 불변. issued legacy equality SVA +CoreMark 모든 profiler counter equality/C-FP/integration PASS. ALU도 후보 앞에서 계산한3309.26/324586.234 대안은 제거.
+- [x] frontend predecode metadata와 predictor history-lookahead 후보는 cycle/counter equality PASS지만 whole frontend2940.50→3029.16/3190.37 ps로 악화해 모두 제거. cross-block C.NOP/JAL/stall/redirect RV32/RV64/PADDR32-alias TB는 유지.
+- [x] opt-in `AGU_LOAD_BYPASS=1` fixed-lane 후보: official431783/576450/IPC1.335046, profiler431839/576462. CRC/status9/exit0, C-FP009e00b9/exit0, LSQ directed+SVA, backend integration PASS. 기본값0(기본IPC1.227171 유지). PS `-CoreAguLoadBypass` / integration·timing `-AguLoadBypass`, Linux timing `AGU_LOAD_BYPASS=1`.
+- [x] bypass backpressure shadow의 duplicate identity를 SVA가 발견: 일반 selector에서 active bypass ID를 제외. 두 addressed load를 hold 후 dual acceptance하도록 integration BFM 보강(early older-load request를 성능 regression으로 오인하지 않음).
+- [x] PMP permit가 store-CAM 앞에 들어간 병목 제거: raw identity/address로 ordering 병렬, final effect-valid만 authorization gate. LSU4432.01→3831.72→3682.26→2744.70 ps. permission/older-store blocking/store commit rule 불변.
+- [x] late-permit25-case block/CoreMark 전체 profiler equality/integration/C-FP PASS. default0 CoreMark도 v13과 profiler hash E7DDA739… 동일. `out/agu_bypass_final_blocks.log`, `out/agu_bypass_late_permit_*`, `out/agu_bypass_default_*`.
+- [x] raw identity를 ready와 무관하게 shadow해 ordering→ready→identity D feedback 제거; consumed ID는 resident issued/completed guard로 reject. leaf2744.70→2726.55 ps. 초기 shadow ELF431889/576450/IPC≈1.334718(이전 fixed431783와 혼용 금지).
+- [x] backpressure stability SVA가 기존 stale blocked-bit replacement를 발견. eligible replacement가 있는 stale-blocked 전환에는 effect-valid를 막고 raw ordering은 유지해 blocked bit를 clear. LSQ EARLY0/1+bypass1 directed/stability SVA PASS (`out/lsq_agu_bypass_hold_0.log`, `_1.log`).
+- [x] latest hold CoreMark A/B SVA PASS: bypass1 official431358/576450/IPC1.336361(profiler431414), bypass0 official469994/576450/IPC1.226505(profiler470050). CRC/status9/exit0, C-FP009e00b9/exit0 PASS. bypass1 PC/instr593267개 hash6d997065…이 hold 전 baseline과 같음. `out/agu_bypass_hold_*`.
+- [x] latest hold25-case block regression 및 backend integration PASS (`out/agu_bypass_hold_blocks.log`, `out/agu_bypass_hold_integration.log`). bypass0의 extra shutdown PC80000f34 한 개는 host-finish 이후 로그 tail 차이이며 측정 instret576450은 같다.
+- [ ] latest whole `out/timing_backend_agu_bypass_hold` 실행 중(session9415), LSU leaf2759.97/59114.244. physical STA 아직없음. 초기 flexible/PMP-gated whole4872.52와 fixed3682-leaf 시점 whole4053.94는 최종 아님. 기본0 유지. 결과를 받기 전에 새 동일 합성을 시작하지 말 것.
+- [ ] 서버 STA/SDC 최신 결과 필요. 공개45nm 수치를2nm Fmax로 환산 금지. 1.2GHz+IPC1.3 동시 달성 아직 미증명.
 - [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.
 - [x] 전체 후보 CoreMark assertion-enabled PASS, 477687/576450/IPC1.206753, v1.18.11과 profiler 전체 counter 동일. block17/backend integration/최신 C FP signature009e00b9 exit0 PASS.
@@ -38,7 +50,7 @@
 - [x] v1.18.11 후보: 32×16-bit parcel ring → 4×128-bit block ring + direct redirect offset. frontend 3,774.23 → 2,940.50 ps(−22.1%), area 349,936.83 → 342,718.92 µm²(−2.1%). unit PASS, CoreMark CRC/status/exit PASS.
 - [x] 후보 비교: one-hot pointer(queue 1,807.10 ps), fixed-head shift(frontend 4,164.89 ps), 8-entry FTB(3,917.58 ps), parallel availability threshold(4,182.80 ps)는 모두 timing 악화로 원복. threshold/block-ring 30,000 random cycle equivalence + threshold assertion-enabled full SoC CoreMark PASS.
 - [ ] v1.18.11 official CoreMark 477,687 cycles / 576,450 instret / IPC 1.206753. v1.18.10 477,680 대비 +7 cycle(+0.0015%); 엄밀한 IPC 비감소 조건은 미충족. profiler는 477,743/576,462. 서버 0.8142 ns target 미확인.
-- [ ] 다음 frontend 후보: fill/predecode에서 direct target 또는 FTB index를 register에 미리 저장해 queue read→target add→FTB read 직렬 경로 제거. cross-block 명령과 FTB refill metadata/PMP invalidation까지 설계 후 측정.
+- [x] fill/predecode target metadata 후보는 cross-block/PADDR alias까지 검증했지만 whole timing/area regression으로 제거(위 v1.18.14 기록). 다음 frontend는 새 구조 후보를 근거로 측정할 것.
 
 - [x] ROB/RAT/RRAT/free-list/PRF/IQ/WB/branch recovery 기본 구조 구현
 - [x] dual LSU, LQ/SQ, store-to-load forwarding, commit-only store visibility 구현

@@ -1,4 +1,5 @@
-module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
+module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
+                          parameter bit EarlyLoadSelect = 1'b1,
                           parameter bit CompatiblePairSelect = 1'b0);
   import rv_ooo_pkg::*;
 
@@ -39,6 +40,7 @@ module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
   logic saw_uncommitted_write;
   logic saw_bad_forward_read;
   logic saw_dual_load_request;
+  logic memory_request_hold = 1'b0;
   int unsigned memory_request_count;
   logic [1:0] accepted_memory_write, accepted_memory_read;
   logic irq_software;
@@ -66,7 +68,7 @@ module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
   endfunction
 
   rv_backend #(.XLEN(32), .PADDR_WIDTH(32), .MEM_DATA_WIDTH(64),
-               .EARLY_LOAD_SELECT(EarlyLoadSelect),
+               .EARLY_LOAD_SELECT(EarlyLoadSelect), .AGU_LOAD_BYPASS(AguLoadBypass),
                .COMPATIBLE_PAIR_SELECT(CompatiblePairSelect)) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .fetch_valid_i(fetch_valid),
     .fetch_ready_o(fetch_ready), .fetch_pc_i(fetch_pc),
@@ -162,7 +164,8 @@ module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
   // One-entry response slot per LSU master models the D-fabric contract.
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      dmem_req_ready[lane] = !dmem_rsp_valid[lane] || dmem_rsp_ready[lane];
+      dmem_req_ready[lane] = !memory_request_hold &&
+        (!dmem_rsp_valid[lane] || dmem_rsp_ready[lane]);
       accepted_memory_write[lane] = dmem_req_valid[lane] &&
         dmem_req_ready[lane] && dmem_req_write[lane];
       accepted_memory_read[lane] = dmem_req_valid[lane] &&
@@ -289,9 +292,25 @@ module rv_backend_int_tb #(parameter bit EarlyLoadSelect = 1'b1,
     repeat (6) @(negedge clk);
 
     // Two independent loads target opposite DTIM banks and should use both LSU
-    // request ports in one cycle. LW at +8 also checks sign extension.
+    // request ports in one cycle. Hold the external memory until both are
+    // ready: an early bypass may otherwise correctly issue the older load a
+    // cycle earlier. This tests actual dual capability and backpressure,
+    // rather than requiring an optimized core to delay an already-ready load.
+    // LW at +8 also checks sign extension.
+    memory_request_hold = 1'b1;
     send_pair(32'h2010, 32'h0080_a203, 1'b1,
               32'h2014, 32'h0100_a283);
+    begin
+      int unsigned timeout;
+      timeout = 0;
+      while (dmem_req_valid != 2'b11 && timeout < 80) begin
+        @(negedge clk);
+        timeout++;
+      end
+      if (dmem_req_valid != 2'b11 || (|dmem_req_write))
+        $fatal(1, "Two ready loads did not remain on both backpressured LSU ports");
+      memory_request_hold = 1'b0;
+    end
     begin
       int unsigned timeout;
       timeout = 0;

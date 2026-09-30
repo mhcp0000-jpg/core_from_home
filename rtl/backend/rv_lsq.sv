@@ -1,4 +1,5 @@
 module rv_lsq #(
+  parameter bit AGU_LOAD_BYPASS = 1'b0,
   parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter int unsigned PADDR_WIDTH    = 32,
   parameter int unsigned DATA_WIDTH     = 64,
@@ -162,6 +163,16 @@ module rv_lsq #(
   logic [1:0] candidate_blocked_q;
   logic [1:0] candidate_order_valid;
   logic [1:0] candidate_forward_valid;
+  logic [1:0] candidate_resident;
+  logic [1:0] active_found, active_agu;
+  logic [1:0][1:0] active_agu_choice;
+  logic [1:0] active_authorized;
+  logic [1:0] active_effect_permit;
+  logic [1:0][LQ_INDEX_WIDTH-1:0] active_index;
+  logic [1:0][SEQ_WIDTH-1:0] active_sequence;
+  logic [1:0][PADDR_WIDTH-1:0] active_address;
+  logic [1:0][DATA_BYTES-1:0] active_mask;
+  logic [1:0] active_device;
 
   localparam int unsigned LQ_SELECT_TREE_LEVELS = $clog2(LQ_ENTRIES);
   localparam int unsigned LQ_SELECT_TREE_LEAVES =
@@ -266,6 +277,19 @@ module rv_lsq #(
       !flush_valid_i;
   end
 
+  // The previous-cycle blocked bit may still ask to replace a candidate
+  // just when its older dependency resolves. Do not expose a valid request
+  // on that transition if a replacement is available. Ordering itself stays
+  // unmasked so blocked_q clears when the held candidate becomes ready.
+  // This prevents a valid/unaccepted request from changing identity on the
+  // next edge, without feeding the fresh wide ordering result into identity D.
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++)
+      active_effect_permit[lane] = active_authorized[lane] &&
+        (active_agu[lane] || !candidate_blocked_q[lane] ||
+         !selected_candidate_found[0]);
+  end
+
   always_comb begin
     lq_free_work = ~lq_valid_q;
     sq_free_work = ~sq_valid_q;
@@ -346,7 +370,11 @@ module rv_lsq #(
         !(candidate_found[0] &&
           (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
         !(candidate_found[1] &&
-          (candidate_index[1] == LQ_INDEX_WIDTH'(entry)));
+          (candidate_index[1] == LQ_INDEX_WIDTH'(entry))) &&
+        !(AGU_LOAD_BYPASS && active_agu[0] &&
+          (active_index[0] == LQ_INDEX_WIDTH'(entry))) &&
+        !(AGU_LOAD_BYPASS && active_agu[1] &&
+          (active_index[1] == LQ_INDEX_WIDTH'(entry)));
     end
 
     for (int unsigned leaf = 0; leaf < LQ_SELECT_TREE_LEAVES; leaf++) begin
@@ -437,11 +465,10 @@ module rv_lsq #(
     end
   end
 
-  logic [1:0] candidate_resident;
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
       candidate_resident[lane] = candidate_found[lane];
-      if (EARLY_LOAD_SELECT && candidate_found[lane])
+      if ((EARLY_LOAD_SELECT || AGU_LOAD_BYPASS) && candidate_found[lane])
         candidate_resident[lane] = lq_valid_q[candidate_index[lane]] &&
           !lq_killed_q[candidate_index[lane]] &&
           (lq_sequence_q[candidate_index[lane]] == candidate_sequence[lane]) &&
@@ -450,6 +477,8 @@ module rv_lsq #(
           !lq_completed_q[candidate_index[lane]] &&
           !lq_issued_q[candidate_index[lane]];
     end
+  end
+  always_comb begin
     // A candidate blocked by an unresolved older access must not reserve a
     // slot indefinitely.  Capture that condition for one cycle, then replace
     // it only when the selector has another eligible identity.  This lets a
@@ -461,17 +490,73 @@ module rv_lsq #(
     // candidate_blocked_q instead of feeding candidate identity D in the same
     // cycle; that feedback was the LSQ's dominant timing cone.
     candidate_replace[0] = !candidate_found[0] ||
-                           (EARLY_LOAD_SELECT && !candidate_resident[0]) ||
+                           ((EARLY_LOAD_SELECT || AGU_LOAD_BYPASS) && !candidate_resident[0]) ||
                            load_candidate_ready_i[0] ||
                            (candidate_blocked_q[0] &&
                             selected_candidate_found[0]);
     candidate_replace[1] = !candidate_found[1] ||
-                           (EARLY_LOAD_SELECT && !candidate_resident[1]) ||
+                           ((EARLY_LOAD_SELECT || AGU_LOAD_BYPASS) && !candidate_resident[1]) ||
                            load_candidate_ready_i[1] ||
                            (candidate_blocked_q[1] &&
                             (candidate_replace[0] ?
                               selected_candidate_found[1] :
                               selected_candidate_found[0]));
+  end
+
+  // Experimental fall-through of a REGISTERED AGU head into a vacant load
+  // candidate lane. The normal tournament/register path remains the fallback.
+  // This is not speculative: require the accepted, PMP-qualified update,
+  // live sequence ownership and the same conservative SQ/LQ ordering checks.
+  // An older store resolving on this edge is still unknown until next cycle.
+  always_comb begin
+    active_found = candidate_resident;
+    active_agu = '0;
+    active_agu_choice = '0;
+    active_index = candidate_index;
+    active_sequence = candidate_sequence;
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      active_address[lane] = lq_address_q[candidate_index[lane]];
+      active_mask[lane] = lq_mask_q[candidate_index[lane]];
+      active_device[lane] = lq_device_q[candidate_index[lane]];
+    end
+    // Fixed lane affinity avoids a two-stage 2x2 priority crossbar before
+    // the store CAM. Busy lanes fall back to the normal registered selector.
+    if (AGU_LOAD_BYPASS) begin
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (!candidate_resident[lane] && agu_preview_valid_i[lane] &&
+            agu_ready_o[lane] && agu_lq_valid_i[lane] && agu_address_valid_i[lane] &&
+            !lq_killed_q[agu_lq_index_i[lane]] &&
+            !lq_exception_q[agu_lq_index_i[lane]] &&
+            !lq_issued_q[agu_lq_index_i[lane]] &&
+            !lq_completed_q[agu_lq_index_i[lane]] &&
+            !(candidate_resident[1-lane] &&
+              candidate_index[1-lane] == agu_lq_index_i[lane]) &&
+            !(lane == 1 && agu_preview_valid_i[0] && agu_lq_valid_i[0] &&
+              agu_lq_index_i[0] == agu_lq_index_i[1])) begin
+          active_found[lane] = 1'b1;
+          active_agu[lane] = 1'b1;
+          active_agu_choice[lane][lane] = 1'b1;
+          active_index[lane] = agu_lq_index_i[lane];
+          active_sequence[lane] = agu_sequence_i[lane];
+          active_address[lane] = agu_address_i[lane];
+          active_mask[lane] = agu_mask_i[lane];
+          active_device[lane] = agu_device_i[lane];
+        end
+      end
+    end
+  end
+
+  // Authorization is deliberately not on identity/address selection: PMP
+  // may suppress the request, but must not be replicated through every data
+  // mux and store-buffer CAM input. A raw preview alone never issues a read.
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      active_authorized[lane] = !active_agu[lane];
+      for (int unsigned agu = 0; agu < 2; agu++)
+        if (active_agu_choice[lane][agu] && agu_valid_i[agu] &&
+            agu_ready_o[agu] && !agu_exception_valid_i[agu])
+          active_authorized[lane] = 1'b1;
+    end
   end
 
   // Candidate identity is registered before the wide SQ/LQ ordering checks.
@@ -520,6 +605,19 @@ module rv_lsq #(
       end else
         candidate_blocked_q[1] <= candidate_found[1] &&
                                   !candidate_order_valid[1];
+      // Always shadow the raw bypass identity, even when consumed. If it
+      // issued, resident validation rejects it via LQ issued/completed next
+      // cycle. This avoids putting ordering/CAM -> downstream ready back on
+      // candidate identity D. If stalled, the same identity becomes resident
+      // after the accepted AGU update, preserving request stability.
+      for (int unsigned lane = 0; lane < 2; lane++) begin
+        if (active_agu[lane]) begin
+          candidate_found[lane] <= 1'b1;
+          candidate_index[lane] <= active_index[lane];
+          candidate_sequence[lane] <= active_sequence[lane];
+          candidate_blocked_q[lane] <= !candidate_order_valid[lane];
+        end
+      end
     end
   end
 
@@ -542,9 +640,9 @@ module rv_lsq #(
     // compares this sequence against the ROB head) cannot feed back through
     // the same procedural block that produces the sequence.
     always_comb begin
-      load_candidate_present_o[lane] = candidate_resident[lane] && !flush_valid_i;
-      load_candidate_index_o[lane] = candidate_index[lane];
-      load_candidate_sequence_o[lane] = candidate_sequence[lane];
+      load_candidate_present_o[lane] = active_found[lane] && active_authorized[lane] && !flush_valid_i;
+      load_candidate_index_o[lane] = active_index[lane];
+      load_candidate_sequence_o[lane] = active_sequence[lane];
       load_candidate_address_o[lane] = '0;
       load_candidate_mask_o[lane] = '0;
       load_candidate_size_o[lane] = '0;
@@ -553,19 +651,19 @@ module rv_lsq #(
       load_destination_valid_o[lane] = 1'b0;
       load_destination_phys_o[lane] = '0;
 
-      if (candidate_found[lane]) begin
+      if (active_found[lane]) begin
         load_candidate_address_o[lane] =
-          lq_address_q[candidate_index[lane]];
-        load_candidate_mask_o[lane] = lq_mask_q[candidate_index[lane]];
-        load_candidate_size_o[lane] = lq_size_q[candidate_index[lane]];
+          active_address[lane];
+        load_candidate_mask_o[lane] = active_mask[lane];
+        load_candidate_size_o[lane] = lq_size_q[active_index[lane]];
         load_candidate_unsigned_o[lane] =
-          lq_unsigned_q[candidate_index[lane]];
+          lq_unsigned_q[active_index[lane]];
         load_candidate_device_o[lane] =
-          lq_device_q[candidate_index[lane]];
+          active_device[lane];
         load_destination_valid_o[lane] =
-          lq_destination_valid_q[candidate_index[lane]];
+          lq_destination_valid_q[active_index[lane]];
         load_destination_phys_o[lane] =
-          lq_destination_phys_q[candidate_index[lane]];
+          lq_destination_phys_q[active_index[lane]];
       end
     end
 
@@ -595,10 +693,13 @@ module rv_lsq #(
       sq_match_data_valid = 1'b0;
       sq_forward_data = '0;
 
-      candidate_present = candidate_resident[lane];
+      // Compute ordering/CAM from raw registered identity/address in parallel
+      // with PMP. Permission gates only the final effect-valid signals; it
+      // must not enter each store-match/youngest-mux reduction level.
+      candidate_present = active_found[lane];
       candidate_valid = 1'b0;
-      selected_index = candidate_index[lane];
-      selected_sequence = candidate_sequence[lane];
+      selected_index = active_index[lane];
+      selected_sequence = active_sequence[lane];
       selected_address = '0;
       selected_mask = '0;
       selected_device = 1'b0;
@@ -620,9 +721,9 @@ module rv_lsq #(
       end
 
       if (candidate_present) begin
-        selected_address = lq_address_q[selected_index];
-        selected_mask = lq_mask_q[selected_index];
-        selected_device = lq_device_q[selected_index];
+        selected_address = active_address[lane];
+        selected_mask = active_mask[lane];
+        selected_device = active_device[lane];
       end
 
       for (int unsigned store = 0; store < SQ_ENTRIES; store++) begin
@@ -751,16 +852,16 @@ module rv_lsq #(
       // This block only produces permit-dependent issue/forward controls.
       // Candidate identity and metadata are generated above, outside the
       // device_load_permit feedback cone.
-      candidate_order_valid[lane] = candidate_valid;
-      candidate_forward_valid[lane] = forward_valid;
+      candidate_order_valid[lane] = candidate_valid && active_authorized[lane];
+      candidate_forward_valid[lane] = forward_valid && active_authorized[lane];
       // Do not combinationally gate LSU completion/request qualification with
       // branch flush.  Backend live-sequence filtering discards a younger
       // completion, while a normal wrong-path read is harmless and is drained
       // through the killed-entry mechanism.  Gating here formed a real loop:
       // LSU completion -> ROB live query -> branch resolve -> flush -> LSU.
-      load_candidate_valid_o[lane] = candidate_valid;
-      load_memory_read_o[lane] = memory_read;
-      load_forward_valid_o[lane] = forward_valid;
+      load_candidate_valid_o[lane] = candidate_valid && active_effect_permit[lane];
+      load_memory_read_o[lane] = memory_read && active_effect_permit[lane];
+      load_forward_valid_o[lane] = forward_valid && active_effect_permit[lane];
       load_forward_data_o[lane] = forward_data;
       load_stall_reason_o[lane] = stall_reason;
     end
@@ -774,13 +875,13 @@ module rv_lsq #(
     // A CAM query has no side effect, so keep it independent of branch flush.
     // This also prevents flush -> query -> forwarding -> completion from
     // closing the same branch-resolution loop described above.
-    sb_query_valid_o = candidate_found;
+    sb_query_valid_o = active_found;
     sb_query_address_o = '0;
     sb_query_mask_o = '0;
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      if (candidate_found[lane]) begin
-        sb_query_address_o[lane] = lq_address_q[candidate_index[lane]];
-        sb_query_mask_o[lane] = lq_mask_q[candidate_index[lane]];
+      if (active_found[lane]) begin
+        sb_query_address_o[lane] = active_address[lane];
+        sb_query_mask_o[lane] = active_mask[lane];
       end
     end
   end
@@ -1092,6 +1193,23 @@ module rv_lsq #(
     |(lq_valid_q & lq_issued_q & ~lq_completed_q);
 
 `ifndef SYNTHESIS
+  for (genvar lane = 0; lane < 2; lane++) begin : g_agu_bypass_assert
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      active_agu[lane] && load_candidate_valid_o[lane] |->
+      |(active_agu_choice[lane] & agu_valid_i & agu_ready_o & ~agu_exception_valid_i));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      load_memory_read_o[lane] && !load_candidate_ready_i[lane] && !flush_valid_i
+      |=> flush_valid_i || (load_memory_read_o[lane] &&
+        $stable(load_candidate_index_o[lane]) && $stable(load_candidate_sequence_o[lane]) &&
+        $stable(load_candidate_address_o[lane]) && $stable(load_candidate_mask_o[lane])));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      active_agu[lane] |-> AGU_LOAD_BYPASS && active_found[lane] &&
+      lq_valid_q[active_index[lane]] && !lq_killed_q[active_index[lane]] &&
+      lq_sequence_q[active_index[lane]] == active_sequence[lane] &&
+      !lq_issued_q[active_index[lane]] && !lq_completed_q[active_index[lane]]);
+  end
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (&active_found) |-> active_index[0] != active_index[1]);
   property p_unknown_store_blocks_memory_lane0;
     @(posedge clk_i) disable iff (!rst_ni)
       load_candidate_present_o[0] &&

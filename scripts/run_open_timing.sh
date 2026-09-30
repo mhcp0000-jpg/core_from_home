@@ -33,7 +33,7 @@ run_yosys() {
 
 if [[ "$mode" == "check" || "$mode" == "all" ]]; then
   run_yosys rv_ooo_core_check \
-    "read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top rv_ooo_core -f $sources; hierarchy -check -top rv_ooo_core; proc; check; stat"
+    "read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top rv_ooo_core -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1} -G AGU_LOAD_BYPASS=${AGU_LOAD_BYPASS:-0} -G COMPATIBLE_PAIR_SELECT=${COMPATIBLE_PAIR_SELECT:-0} -f $sources; hierarchy -check -top rv_ooo_core; proc; check; stat"
 fi
 
 if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
@@ -97,7 +97,7 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
   for spec in "${blocks[@]}"; do
     IFS='|' read -r name top args flow abc_mode <<<"$spec"
     case "$top" in
-      rv_lsq|rv_lsu_cluster|rv_backend|rv_ooo_core) args+=" -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1}" ;;
+      rv_lsq|rv_lsu_cluster|rv_backend|rv_ooo_core) args+=" -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1} -G AGU_LOAD_BYPASS=${AGU_LOAD_BYPASS:-0}" ;;
     esac
     if [[ "${COMPATIBLE_PAIR_SELECT:-0}" == "1" ]]; then
       case "$top" in

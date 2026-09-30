@@ -11,6 +11,7 @@ param(
   [switch]$RtlAssertions,
   [ValidateRange(2, 32)]
   [int]$CoreBranchCheckpoints = 8,
+  [switch]$CoreAguLoadBypass,
   [switch]$CoreEarlyLoadSelect = $true,
   [switch]$CoreCompatiblePairSelect,
   [ValidateRange(1, 32)]
@@ -72,6 +73,7 @@ try {
                         "--top-module", $topModule, "--Mdir", $BuildRoot)
     $verilatorArgs += "-GCoreBranchCheckpoints=$CoreBranchCheckpoints"
     $verilatorArgs += "-GCoreEarlyLoadSelect=$(if ($CoreEarlyLoadSelect) { 1 } else { 0 })"
+    $verilatorArgs += "-GCoreAguLoadBypass=$(if ($CoreAguLoadBypass) { 1 } else { 0 })"
     $verilatorArgs += "-GCoreCompatiblePairSelect=$(if ($CoreCompatiblePairSelect) { 1 } else { 0 })"
     $verilatorArgs += $mappedSources
     & $verilator @verilatorArgs

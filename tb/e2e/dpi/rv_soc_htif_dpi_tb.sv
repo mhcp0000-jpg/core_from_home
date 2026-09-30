@@ -3,6 +3,7 @@
 // the existing HostIF is used only as the Boot ROM entry mailbox.
 module rv_soc_htif_dpi_tb #(
   parameter int unsigned CoreBranchCheckpoints = 8,
+  parameter bit CoreAguLoadBypass = 1'b0,
   parameter bit CoreEarlyLoadSelect = 1'b1,
   parameter bit CoreCompatiblePairSelect = 1'b0
 );
@@ -257,7 +258,7 @@ module rv_soc_htif_dpi_tb #(
 
   rv_soc_top #(
     .BR_CHECKPOINTS(CoreBranchCheckpoints),
-    .EARLY_LOAD_SELECT(CoreEarlyLoadSelect),
+    .EARLY_LOAD_SELECT(CoreEarlyLoadSelect), .AGU_LOAD_BYPASS(CoreAguLoadBypass),
     .COMPATIBLE_PAIR_SELECT(CoreCompatiblePairSelect),
     // This ROM wakes on MSIP, clears CLINT.msip, reads HOSTIF.BOOT_ENTRY and
     // jumps there. Consequently the ELF entry need not contain a trap stub.

@@ -1,4 +1,5 @@
 module rv_lsu_cluster #(
+  parameter bit AGU_LOAD_BYPASS = 1'b0,
   parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter int unsigned XLEN                 = 32,
   parameter int unsigned PADDR_WIDTH          = 32,
@@ -375,7 +376,7 @@ module rv_lsu_cluster #(
   end
 
   rv_lsq #(
-    .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT),
+    .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT), .AGU_LOAD_BYPASS(AGU_LOAD_BYPASS),
     .PADDR_WIDTH(PADDR_WIDTH), .DATA_WIDTH(MEM_DATA_WIDTH),
     .LQ_ENTRIES(LQ_ENTRIES), .SQ_ENTRIES(SQ_ENTRIES),
     .SEQ_WIDTH(ROB_SEQ_WIDTH), .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)

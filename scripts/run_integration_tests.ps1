@@ -4,6 +4,7 @@ param(
   [string]$BuildRoot = "C:\rv_build\backend_int",
   [switch]$RtlAssertions,
   [switch]$EarlyLoadSelect = $true,
+  [switch]$AguLoadBypass,
   [switch]$CompatiblePairSelect,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4
@@ -77,7 +78,7 @@ try {
     $env:VERILATOR_ROOT = $VerilatorRoot
     $assertionOption = if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
     & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
-      --top-module rv_backend_int_tb "-GEarlyLoadSelect=$(if ($EarlyLoadSelect) { 1 } else { 0 })" "-GCompatiblePairSelect=$(if ($CompatiblePairSelect) { 1 } else { 0 })" --Mdir $BuildRoot @mappedSources
+      --top-module rv_backend_int_tb "-GAguLoadBypass=$(if ($AguLoadBypass) { 1 } else { 0 })" "-GEarlyLoadSelect=$(if ($EarlyLoadSelect) { 1 } else { 0 })" "-GCompatiblePairSelect=$(if ($CompatiblePairSelect) { 1 } else { 0 })" --Mdir $BuildRoot @mappedSources
     if ($LASTEXITCODE -ne 0) {
       throw "Verilator code generation failed."
     }

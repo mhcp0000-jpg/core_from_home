@@ -1,4 +1,5 @@
 module rv_backend #(
+  parameter bit AGU_LOAD_BYPASS = 1'b0,
   parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
   parameter int unsigned XLEN = 32,
@@ -1044,18 +1045,61 @@ module rv_backend #(
 
   logic branch_taken,branch_mispredict,branch_misaligned;
   logic [XLEN-1:0] branch_target,branch_next_pc,branch_link;
-  logic [2:0] branch_bytes;
-  assign branch_bytes=(port_len[0]==INST_LEN_16)?3'd2:3'd4;
-  rv_branch_unit #(.XLEN(XLEN)) u_branch(
-    .valid_i(port_valid[0]&&(port_fu[0]==FU_BRANCH)),
-    .operation_i(branch_op_e'(port_operation[0][3:0])),.pc_i(port_pc[0]),
-    .operand_a_i(port_operand0[0]),.operand_b_i(port_operand1[0]),
-    .immediate_i(port_immediate[0]),.instruction_bytes_i(branch_bytes),
+  logic [1:0] candidate_branch_taken, candidate_branch_mispredict,
+              candidate_branch_misaligned;
+  logic [1:0][XLEN-1:0] candidate_branch_target, candidate_branch_next_pc,
+                       candidate_branch_link;
+  // Evaluate the two available operands in parallel with port arbitration.
+  // Selecting a boolean after comparison avoids port assignment -> XLEN-wide
+  // operand mux -> compare -> mispredict in series. This is still one branch
+  // issue port and two global candidates; no extra issue/read bandwidth.
+  for (genvar candidate = 0; candidate < 2; candidate++) begin : g_candidate_branch
+    rv_branch_unit #(.XLEN(XLEN)) u_branch(
+      .valid_i(cand_valid[candidate] && (cand_fu[candidate] == FU_BRANCH)),
+      .operation_i(branch_op_e'(cand_operation[candidate][3:0])),
+      .pc_i(cand_pc[candidate]),
+      .operand_a_i(cand_operand0[candidate]),.operand_b_i(cand_operand1[candidate]),
+      .immediate_i(cand_immediate[candidate]),
+      .instruction_bytes_i((cand_len[candidate] == INST_LEN_16) ? 3'd2 : 3'd4),
+      .predicted_taken_i(cand_prediction[candidate].taken),
+      .predicted_target_i(cand_prediction[candidate].target[XLEN-1:0]),
+      .taken_o(candidate_branch_taken[candidate]),
+      .target_o(candidate_branch_target[candidate]),
+      .next_pc_o(candidate_branch_next_pc[candidate]),
+      .link_value_o(candidate_branch_link[candidate]),
+      .target_misaligned_o(candidate_branch_misaligned[candidate]),
+      .mispredict_o(candidate_branch_mispredict[candidate]));
+  end
+  assign branch_taken = candidate_branch_taken[port_candidate[0]];
+  assign branch_target = candidate_branch_target[port_candidate[0]];
+  assign branch_next_pc = candidate_branch_next_pc[port_candidate[0]];
+  assign branch_link = candidate_branch_link[port_candidate[0]];
+  assign branch_misaligned = candidate_branch_misaligned[port_candidate[0]];
+  assign branch_mispredict = candidate_branch_mispredict[port_candidate[0]];
+
+`ifndef SYNTHESIS
+  // Check this retiming-free factoring against the original post-port-mux
+  // evaluation on every actually issued branch. Inactive payload is don't-care.
+  logic reference_branch_taken, reference_branch_mispredict, reference_branch_misaligned;
+  logic [XLEN-1:0] reference_branch_target, reference_branch_next_pc, reference_branch_link;
+  rv_branch_unit #(.XLEN(XLEN)) u_branch_post_select_reference(
+    .valid_i(port_valid[0] && (port_fu[0] == FU_BRANCH)),
+    .operation_i(branch_op_e'(port_operation[0][3:0])), .pc_i(port_pc[0]),
+    .operand_a_i(port_operand0[0]), .operand_b_i(port_operand1[0]),
+    .immediate_i(port_immediate[0]),
+    .instruction_bytes_i((port_len[0] == INST_LEN_16) ? 3'd2 : 3'd4),
     .predicted_taken_i(port_prediction[0].taken),
     .predicted_target_i(port_prediction[0].target[XLEN-1:0]),
-    .taken_o(branch_taken),.target_o(branch_target),.next_pc_o(branch_next_pc),
-    .link_value_o(branch_link),.target_misaligned_o(branch_misaligned),
-    .mispredict_o(branch_mispredict));
+    .taken_o(reference_branch_taken), .target_o(reference_branch_target),
+    .next_pc_o(reference_branch_next_pc), .link_value_o(reference_branch_link),
+    .target_misaligned_o(reference_branch_misaligned), .mispredict_o(reference_branch_mispredict));
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    port_valid[0] && (port_fu[0] == FU_BRANCH) |->
+      {branch_taken, branch_target, branch_next_pc, branch_link,
+       branch_misaligned, branch_mispredict} ==
+      {reference_branch_taken, reference_branch_target, reference_branch_next_pc,
+       reference_branch_link, reference_branch_misaligned, reference_branch_mispredict});
+`endif
 
   // One elastic result buffer per single-cycle integer port.
   logic [1:0] fast_req_valid,fast_result_valid,fast_result_ready;
@@ -1243,7 +1287,7 @@ module rv_backend #(
     .DTIM_BASE_ADDR(DTIM_BASE_ADDR), .DTIM_SIZE_KB(DTIM_SIZE_KB),
     // Two-entry AGU buffers: LSU issue_ready no longer carries the
     // PMP check / completion-port decision into issue selection.
-    .AGU_DEPTH(2), .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT)
+    .AGU_DEPTH(2), .EARLY_LOAD_SELECT(EARLY_LOAD_SELECT), .AGU_LOAD_BYPASS(AGU_LOAD_BYPASS)
   ) u_lsu_cluster (
     .clk_i, .rst_ni,
     .dispatch_valid_i(dec_valid & (dec_is_load | dec_is_store)),

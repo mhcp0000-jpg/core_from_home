@@ -3,12 +3,30 @@
 RV32IMFC를 1차 타깃으로 하는 2-wide out-of-order RISC-V 코어와 AXI4 SoC 프로젝트입니다.
 데이터 경로와 주소 경로는 처음부터 `XLEN` 파라미터를 사용하여 RV64IMFC로 확장할 수 있게 설계합니다.
 
-초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI Host ELF loader를 포함합니다. 현재 단계는 **RV32IMFC 1차 RTL 통합·directed verification·CoreMark IPC 1.2 목표 달성, 전체 ISA differential 진행 전**입니다. SoC interconnect/peripheral과 2-wide frontend/decode, dual-lane rename, ROB, unified issue queue/global 2-wide issue, INT/FP physical register file, ALU 2개, branch, multiplier, iterative divider, RV32F 실행기가 하나의 backend로 연결됐습니다. dual LSU/AGU, LQ/SQ, committed-store buffer는 conservative memory ordering, store-to-load forwarding과 commit 이후 store visibility를 구현하며 store 주소는 데이터 operand보다 먼저 SQ에 확정할 수 있습니다. commit-time CSR, M/U privilege, precise trap, `MRET`, `WFI`, `FENCE/FENCE.I`와 8-entry PMP도 IFU/dual-LSU에 통합됐습니다. IFU는 16-byte ITIM transport bandwidth를 유지하면서 PMP를 8개의 2-byte instruction parcel로 판정하고, 실제 16/32-bit instruction이 사용하는 parcel의 fault만 합성합니다. fetch queue는 32×16-bit circular parcel 구조이며, target buffer는 data와 당시 PMP allow mask를 함께 보존해 hit redirect 경로에서 PMP를 재계산하지 않습니다. 따라서 TOR 경계와 같은 fetch block 안의 허용/비허용 영역이 섞여도 이웃 instruction 때문에 정상 instruction이 거부되지 않습니다. frontend에는 256-entry 4-way BTB, 2048-entry bimodal/gshare/chooser tournament predictor, 16-entry RAS와 16-entry target/loop block buffer가 연결됐고 IFU/I-Fabric은 response와 다음 request를 같은 cycle에 handoff하며 target-buffer hit는 redirect edge에 fetch queue를 바로 채웁니다. predictor resolve에는 compressed branch의 canonical expansion이 아니라 raw 16-bit encoding을 보존해 C.Bxx/C.J/C.JR/C.JALR 학습과 history/RAS recovery를 유지합니다. D-Fabric도 이전 response를 소비하는 cycle에 다음 request를 받아 synchronous TIM의 불필요한 turnaround bubble을 제거하며, outstanding 깊이는 1로 유지합니다. v1.18.10 CoreMark 2-iteration short run은 CRC/exit(0), 477,680 cycles, marker-window 576,450 instret, IPC 1.206770, 비공식 추정 4.186903 CoreMark/MHz를 기록했습니다. profiler의 동일 instruction 기준 normalized IPC는 v1.18.9보다 감소하지 않았습니다. parse/elaboration, frontend unit/lint, backend integration과 실제 RV32IMF·RV32C·M/U ELF의 in-order ROB commit trace도 통과했습니다. RV32F 전체 연산군은 host FP를 사용하지 않는 exact-rational oracle의 6,470개 deterministic vector로 5개 rounding mode와 특수값/subnormal/overflow를 비교하지만, C/CSR/FENCE의 모든 조합과 random long-run, 외부 Spike/Sail 및 riscv-arch-test는 아직 sign-off되지 않았습니다.
+초기 SoC는 128 KiB ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF와 DPI ELF loader를 포함합니다.
+코어는2-wide frontend/decode, dual-lane rename, ROB, unified IQ, INT/FP PRF, ALU2,
+branch, MUL/DIV, RV32F 및 dual LSU로 구성됩니다. LQ/SQ와 committed-store buffer는
+unknown older memory 대기, store-to-load forwarding, commit 이후 store visibility를 보장합니다.
+CSR M/U, precise trap, MRET/WFI/FENCE/FENCE.I 및8-entry PMP도 연결되어 있습니다.
 
-> 최신 timing checkpoint(v1.18.3): IQ/LSQ selection tree와 resource-return
-> 경로를 재구성하고 FPU 기본 fast latency를 4 cycle로 분할했습니다. CoreMark
-> 2-iteration은 CRC/exit PASS, 468,408 cycles, 576,450 instret, IPC 1.230658,
-> 추정 4.269782 CoreMark/MHz입니다. 위 v1.18 수치는 이전 비교 기준입니다.
+IFU는128-bit fetch와64-byte circular **4×128-bit block queue**를 사용하며,
+PMP를8개의2-byte parcel로 검사해 실제16/32-bit 명령이 사용하는 fault만 반영합니다.
+256-entry4-way BTB, 2048-entry bimodal/gshare/chooser, 16-entry RAS 및16-entry target
+block buffer가 있습니다. target buffer는 fetch data와 당시 PMP mask를 함께 보존하고,
+권한 변경/FENCE.I 시 invalidate합니다. 압축 분기의 resolve/training에는 raw encoding을 유지합니다.
+I/D Fabric은 synchronous TIM response 소비와 다음 request를 같은 cycle에 handoff합니다.
+
+현재 단계는 **RTL 통합·directed verification 및 timing/IPC 개선 중**입니다.
+CoreMark CRC/exit, 실제 C/FP/load-store ELF, assertion-enabled block/backend 회귀가 통과했습니다.
+RV32F는 exact-rational oracle로 static/dynamic rounding 각각113,600 vector를 비교했습니다.
+전체 ISA 장기 differential, 외부 Spike/Sail·riscv-arch-test 및 서버 공정 STA sign-off는 아직 완료하지 않았습니다.
+
+> 최신 checkpoint는 `55f2712`(v1.18.13)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 아직 미달/미확인입니다.
+> v1.18.13 기준값은469,739 cycles / 576,450 instret / IPC1.227171입니다. working request-hold 보강 후 bypass=0은469,994 cycles / IPC1.226505입니다.
+> working opt-in `AGU_LOAD_BYPASS=1` 후보는 같은 ELF에서431,358 cycles / IPC1.336361, CRC/exit/assertions PASS입니다. 기본값은0이며 전체 timing 검토 중입니다.
+> Nangate45 whole-backend macro screening은 4444.72→3360.45 ps이며 서버 2 nm Fmax로 환산할 수 없습니다.
+> 기본 FPU fast latency는5입니다. 상세 최신 구조/측정 조건은 [HDD](docs/HDD_Core_Architecture.md)의 v1.18.13 절을 보세요.
+> branch 병렬 평가 및 load bypass의 상태·타이밍·안전 조건은 HDD v1.18.14 절에 기록합니다. 서버 1.2GHz 달성은 아직 확인되지 않았습니다.
 
 ## Linux 서버에서 ELF 바로 실행
 

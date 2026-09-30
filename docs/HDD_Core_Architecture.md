@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | RTL-synchronized IQ/LSU/FPU/CSR timing candidates v1.18.13; server STA and IPC targets pending (2026-09-30) |
+| 상태 | v1.18.14 working candidate: parallel branch evaluation + opt-in AGU load bypass; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -25,7 +25,7 @@
 | OoO window | ROB 48, branch checkpoint 8 |
 | Rename | INT/FP RAT+RRAT, INT/FP PRF 각 80 entries |
 | Issue | unified IQ 56 entries(`24+16+16` capacity knobs), global 2 uop/cycle |
-| Execute | ALU 2, BRU 1, 2-stage MUL 1, iterative integer DIV 1, LSU/AGU 2, FP fast pipe 1 + iterative FDIV/FSQRT |
+| Execute | ALU 2, BRU 1 logical issue port / 2 parallel candidate evaluators, 2-stage MUL 1, iterative integer DIV 1, LSU/AGU 2, FP fast pipe 1 + iterative FDIV/FSQRT |
 | Memory ordering | LQ 24, SQ 16, store buffer 16, conservative older-store blocking |
 | Precise state | execution OoO, commit 최대 2개/cycle in order |
 | Initial memory | ITIM/DTIM 각 128 KiB, 2-bank × 64-bit, bank별 1R1W |
@@ -5037,8 +5037,9 @@ skipped 명령은 IQ에 남아 향후 발행되고, sequence wrap/flush/store-ad
 576450 instret / IPC1.231620, CRC/exit PASS; preview 단독 대비1697 cycle 감소다.
 profiler468098/576462, port-conflict20523→3088, mispredict7235→7283이다. counter 중첩과
 OoO 실행/resolve 순서 변화 때문에 port conflict 감소량이 cycle 절감량과 같지 않다.
-predictor 크기/알고리즘/학습 정책 자체는 바꾸지 않았다. 아직 whole timing 검토 전이므로
-기본 선택 정책을 바꾸지 않는다. IQ leaf는1181.50→1592.44 ps, area109886.994→137375.434 µm²로
+predictor 크기/알고리즘/학습 정책 자체는 바꾸지 않았다.
+whole timing은3360.45→4152.96 ps(+23.6%), area316996.722→336974.386 µm²(+6.3%)로
+악화해 **기본 채택을 거부**했다. opt-in으로만 보관한다. IQ leaf는1181.50→1592.44 ps, area109886.994→137375.434 µm²로
 증가했으므로 IPC 이득만 보고 채택하면 안 된다. PS `-CoreCompatiblePairSelect`, integration/timing
 `-CompatiblePairSelect`, Linux timing `COMPATIBLE_PAIR_SELECT=1`로만 실험한다.
 결과: `out/iq_compatible_preview_coremark_perf.json`, `out/iq_compatible_pair_blocks2.log`,
@@ -5054,6 +5055,114 @@ C/FP exit=0, Yosys `rv_ooo_core` structural check PASS다. 최종 로그는
 후속 우선순위는 (1) whole backend 연결 경로/후보 ablation, (2) IQ wakeup→select
 및 LSQ/SB arbitration 경계, (3) FPU arithmetic/normalization과 CSR 64-bit counter,
 (4) frontend feedback이다. IPC 개선은 timing/precise trap 회귀를 통과한 이후 별도 A/B로 진행한다.
+
+###### 5-3. v1.18.14 working candidate: branch factoring and AGU load bypass
+
+**목표와 채택 기준.** 목표는 계속 서버 2 nm STA 1.2 GHz 이상과 같은 CoreMark ELF의
+official IPC 1.3 이상을 동시에 만족하는 것이다. 이하 공개 합성값은 구조 비교용이며
+clock tree/배치배선/공정별 라이브러리/SDC를 포함한 서버 STA 대신 사용할 수 없다.
+기본값은 `EARLY_LOAD_SELECT=1`, `COMPATIBLE_PAIR_SELECT=0`, `AGU_LOAD_BYPASS=0`이다.
+우회 후보의 IPC 통과가 기본 설정의 IPC 또는 서버 1.2 GHz 통과를 뜻하지 않는다.
+
+**Branch evaluator 목적/상태/전이.** 이전 경로는 두 IQ 후보 → port 중재 → operand mux →
+BRU compare/target/link → 결과 buffer였다. 이제 `g_candidate_branch[0:1].u_branch`가
+각 후보의 PC/operand/immediate/prediction으로 결과를 중재와 동시에 계산한다.
+`port_candidate[0]`가 결정되면 결과만 선택한다. 입력/출력의 XLEN 폭과 raw instruction,
+prediction metadata 계약은 그대로다. 두 evaluator는 조합 로직이며 추가 architectural
+branch issue port나 register가 아니다. 한 cycle에 branch는 여전히 P0에서 최대 한 개,
+전체 issue는 최대 두 개다. ALU는 기존 post-port operand mux 뒤에 둔다.
+
+불변조건: issued FU_BRANCH의 taken/target/link/mispredict가 이전 post-port BRU와
+bit-exact해야 한다. `SYNTHESIS`가 없는 assertion-enabled simulation은 legacy evaluator를
+reference로 두고 실제 발행 시 전체 결과를 비교한다. 논리 unit 수와 register latency,
+redirect/exception/commit 순서는 바뀌지 않는다. whole backend Nangate45 macro flow에서
+3360.45→3288.92 ps, area316996.722→320850.530 µm²로 비교됐다. 동일 CoreMark의
+모든 profiler counter가 기존과 같고 C/FP signature009e00b9/exit0 및 integration이 통과했다.
+ALU까지 candidate 앞에서 계산한 대안은3309.26 ps/324586.234 µm²로 더 나빠 제거했다.
+
+**AGU load bypass 목적/상태/인터페이스.** 등록된 AGU head의 정상 load가 도착한 cycle에
+비어 있는 candidate lane으로 fall-through해 selector register 대기를 한 cycle 줄이는 실험이다.
+`AGU_LOAD_BYPASS`는 core→backend→LSU cluster→LSQ에 전파되는 bit parameter이며 초기값0이다.
+추가 외부 memory port나 TB memory latency 변경은 없다. 기존 `agu_preview_valid_i`는 raw
+registered head identity만, `agu_valid_i && agu_ready_o`는 실제 LQ update 수락만 의미한다.
+`agu_exception_valid_i`에는 alignment/PMP 검사 결과가 포함된다. preview만으로 접근하지 않는다.
+
+저장 상태는 기존 `candidate_found/index/sequence/blocked`, LQ/SQ와 AGU FIFO 그대로다.
+조합 `active_found/index/sequence/address/mask/device`가 resident 후보 또는 동일 lane AGU를
+나타낸다. 우회는 해당 candidate가 resident가 아닐 때만 가능하다. index/sequence가 live LQ를
+소유하며 not-killed/not-issued/not-completed/not-exception이어야 하고, 다른 resident lane과
+중복되지 않아야 한다. 두 LSU lane은 고정 대응시켜 2×2 priority crossbar를 추가하지 않는다.
+
+PMP/수락 여부는 `active_authorized`로 분리한다. raw registered identity/address로 SQ/LQ
+ordering과 store-buffer CAM을 먼저 계산하고, 마지막 candidate-valid/memory-read/forward-valid만
+authorization으로 gate한다. PMP 결과를 각 store-match/youngest reduction 앞에 넣지 않는다.
+이는 권한 검사를 생략하는 것이 아니라 ordering 계산과 권한 검사를 병렬화하는 것이다.
+
+1. issue edge에서 주소 계산 결과가 AGU FIFO에 등록된다.
+2. 다음 cycle raw head를 preview한다. vacant lane이면 해당 identity/address를 선택한다.
+3. accepted update, no-exception/PMP permit과 conservative ordering이 모두 충족될 때만
+   normal memory request 또는 forwarding completion을 허용한다.
+4. 우회 identity는 ready와 무관하게 candidate register에 shadow한다. ready=0이면 다음
+   cycle LQ에 등록된 주소로 동일 요청을 유지한다. ready=1이면 issued/completed resident
+   guard가 다음 cycle 재발행을 막는다. 일반 tournament는 우회 identity를 제외해 중복 할당하지 않는다.
+   ordering/CAM→ready를 identity D에 다시 직렬 연결하지 않으려는 의도다.
+5. ready=1이면 memory load는 LQ issued가 되고 response/commit까지 기존 경로를 사용한다.
+   forwarding load는 기존 registered forwarding completion 경로를 사용한다.
+
+older SQ 주소 미확정/동일 주소 데이터 미확정/partial overlap, older LQ 주소 미확정/MMIO,
+device permit 규칙은 그대로다. 같은 edge에 older store 주소가 도착해도 등록 전에는 unknown이다.
+예를 들어 seq={ff,00}인 두 load가 동시에 AGU head에 있으면 ff만 즉시 요청 가능하며,
+00은 ff의 주소가 LQ에 등록된 다음 cycle부터 가능하다. ready를 잠시 막아 두면 등록 후 두
+load가 동시에 서로 다른 요청 lane을 사용할 수 있다. store execute는 여전히 SQ update일 뿐이며
+외부 store visibility는 ROB head commit에서만 발생한다. flush/killed-response drain 규칙도 유지한다.
+
+검증: LSQ에 fall-through/backpressure identity 유지/no duplicate/older-store blocking,
+dual-load sequence wrap 및 withheld update/PMP fault 시 접근 금지 사례를 추가했다.
+live ownership/no duplicate와 unknown-store blocking assertions는 유지한다. 허가 없는 AGU
+우회 요청 금지와 unaccepted memory-read의 identity/address/mask 안정성 assertion도 추가했다.
+기존 `candidate_blocked_q`가1인 상태에서 older 주소가 막 확정되면, stale blocked bit 때문에
+후보를 교체하면서 valid 요청을 바꿀 수 있었다. 대체 eligible 후보가 있는 전환 cycle에는
+`active_effect_permit`로 외부 effect-valid를 잠시 억제한다. raw ordering 결과는 mask하지 않아
+blocked bit가 정상적으로 clear된다. 새 wide ordering→identity D feedback을 추가하지 않는다.
+LSQ bypass는 EARLY_LOAD_SELECT=0/1 두 조합 모두 resident ownership을 검사한다.
+backend integration은
+두 ready load를 TB memory backpressure로 모은 뒤 동시 acceptance를 검사한다. 먼저 준비된
+load가 한 cycle 일찍 요청했다는 이유로 실패시키지 않으며, 요청 개수와 architectural 결과 검사는 유지한다.
+
+fixed-lane 후보의 동일 ELF는 official431783 cycles/576450 instret/IPC≈1.33504,
+profiler431839/576462, CRC/status9/exit0 PASS이며 C/FP signature009e00b9/exit0 PASS다.
+LSQ directed+SVA와 backend integration도 통과했다. late-permit factoring의 공개 LSU leaf는
+3682.26→2744.70 ps/area58710.456→58782.808 µm²다. 기본 LSU2377.18 ps와 비교하면
+여전히 지연이 크므로 leaf 수치만으로 기본 채택하지 않는다. late-permit 최종 회귀는 별도 확인한다.
+이 값은 `AGU_LOAD_BYPASS=1`인 실험 설정이다. 초기 flexible routing 후보의420155 cycles는
+최종 fixed-lane 결과로 혼용하지 않는다. late-permit25-case regression/CoreMark 모든 profiler
+counter equality와 integration/C-FP PASS 후 shadow와 request-hold 보강을 추가했고 최종 회귀 중이다.
+shadow 이전/이후 LSU leaf2744.70→2726.55 ps였다. request-hold 보강 전 whole fixed-lane/PMP-gated
+후보는4053.94 ps로 branch-only3288.92 ps보다 악화했다. 최종 hold+late-permit whole timing과
+서버 STA는 진행 중이며 아직 기본 적용하지 않는다.
+
+**Request-hold 최종 기능 재회귀(2026-10-01).** 같은 ELF official431358 cycles/
+576450 instret/IPC1.336361, profiler431414/576462, CRC/status9/exit0와 assertions PASS.
+bypass0은 official469994/576450/IPC1.226505다. 새 safety hold가 추가되기 전469739와
+구분한다. bypass1의 retired PC/instruction593267개 SHA256은 safety hold 전 baseline과
+같은 `6d997065100292b46e0e964b56ccacb80657a347dcc21bdc6a85197acb85e58c`다.
+이는 PC/instruction 순서 비교이지 cycle CSR 값을 포함한 전체 ISA differential sign-off가 아니다.
+C/FP signature009e00b9/exit0 PASS, EARLY_LOAD_SELECT=0/1+bypass1 LSQ stability SVA PASS.
+latest25-case block regression과 backend integration도 PASS다.
+latest LSU leaf2759.97 ps/59114.244 µm², whole backend는 실행 중이다.
+재현: `run_soc_elf_test.ps1 -CoreAguLoadBypass -RtlAssertions`,
+`run_integration_tests.ps1 -AguLoadBypass -RtlAssertions`,
+`run_open_timing.ps1 -AguLoadBypass -Mode Blocks -IncludeWholeTop -BlockFilter rv_backend -TargetDelayPs 1000`.
+Linux timing은 `AGU_LOAD_BYPASS=1`을 사용한다. 최신 결과는 ignored `out/agu_bypass_affinity_*`,
+`out/lsq_agu_bypass_affinity.log`, 후속 late-permit 결과는 `out/agu_bypass_late_permit_*`에 보관한다.
+
+**Frontend 후보 기각 기록.** target/predecode metadata 추가는 완전한 cross-block32-bit
+join까지 검증했지만 immutable55f2712 frontend2940.50 ps/342718.922 µm² 대비
+최종3029.16 ps/395490.13 µm²로 악화해 RTL에서 제거했다. 같은 predictor 정책의 lane1
+history lookahead(shift-no/shift-0/shift-1 parallel gshare read)도26-case block regression와
+CoreMark counter equality를 통과했지만3190.37 ps로 악화해 제거했다. predictor policy/size/training은
+바뀌지 않는다. cross-block C.NOP+JAL/redirect/stall 테스트는 RV32/RV64/32-bit physical alias
+회귀로 남긴다. 신호 분리 자체가 성능 개선의 증거는 아니므로 전체 합성으로 판정한다.
 
 ###### 5. 도구
 

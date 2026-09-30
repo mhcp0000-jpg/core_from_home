@@ -167,6 +167,17 @@ $tests = @(
 
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 
+$frontendFiles = @("rtl/rv_ooo_pkg.sv", "rtl/frontend/rv_fetch_queue.sv",
+  "rtl/frontend/rv_branch_predictor.sv", "rtl/frontend/rv_fetch_target_buffer.sv",
+  "rtl/frontend/rv_frontend.sv", "tb/unit/frontend/rv_frontend_cross_block_tb.sv")
+foreach ($configuration in @(@(), @("-GXLEN=64"), @("-GXLEN=64", "-GPADDR_WIDTH=32"))) {
+  $tests += @{ Top = "rv_frontend_cross_block_tb"; ParameterArgs = $configuration; Files = $frontendFiles }
+}
+foreach ($early in @(0, 1)) {
+  $tests += @{ Top = "rv_lsq_tb"; ParameterArgs = @("-GEarlyLoadSelect=$early", "-GAguLoadBypass=1"); Files = @(
+    "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_lsq.sv", "tb/unit/backend/rv_lsq_tb.sv") }
+}
+
 try {
   & subst $drive $repoRoot
   if ($LASTEXITCODE -ne 0) { throw "Failed to map $repoRoot to $drive." }
