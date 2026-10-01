@@ -5,7 +5,8 @@
   [string]$Liberty = "",
   [string]$BuildRoot = "",
   [string]$BlockFilter = "",
-  [int]$TargetDelayPs = 10000,
+  [ValidateRange(1, 1000000)]
+  [int]$TargetDelayPs = 1000,
   [switch]$EarlyLoadSelect = $true,
   [switch]$AguLoadBypass,
   [switch]$CompatiblePairSelect,
@@ -84,6 +85,27 @@ function Invoke-YosysRun([string]$Name, [string]$Command) {
   New-Item -ItemType Directory -Force -Path $runDir | Out-Null
   $logPath = Join-Path $runDir "synth.log"
   $consolePath = Join-Path $runDir "console.log"
+  # Preserve the actual mapping budget and input identity. CSV delay alone
+  # cannot support a fair comparison when ABC targets or libraries differ.
+  $sourceIdentity = @(Get-Content -LiteralPath (Join-Path $repoRoot $sourceList) |
+    Where-Object { $_.Trim() -and !$_.Trim().StartsWith("#") -and !$_.Trim().StartsWith("//") } |
+    ForEach-Object {
+      $sourceName = $_.Trim()
+      [pscustomobject]@{ Path = $sourceName; Sha256 =
+        (Get-FileHash -LiteralPath (Join-Path $repoRoot $sourceName) -Algorithm SHA256).Hash }
+    })
+  [pscustomobject]@{
+    Block = $Name
+    StartedUtc = [DateTime]::UtcNow.ToString("o")
+    Command = $Command
+    AbcTargetDelayPs = $TargetDelayPs
+    Liberty = $Liberty
+    LibertySha256 = (Get-FileHash -LiteralPath $Liberty -Algorithm SHA256).Hash
+    ConstraintSha256 = (Get-FileHash -LiteralPath (Join-Path $repoRoot $constraint) -Algorithm SHA256).Hash
+    YosysSha256 = (Get-FileHash -LiteralPath $yosys -Algorithm SHA256).Hash
+    AbcSha256 = (Get-FileHash -LiteralPath $abc -Algorithm SHA256).Hash
+    Sources = $sourceIdentity
+  } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runDir "run_manifest.json") -Encoding UTF8
   Push-Location $repoRoot
   try {
     # Windows PowerShell converts native stderr into terminating ErrorRecord
@@ -123,6 +145,7 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
        Args = "-G SOURCE_COUNT=11"; Flow = "full" },
     @{ Name = "rv_lsq"; Top = "rv_lsq"; Args = ""; Flow = "macro" },
     @{ Name = "rv_fpu"; Top = "rv_fpu"; Args = "-G LATENCY=5"; Flow = "full" },
+    @{ Name = "rv_fpu6"; Top = "rv_fpu"; Args = "-G LATENCY=6"; Flow = "full" },
     @{ Name = "rv_issue_queue"; Top = "rv_issue_queue";
        Args = "-G ENTRIES=56 -G WRITEBACK_PORTS=8"; Flow = "macro" },
     @{ Name = "rv_rob"; Top = "rv_rob"; Args = "-G LIVE_QUERY_PORTS=11"; Flow = "macro" },
@@ -252,6 +275,9 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
       Block = $block.Name
       Flow = $block.Flow
       Parameters = $block.Args
+      AbcTargetDelayPs = $TargetDelayPs
+      LibertySha256 = (Get-FileHash -LiteralPath $Liberty -Algorithm SHA256).Hash
+      ConstraintSha256 = (Get-FileHash -LiteralPath (Join-Path $repoRoot $constraint) -Algorithm SHA256).Hash
       MemoryModel = if ($block.Flow -eq "macro") { "unmapped arrays; read paths omitted" } else { "mapped flops" }
       DelayPs = $delay
       AreaUm2ExcludingMemories = $area

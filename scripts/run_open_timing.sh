@@ -6,7 +6,7 @@ mode="${1:-all}"
 build_root="${BUILD_ROOT:-/tmp/rv_ooo_open_timing}"
 liberty="${NANGATE45_LIBERTY:-}"
 yosys_bin="${YOSYS_BIN:-yosys}"
-target_delay_ps="${TARGET_DELAY_PS:-10000}"
+target_delay_ps="${TARGET_DELAY_PS:-1000}"
 
 if [[ -z "$liberty" || ! -f "$liberty" ]]; then
   echo "Set NANGATE45_LIBERTY to a valid standard-cell .lib file." >&2
@@ -26,6 +26,17 @@ run_yosys() {
   local command="$2"
   local run_dir="$build_root/$name"
   mkdir -p "$run_dir"
+  # Write the actual budget and inputs before mapping. A different ABC target
+  # is not an RTL improvement/regression comparison.
+  {
+    printf 'block=%s\nabc_target_delay_ps=%s\ncommand=%s\n' "$name" "$target_delay_ps" "$command"
+    sha256sum "$liberty" "$constraint" "$sources"
+    while IFS= read -r source_path; do
+      source_path="${source_path%$'\r'}"
+      [[ -z "$source_path" || "$source_path" == \#* || "$source_path" == //* ]] && continue
+      sha256sum "$repo_root/$source_path"
+    done < "$sources"
+  } > "$run_dir/run_manifest.txt"
   (cd "$repo_root" && "$yosys_bin" -q -l "$run_dir/synth.log" -p "$command" \
     >"$run_dir/console.log" 2>&1)
   echo "PASS $name: $run_dir/synth.log"
@@ -41,6 +52,7 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
     "rv_writeback_arbiter|rv_writeback_arbiter|-G SOURCE_COUNT=11|full"
     "rv_lsq|rv_lsq||macro"
     "rv_fpu|rv_fpu|-G LATENCY=5|full"
+    "rv_fpu6|rv_fpu|-G LATENCY=6|full"
     "rv_issue_queue|rv_issue_queue|-G ENTRIES=56 -G WRITEBACK_PORTS=8|macro"
     "rv_rob|rv_rob|-G LIVE_QUERY_PORTS=11|macro"
     "rv_rename2|rv_rename2||full"

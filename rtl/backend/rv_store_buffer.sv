@@ -87,15 +87,6 @@ module rv_store_buffer #(
     return sum[INDEX_WIDTH-1:0];
   endfunction
 
-  function automatic logic sequence_after(
-    input logic [SEQ_WIDTH-1:0] lhs,
-    input logic [SEQ_WIDTH-1:0] rhs
-  );
-    logic signed [SEQ_WIDTH-1:0] distance;
-    distance = $signed(lhs - rhs);
-    return distance > 0;
-  endfunction
-
   always_comb begin
     head_next = increment_index(head_q, 1);
     pop_count = '0;
@@ -167,7 +158,7 @@ module rv_store_buffer #(
   localparam int unsigned QTREE_LEAVES = 1 << QTREE_LEVELS;
   typedef struct packed {
     logic                    valid;
-    logic [SEQ_WIDTH-1:0]    seq;
+    logic                    wrapped;
     logic [DATA_BYTES-1:0]   ovl;
     logic [DATA_WIDTH-1:0]   data;
     logic [INDEX_WIDTH-1:0]  idx;
@@ -180,13 +171,17 @@ module rv_store_buffer #(
   );
     if (!lhs.valid) return rhs;
     if (!rhs.valid) return lhs;
-    return sequence_after(lhs.seq, rhs.seq) ? lhs : rhs;
+    // Physical leaves are ascending: every lhs index precedes every rhs
+    // index at every reduction level. Below-head entries were inserted after
+    // wrap and are younger than at/above-head entries. Within the same zone
+    // rhs is younger. Committed stores can outlive a ROB sequence wrap while
+    // the bus stalls, so ROB modular timestamps MUST NOT determine this age.
+    return (lhs.wrapped && !rhs.wrapped) ? lhs : rhs;
   endfunction
 
   for (genvar lane = 0; lane < 2; lane++) begin : g_query
     always_comb begin
       logic found;
-      logic [SEQ_WIDTH-1:0] selected_sequence;
       logic [DATA_BYTES-1:0] selected_overlap;
       logic full_cover;
       logic partial_cover;
@@ -194,16 +189,14 @@ module rv_store_buffer #(
       logic [INDEX_WIDTH-1:0] selected_index;
 
       found = 1'b0;
-      selected_sequence = '0;
       selected_overlap = '0;
       full_cover = 1'b0;
       partial_cover = 1'b0;
       selected_data = '0;
       selected_index = '0;
 
-      // PROTOTYPE: balanced youngest-match reduction tree.  The previous
-      // ENTRIES-deep first/younger ripple sat directly on the
-      // LSQ candidate -> store buffer -> writeback -> issue path.
+      // Balanced youngest-FIFO-match reduction. The only age comparison at
+      // each node is a one-bit wrap-zone selection, not a sequence subtract.
       for (int unsigned level = 0; level <= QTREE_LEVELS; level++)
         for (int unsigned node = 0; node < QTREE_LEAVES; node++)
           qtree[lane][level][node] = '0;
@@ -214,7 +207,7 @@ module rv_store_buffer #(
             (address_q[leaf][PADDR_WIDTH-1:BANK_BIT] ==
              query_address_i[lane][PADDR_WIDTH-1:BANK_BIT]) &&
             ((mask_q[leaf] & query_mask_i[lane]) != '0);
-          qtree[lane][0][leaf].seq  = sequence_q[leaf];
+          qtree[lane][0][leaf].wrapped = INDEX_WIDTH'(leaf) < head_q;
           qtree[lane][0][leaf].ovl  = mask_q[leaf] & query_mask_i[lane];
           qtree[lane][0][leaf].data = data_q[leaf];
           qtree[lane][0][leaf].idx  = INDEX_WIDTH'(leaf);
@@ -228,7 +221,6 @@ module rv_store_buffer #(
                             qtree[lane][level-1][2*node+1]);
 
       found             = qtree[lane][QTREE_LEVELS][0].valid;
-      selected_sequence = qtree[lane][QTREE_LEVELS][0].seq;
       selected_overlap  = qtree[lane][QTREE_LEVELS][0].ovl;
       selected_data     = qtree[lane][QTREE_LEVELS][0].data;
       selected_index    = qtree[lane][QTREE_LEVELS][0].idx;
@@ -325,6 +317,46 @@ module rv_store_buffer #(
   end
 
 `ifndef SYNTHESIS
+  // Independent simulation oracle: scan the ring in FIFO age order rather
+  // than reusing the balanced selector's wrap-zone rule. No timestamp-range
+  // assumption is valid here: these stores have already retired from ROB.
+  always_ff @(posedge clk_i) begin : p_fifo_forwarding_invariants
+    if (rst_ni) begin
+      assert (count_q <= ENTRIES);
+      for (int unsigned age=0; age<ENTRIES; age++) begin
+        logic [INDEX_WIDTH-1:0] index;
+        index=head_q + INDEX_WIDTH'(age);
+        assert (valid_q[index] == (age < count_q));
+      end
+      for (int unsigned lane=0; lane<2; lane++) begin
+        logic hit;
+        logic [DATA_BYTES-1:0] overlap;
+        logic [DATA_WIDTH-1:0] value;
+        logic [INDEX_WIDTH-1:0] chosen;
+        hit=1'b0; overlap='0; value='0; chosen='0;
+        for (int unsigned age=0; age<ENTRIES; age++) begin
+          logic [INDEX_WIDTH-1:0] index;
+          index=head_q + INDEX_WIDTH'(age);
+          if (query_valid_i[lane] && valid_q[index] &&
+              address_q[index][PADDR_WIDTH-1:BANK_BIT] ==
+              query_address_i[lane][PADDR_WIDTH-1:BANK_BIT] &&
+              ((mask_q[index] & query_mask_i[lane]) != '0)) begin
+            hit=1'b1; overlap=mask_q[index] & query_mask_i[lane];
+            value=data_q[index]; chosen=index;
+          end
+        end
+        assert (query_full_cover_o[lane] ==
+                (hit && (overlap == query_mask_i[lane])));
+        assert (query_partial_o[lane] ==
+                (hit && (overlap != query_mask_i[lane])));
+        if (hit) begin
+          assert (query_index_o[lane] == chosen);
+          assert (query_data_o[lane] == value);
+        end
+      end
+    end
+  end
+
   property p_lane1_enqueue_requires_lane0;
     @(posedge clk_i) disable iff (!rst_ni)
       enq_valid_i[1] |-> enq_valid_i[0];

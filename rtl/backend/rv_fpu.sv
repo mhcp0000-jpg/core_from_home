@@ -71,10 +71,14 @@ module rv_fpu #(
   // wide signed accumulate.  That accumulate was the longest single datapath
   // in the fast pipe.
   localparam bit SPLIT_ALIGN = LATENCY >= 5;
-  localparam int unsigned PIPE_STAGES = SPLIT_ALIGN ? LATENCY - 3 :
-                                    (SPLIT_NORMALIZE ? LATENCY - 2 :
-                                           (SPLIT_PREPACK ? LATENCY - 1 :
-                                                   ((LATENCY < 1) ? 1 : LATENCY)));
+  // LATENCY6 splits product/exponent preparation from sticky barrel shifts.
+  // Additional latency above six is elastic result transport, not arithmetic.
+  localparam bit SPLIT_ALIGN_SHIFT = LATENCY >= 6;
+  localparam int unsigned PIPE_STAGES = SPLIT_ALIGN_SHIFT ? LATENCY - 4 :
+                                        (SPLIT_ALIGN ? LATENCY - 3 :
+                                         (SPLIT_NORMALIZE ? LATENCY - 2 :
+                                          (SPLIT_PREPACK ? LATENCY - 1 :
+                                           ((LATENCY < 1) ? 1 : LATENCY))));
   localparam logic [4:0] FFLAG_NX = 5'b00001;
   localparam logic [4:0] FFLAG_UF = 5'b00010;
   localparam logic [4:0] FFLAG_OF = 5'b00100;
@@ -112,6 +116,11 @@ module rv_fpu #(
     logic                 zy_zero;
     logic                 zy_sign;
   } fp_align_t;
+  typedef struct packed {
+    fp_align_t align;
+    logic signed [EXPW-1:0] shift_x;
+    logic signed [EXPW-1:0] shift_y;
+  } fp_align_seed_t;
 
   typedef struct packed {
     logic                direct_valid;
@@ -157,6 +166,11 @@ module rv_fpu #(
   exception_code_e align_exception_cause_q;
   logic [XLEN-1:0] align_exception_tval_q;
   fp_align_t align_calc_q;
+  logic seed_valid_q;
+  pipe_payload_t seed_metadata_q;
+  fp_align_seed_t seed_calc_q, request_seed;
+  fp_align_t seed_aligned;
+  logic seed_ready;
   logic norm_valid_q;
   logic [ROB_SEQ_WIDTH-1:0] norm_sequence_q;
   logic norm_destination_valid_q;
@@ -1571,6 +1585,55 @@ module rv_fpu #(
     return pre.direct;
   endfunction
 
+  // LATENCY>=6 gives multiplication/exponent preparation its own register
+  // before the 80-bit sticky barrel shifts. Preserve the original alignment
+  // helpers as the bit-exact LATENCY5 reference; replace their magnitude and
+  // sticky outputs UNCONDITIONALLY so seed hardware has no shift-data cone.
+  function automatic fp_align_seed_t prepare_align_seed(
+    input logic [31:0] instruction,
+    input logic [XLEN-1:0] a, b, c,
+    input logic [2:0] rm
+  );
+    fp_align_seed_t seed;
+    logic signed [EXPW-1:0] exponent_x, exponent_y;
+    seed = '0;
+    seed.align = execute_fp_align(instruction, a, b, c, rm);
+    seed.align.mag_x = '0;
+    seed.align.mag_y = '0;
+    seed.align.sticky = 1'b0;
+    exponent_x = '0;
+    exponent_y = '0;
+    if (seed.align.sum_pending) begin
+      if (instruction[6:0] == 7'b1010011) begin
+        exponent_x = fp_lsb_exponent_n(a[31:0]);
+        exponent_y = fp_lsb_exponent_n(b[31:0]);
+        seed.align.mag_x = {{(MAGW-24){1'b0}}, fp_mantissa(a[31:0])} << ALIGN_SH;
+        seed.align.mag_y = {{(MAGW-24){1'b0}}, fp_mantissa(b[31:0])} << ALIGN_SH;
+      end else begin
+        logic [47:0] product;
+        product = fp_mantissa(a[31:0]) * fp_mantissa(b[31:0]);
+        exponent_x = fp_lsb_exponent_n(a[31:0]) + fp_lsb_exponent_n(b[31:0]);
+        exponent_y = fp_lsb_exponent_n(c[31:0]);
+        seed.align.mag_x = {{(MAGW-48){1'b0}}, product} << ALIGN_SH;
+        seed.align.mag_y = {{(MAGW-24){1'b0}}, fp_mantissa(c[31:0])} << ALIGN_SH;
+      end
+      seed.shift_x = seed.align.common_exponent - exponent_x;
+      seed.shift_y = seed.align.common_exponent - exponent_y;
+    end
+    return seed;
+  endfunction
+
+  function automatic fp_align_t finish_align_seed(input fp_align_seed_t seed);
+    fp_align_t aligned;
+    aligned = seed.align;
+    if (aligned.sum_pending) begin
+      aligned.mag_x = right_shift_sticky(seed.align.mag_x, seed.shift_x);
+      aligned.mag_y = right_shift_sticky(seed.align.mag_y, seed.shift_y);
+      aligned.sticky = aligned.mag_x[0] || aligned.mag_y[0];
+    end
+    return aligned;
+  endfunction
+
   always @* begin
     effective_rm = (rounding_mode_i == 3'b111) ? frm_i : rounding_mode_i;
     request_illegal_rm = effective_rm > 3'b100;
@@ -1578,6 +1641,9 @@ module rv_fpu #(
                                      operand_c_i, effective_rm);
     request_align = execute_fp_align(instruction_i, operand_a_i, operand_b_i,
                                      operand_c_i, effective_rm);
+    request_seed = prepare_align_seed(instruction_i, operand_a_i, operand_b_i,
+                                     operand_c_i, effective_rm);
+    seed_aligned = finish_align_seed(seed_calc_q);
     align_pre_calc = fp_align_finish(align_calc_q);
 
     request_is_divide = (instruction_i[6:0] == 7'b1010011) &&
@@ -1691,7 +1757,9 @@ module rv_fpu #(
     pre_ready = !SPLIT_PREPACK || !pre_valid_q ||
                 (SPLIT_NORMALIZE ? norm_ready : stage_ready[0]);
     align_ready = !SPLIT_ALIGN || !align_valid_q || pre_ready;
-    fast_pipe_empty = (!SPLIT_ALIGN || !align_valid_q) &&
+    seed_ready = !SPLIT_ALIGN_SHIFT || !seed_valid_q || align_ready;
+    fast_pipe_empty = (!SPLIT_ALIGN_SHIFT || !seed_valid_q) &&
+                      (!SPLIT_ALIGN || !align_valid_q) &&
                       (!SPLIT_PREPACK || !pre_valid_q) &&
                       (!SPLIT_NORMALIZE || !norm_valid_q) && !(|valid_q);
     if (request_is_slow)
@@ -1700,8 +1768,9 @@ module rv_fpu #(
                         !slow_result_valid_q;
     else
       request_ready_o = !flush_valid_i &&
-                        (SPLIT_ALIGN ? align_ready :
-                         (SPLIT_PREPACK ? pre_ready : stage_ready[0])) &&
+                        (SPLIT_ALIGN_SHIFT ? seed_ready :
+                         (SPLIT_ALIGN ? align_ready :
+                          (SPLIT_PREPACK ? pre_ready : stage_ready[0]))) &&
                         (slow_state_q == SLOW_IDLE) &&
                         !slow_result_valid_q;
     request_accept = request_valid_i && request_ready_o;
@@ -1743,6 +1812,9 @@ module rv_fpu #(
       align_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
       align_exception_tval_q <= '0;
       align_calc_q <= '0;
+      seed_valid_q <= 1'b0;
+      seed_metadata_q <= '0;
+      seed_calc_q <= '0;
       norm_valid_q <= 1'b0;
       norm_sequence_q <= '0;
       norm_destination_valid_q <= 1'b0;
@@ -1772,6 +1844,9 @@ module rv_fpu #(
       for (integer stage = 0; stage < PIPE_STAGES; stage++)
         payload_q[stage] <= '0;
     end else if (flush_valid_i) begin
+      if (SPLIT_ALIGN_SHIFT && seed_valid_q &&
+          killed_by_flush(seed_metadata_q.sequence_id))
+        seed_valid_q <= 1'b0;
       if (SPLIT_ALIGN && align_valid_q && killed_by_flush(align_sequence_q))
         align_valid_q <= 1'b0;
       if (SPLIT_PREPACK && pre_valid_q && killed_by_flush(pre_sequence_q))
@@ -1879,8 +1954,17 @@ module rv_fpu #(
       end
 
       if (SPLIT_ALIGN && align_ready) begin
-        align_valid_q <= fast_request_accept;
-        if (fast_request_accept) begin
+        align_valid_q <= SPLIT_ALIGN_SHIFT ? seed_valid_q : fast_request_accept;
+        if (SPLIT_ALIGN_SHIFT && seed_valid_q) begin
+          align_sequence_q <= seed_metadata_q.sequence_id;
+          align_destination_valid_q <= seed_metadata_q.destination_valid;
+          align_destination_class_q <= seed_metadata_q.destination_class;
+          align_destination_phys_q <= seed_metadata_q.destination_phys;
+          align_exception_valid_q <= seed_metadata_q.exception_valid;
+          align_exception_cause_q <= seed_metadata_q.exception_cause;
+          align_exception_tval_q <= seed_metadata_q.exception_tval;
+          align_calc_q <= seed_aligned;
+        end else if (!SPLIT_ALIGN_SHIFT && fast_request_accept) begin
           align_sequence_q <= sequence_i;
           align_destination_valid_q <= destination_valid_i;
           align_destination_class_q <= destination_class_i;
@@ -1889,6 +1973,20 @@ module rv_fpu #(
           align_exception_cause_q <= EXC_ILLEGAL_INSTRUCTION;
           align_exception_tval_q <= XLEN'(instruction_i);
           align_calc_q <= request_align;
+        end
+      end
+      if (SPLIT_ALIGN_SHIFT && seed_ready) begin
+        seed_valid_q <= fast_request_accept;
+        if (fast_request_accept) begin
+          seed_metadata_q <= '0;
+          seed_metadata_q.sequence_id <= sequence_i;
+          seed_metadata_q.destination_valid <= destination_valid_i;
+          seed_metadata_q.destination_class <= destination_class_i;
+          seed_metadata_q.destination_phys <= destination_phys_i;
+          seed_metadata_q.exception_valid <= request_illegal_rm;
+          seed_metadata_q.exception_cause <= EXC_ILLEGAL_INSTRUCTION;
+          seed_metadata_q.exception_tval <= XLEN'(instruction_i);
+          seed_calc_q <= request_seed;
         end
       end
 

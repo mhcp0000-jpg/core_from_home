@@ -1,4 +1,4 @@
-module rv_fpu_tb;
+module rv_fpu_tb #(parameter int unsigned FpuLatency=2);
   import rv_ooo_pkg::*;
 
   logic clk, rst_n;
@@ -30,7 +30,7 @@ module rv_fpu_tb;
     return {5'd3, 2'b00, 5'd2, 5'd1, 3'b000, 5'd4, opcode};
   endfunction
 
-  rv_fpu #(.XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(2)) u_dut (
+  rv_fpu #(.XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(FpuLatency)) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .request_valid_i(request_valid),
     .request_ready_o(request_ready), .instruction_i(instruction),
     .operand_a_i(operand_a), .operand_b_i(operand_b), .operand_c_i(operand_c),
@@ -188,7 +188,7 @@ module rv_fpu_tb;
     issue_and_expect(fp_op(7'h00, 2, 7), 32'h3f80_0000, 32'h4000_0000, 0,
                      3'b111, 3'b101, 0, 0, 1'b1, REG_FP); // reserved dynamic rm
 
-    // Fill the two-stage elastic pipe with back-to-back, distinct payloads.
+    // Fill every elastic stage with back-to-back, distinct payloads.
     // Hold WB ready low: both data and identity must remain stable.
     result_ready = 0;
     destination_class = REG_FP;
@@ -203,6 +203,13 @@ module rv_fpu_tb;
     #1;
     if (!request_ready) $fatal(1, "FPU cannot accept back-to-back request");
     @(posedge clk); @(negedge clk);
+    for (int stage=2; stage<FpuLatency; stage++) begin
+      sequence_id=8'(8'hfe+stage);
+      operand_a=32'(stage); destination_phys=7'(42+stage);
+      #1;
+      if (!request_ready) $fatal(1,"FPU full before configured capacity stage=%0d latency=%0d",stage,FpuLatency);
+      @(posedge clk); @(negedge clk);
+    end
     request_valid = 0;
     repeat (4) begin
       #1;
@@ -221,7 +228,7 @@ module rv_fpu_tb;
       $fatal(1, "Selective flush killed older FPU result");
     result_ready = 1;
     @(posedge clk); @(negedge clk);
-    repeat (3) begin
+    repeat (FpuLatency+1) begin
       #1;
       if (result_valid) $fatal(1, "Flushed FPU result leaked or old result duplicated");
       @(posedge clk); @(negedge clk);
@@ -247,13 +254,36 @@ module rv_fpu_tb;
     request_valid = 0; flush_valid = 1; flush_all = 1;
     @(posedge clk); @(negedge clk);
     flush_valid = 0; flush_all = 0; result_ready = 1;
-    repeat (3) begin
+    repeat (FpuLatency+1) begin
       #1;
       if (result_valid) $fatal(1, "FPU full-flush leaked a result");
       @(posedge clk); @(negedge clk);
     end
     issue_and_expect(fp_op(7'h00, 2, 0), 32'h3f800000, 32'h40000000, 0,
                      0, 0, 32'h40400000, 0, 0, REG_FP);
+    // DIV cannot overtake any fast stage, including the new seed stage.
+    result_ready=0; instruction=fp_op(7'h78,0,0);
+    sequence_id=8'h30; operand_a=32'h12345678;
+    rounding_mode=0; destination_class=REG_FP; request_valid=1;
+    do @(posedge clk); while (!request_ready);
+    @(negedge clk);
+    instruction=fp_op(7'h0c,2,0); sequence_id=8'h31;
+    operand_a=32'h40c00000; operand_b=32'h40000000; // 6/2=3
+    repeat (FpuLatency+2) begin
+      #1;
+      if (request_ready) $fatal(1,"DIV accepted before stalled fast operation drained");
+      @(posedge clk); @(negedge clk);
+    end
+    if (!result_valid || result_sequence!==8'h30 || result_data!==32'h12345678)
+      $fatal(1,"Fast operation lost while DIV waited");
+    result_ready=1;
+    @(posedge clk); @(negedge clk);
+    do @(posedge clk); while (!request_ready);
+    @(negedge clk); request_valid=0;
+    do @(posedge clk); while (!result_valid);
+    if (result_sequence!==8'h31 || result_data!==32'h40400000 || result_fflags!==0 || result_exception_valid)
+      $fatal(1,"DIV restart after fast pipeline drain failed");
+    @(negedge clk);
     $display("FPU transport: back-to-back, stall stability, selective/wrap/full flush and restart PASS");
     $display("rv_fpu_tb PASS");
     $finish;

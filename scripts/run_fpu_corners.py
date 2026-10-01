@@ -16,10 +16,14 @@ def main():
     parser.add_argument("--verilator", default="verilator")
     parser.add_argument("--make", default="make")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--latency", type=int, default=5,
+                        help="FPU fast pipeline stages (>=6 splits alignment shifts)")
     parser.add_argument("--output", type=Path, default=Path("out/fpu_corners"))
     parser.add_argument("--seed", default="0x20260910")
     parser.add_argument("--random-per-op-rm", type=int, default=1024)
     args = parser.parse_args()
+    if args.latency < 1:
+        parser.error("--latency must be positive")
     # Keep a Windows ASCII subst path instead of resolving it to a Unicode
     # physical path that some native toolchain subprocesses cannot encode.
     root = Path(os.path.abspath(__file__)).parent.parent
@@ -49,7 +53,8 @@ def main():
                      "--corners", "--seed", args.seed, "--random-per-op-rm",
                      args.random_per_op_rm, "--output", vectors])
     if args.simulator == "iverilog":
-        run("compile", [args.iverilog, "-g2012", "-s", "rv_fpu_diff_tb", "-o",
+        run("compile", [args.iverilog, "-g2012", "-s", "rv_fpu_diff_tb",
+                        f"-Prv_fpu_diff_tb.FpuLatency={args.latency}", "-o",
                         executable_arg, "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_fpu.sv",
                         "tb/unit/backend/rv_fpu_diff_tb.sv"])
         simulation = [args.vvp, executable_arg]
@@ -57,11 +62,13 @@ def main():
         build = output / "verilator"
         run("compile", [args.verilator, "--cc", "--exe", "--main", "--timing",
                         "--assert", "--output-split", "2000", "-Wno-fatal",
-                        "--top-module", "rv_fpu_diff_tb", "--Mdir", build.as_posix(),
+                        "--top-module", "rv_fpu_diff_tb",
+                        f"-GFpuLatency={args.latency}", "--Mdir", build.as_posix(),
                         "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_fpu.sv",
                         "tb/unit/backend/rv_fpu_diff_tb.sv"])
         run("build", [args.make, "-j", args.jobs, "-C", build.as_posix(),
-                      "-f", "Vrv_fpu_diff_tb.mk", "CXX=g++", "CC=gcc", "LINK=g++"])
+                      "-f", "Vrv_fpu_diff_tb.mk", "CXX=g++", "CC=gcc", "LINK=g++",
+                      "VM_PARALLEL_BUILDS=1"])
         simulation = [build / ("Vrv_fpu_diff_tb.exe" if os.name == "nt" else "Vrv_fpu_diff_tb")]
     for mode in ("static", "dynamic"):
         command = simulation + [f"+fpu_vectors={vector_arg}"]

@@ -731,6 +731,83 @@ module rv_lsq_tb #(parameter bit EarlyLoadSelect = 1'b0,
       end
       $display("LSQ preview withheld-update/access-fault safety PASS");
     end
+    // Three addressed younger loads rotate through two blocked candidates.
+    // When an older store resolves, any request that becomes visible under
+    // backpressure must remain stable: stale blocked_q is NOT permission to
+    // replace an already-presented valid request with the third identity.
+    begin : p_resolved_store_backpressure
+      logic [LQ_INDEX_WIDTH-1:0] second,third;
+      logic [1:0] held_valid;
+      logic [1:0][LQ_INDEX_WIDTH-1:0] held_index;
+      logic [1:0][7:0] held_sequence;
+      logic [1:0][31:0] held_address;
+      logic [3:0] issued;
+      reset_dut();
+      agu_exception_valid='0;
+      agu_address_valid='0;
+      agu_store_data_valid='0;
+      agu_lq_valid='0;
+      agu_sq_valid='0;
+      dispatch_store_load(8'd110,8'd111);
+      dispatch_single_load(8'd112); second=saved_lq1;
+      dispatch_single_load(8'd113); third=saved_lq1;
+      update_store_load(8'd110,8'd111,1'b0,1'b0,64'h1234);
+      saved_lq1=second; update_single_load(8'd112);
+      saved_lq1=third; update_single_load(8'd113);
+      repeat(4) begin @(posedge clk); @(negedge clk); end
+      if (|load_candidate_valid)
+        $fatal(1,"Unknown older store did not stall all three loads");
+      agu_valid=2'b01;
+      agu_sq_valid=2'b01;
+      agu_sq_index[0]=saved_sq0;
+      agu_lq_valid='0;
+      agu_sequence[0]=8'd110;
+      agu_address[0]=32'h8002_1000; // distinct from every load address
+      agu_address_valid=2'b01;
+      agu_store_data_valid=2'b01;
+      agu_mask[0]=8'h0f;
+      agu_store_data[0]=64'h1234;
+      @(posedge clk); @(negedge clk);
+      agu_valid='0;
+      agu_sq_valid='0;
+      #1;
+      held_valid=load_candidate_valid & load_memory_read;
+      held_index=load_candidate_index;
+      held_sequence=load_candidate_sequence;
+      held_address=load_candidate_address;
+      if (!(|held_valid))
+        $fatal(1,"Resolved non-aliasing store left every load blocked");
+      repeat(3) begin
+        @(posedge clk); @(negedge clk); #1;
+        for (int lane=0; lane<2; lane++)
+          if (held_valid[lane] &&
+              (!load_candidate_valid[lane] || !load_memory_read[lane] ||
+               load_candidate_index[lane]!=held_index[lane] ||
+               load_candidate_sequence[lane]!=held_sequence[lane] ||
+               load_candidate_address[lane]!=held_address[lane]))
+            $fatal(1,"Resolved-store request changed while ready=0 lane=%0d old=%0d new=%0d",
+                   lane,held_sequence[lane],load_candidate_sequence[lane]);
+      end
+      // Release the requests and check one issue per LQ owner, including
+      // the displaced candidate. An expired registered candidate must not
+      // issue twice while waiting for its replacement identity.
+      issued='0;
+      load_candidate_ready=2'b11;
+      repeat(12) begin
+        #1;
+        for (int lane=0; lane<2; lane++)
+          if (load_candidate_valid[lane] && load_memory_read[lane]) begin
+            if (issued[load_candidate_index[lane]])
+              $fatal(1,"Candidate load issued twice after release");
+            issued[load_candidate_index[lane]]=1'b1;
+          end
+        @(posedge clk); @(negedge clk);
+      end
+      load_candidate_ready='0;
+      if ($countones(issued)!=3)
+        $fatal(1,"Expected all three loads to progress exactly once: %b",issued);
+      $display("LSQ resolved older-store / competing-candidate backpressure PASS");
+    end
     $display("rv_lsq_tb PASS");
     $finish;
   end

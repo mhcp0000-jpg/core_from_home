@@ -193,6 +193,19 @@ foreach ($early in @(0, 1)) {
     "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_lsq.sv", "tb/unit/backend/rv_lsq_tb.sv") }
 }
 
+# Exercise actual arithmetic-stage boundaries, not just the compact unit pipe.
+foreach ($latency in @(2, 5, 6)) {
+  $tests += @{ Top = "rv_fpu_tb"; ParameterArgs = @("-GFpuLatency=$latency"); Files = @(
+    "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_fpu.sv", "tb/unit/backend/rv_fpu_tb.sv") }
+}
+foreach ($width in @(32, 64)) {
+  $tests += @{ Top = "rv_pmp_tb"; ParameterArgs = @("-GPADDR_WIDTH=$width"); Files = @(
+    "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_pmp.sv", "tb/unit/backend/rv_pmp_tb.sv") }
+  $tests += @{ Top = "rv_exec_result_buffer_depth2_tb"; ParameterArgs = @("-GXLEN=$width"); Files = @(
+    "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_exec_result_buffer.sv",
+    "tb/unit/backend/rv_exec_result_buffer_depth2_tb.sv") }
+}
+
 try {
   & subst $drive $repoRoot
   if ($LASTEXITCODE -ne 0) { throw "Failed to map $repoRoot to $drive." }

@@ -1,4 +1,4 @@
-module rv_fpu_diff_tb;
+module rv_fpu_diff_tb #(parameter int unsigned FpuLatency=5);
   import rv_ooo_pkg::*;
 
   logic clk, rst_n;
@@ -81,7 +81,7 @@ module rv_fpu_diff_tb;
   endfunction
 
   rv_fpu #(
-    .XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(5)
+    .XLEN(32), .ROB_SEQ_WIDTH(8), .PHYS_TAG_WIDTH(7), .LATENCY(FpuLatency)
   ) u_dut (
     .clk_i(clk), .rst_ni(rst_n),
     .request_valid_i(request_valid), .request_ready_o(request_ready),

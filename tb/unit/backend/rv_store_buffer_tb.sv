@@ -126,6 +126,21 @@ module rv_store_buffer_tb;
     enq_valid = '0;
   endtask
 
+  task automatic drain_one;
+    #1;
+    if (!drain_valid[0]) $fatal(1,"Expected FIFO head to drain");
+    saved_index0=drain_index[0];
+    drain_ready=2'b01;
+    @(posedge clk); @(negedge clk);
+    drain_ready='0;
+    drain_rsp_index[0]=saved_index0;
+    drain_rsp_resp[0]=2'b00;
+    drain_rsp_valid=2'b01;
+    @(posedge clk); @(negedge clk);
+    drain_rsp_valid='0;
+    @(posedge clk); @(negedge clk);
+  endtask
+
   initial begin : p_store_buffer_test
     clk = 1'b0;
     rst_n = 1'b0;
@@ -249,6 +264,54 @@ module rv_store_buffer_tb;
     if (!machine_check)
       $fatal(1, "Post-commit store error did not set machine check");
 
+    // Committed stores may be separated by more than half the ROB sequence
+    // space while the oldest bus transaction is backpressured. They remain
+    // ordered by FIFO insertion, not by a modular timestamp comparison.
+    reset_dut();
+    enqueue_one(8'd10,32'h8002_0040,64'h11111111,8'h0f,1'b0);
+    enqueue_one(8'd210,32'h8002_0040,64'h22222222,8'h0f,1'b0);
+    query_valid=2'b01; query_address[0]=32'h8002_0040; query_mask[0]=8'h0f;
+    #1;
+    if (!query_full_cover[0] || query_partial[0] || query_data[0]!==64'h22222222)
+      $fatal(1,"Committed-store age gap chose stale data: got=%h expected=22222222",query_data[0]);
+    $display("Store buffer forwarding across half-sequence-space gap PASS");
+
+    // No timestamp ordering is possible after a full sequence wrap either.
+    // Reusing the same timestamp must still select the later FIFO insertion.
+    enqueue_one(8'd10,32'h8002_0040,64'h33333333,8'h0f,1'b0);
+    #1;
+    if (!query_full_cover[0] || query_data[0]!==64'h33333333)
+      $fatal(1,"Equal timestamps selected stale committed data");
+
+    // Rotate the FIFO through every physical head position. Test both the
+    // below-head/above-head wrap-zone winner and the same-zone right winner.
+    for (int unsigned head_position=0; head_position<4; head_position++) begin
+      reset_dut();
+      for (int unsigned step=0; step<head_position; step++) begin
+        enqueue_one(8'(step),32'h8002_0080,64'(step),8'h0f,1'b0);
+        drain_one();
+        if (!empty) $fatal(1,"FIFO rotation did not empty buffer");
+      end
+      for (int unsigned entry=0; entry<4; entry++)
+        enqueue_one(8'(10+200*entry),32'h8002_0040,64'(entry+1),8'h0f,1'b0);
+      query_valid=2'b11;
+      query_address[0]=32'h8002_0040; query_address[1]=32'h8002_0040;
+      query_mask[0]=8'h0f; query_mask[1]=8'h03;
+      #1;
+      if (query_full_cover!==2'b11 || query_partial!==2'b00 ||
+          query_data[0]!==64'd4 || query_data[1]!==64'd4)
+        $fatal(1,"FIFO wrap forwarding failed at head=%0d",head_position);
+      // Removing older entries cannot change the youngest selected data.
+      repeat(3) begin
+        drain_one(); #1;
+        if (!query_full_cover[0] || query_data[0]!==64'd4)
+          $fatal(1,"FIFO head pop disturbed youngest data");
+      end
+      drain_one(); #1;
+      if (!empty || (|query_full_cover) || (|query_partial))
+        $fatal(1,"Empty FIFO still reported forwarding");
+    end
+    $display("Store buffer FIFO physical wrap, timestamp wrap and dual-query PASS");
     $display("rv_store_buffer_tb PASS");
     $finish;
   end

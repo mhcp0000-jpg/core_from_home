@@ -62,7 +62,7 @@ module rv_pmp #(
         2'b10: begin // NA4
           region_low_decoded[entry] = {1'b0, entry_addr, 2'b00};
           region_high_decoded[entry] = region_low_decoded[entry] +
-                                       (PADDR_WIDTH+1)'(4);
+                                           (PADDR_WIDTH+1)'(4);
         end
         2'b11: begin // NAPOT
           if (&entry_addr[PMP_ADDR_WIDTH-2:0]) begin
@@ -72,10 +72,8 @@ module rv_pmp #(
           end else begin
             region_low_decoded[entry] = {1'b0,
               (entry_addr & ~napot_low_mask), 2'b00};
-            // N trailing ones encode 2^(N+3) bytes. Set N+1 low bits
-            // of the encoded address, increment, then restore byte units.
-            // This is base+size including carry, never base OR size, and
-            // avoids a 32-bit trailing-one counter/dynamic size-bit decoder.
+            // N trailing ones encode 2^(N+3) bytes. Preserve the exclusive
+            // bound, including carry at the physical address-space end.
             napot_encoded_high = {1'b0,
               (entry_addr | ((napot_low_mask << 1) | PMP_ADDR_WIDTH'(1)))} +
               (PMP_ADDR_WIDTH+1)'(1);
@@ -88,22 +86,26 @@ module rv_pmp #(
     end
   end
 
-  // PMP regions and accesses use an exclusive upper bound with one extra bit
-  // so a region ending exactly at 2**PADDR_WIDTH is representable.
+  // All regions and accesses retain exclusive high bounds. One extra bit
+  // represents exactly 2**PADDR_WIDTH and detects physical-address wrap.
   always_comb begin : p_lookup
     allow_o = '0;
     matched_o = '0;
     fault_address_o = check_address_i;
 
     for (int unsigned port = 0; port < CHECK_PORTS; port++) begin
-      logic selected;
+      logic [PMP_ENTRIES-1:0] overlap_vector;
+      logic [PMP_ENTRIES-1:0] deny_vector;
+      logic [PMP_ENTRIES-1:0] first_match_vector;
       logic [PADDR_WIDTH:0] access_low;
       logic [PADDR_WIDTH:0] access_high;
       logic [PADDR_WIDTH:0] access_bytes;
       logic [PADDR_WIDTH:0] address_space_end;
       logic access_in_range;
 
-      selected = 1'b0;
+      overlap_vector = '0;
+      deny_vector = '0;
+      first_match_vector = '0;
       access_low = {1'b0, check_address_i[port]};
       access_bytes = '0;
       if (check_size_i[port] <= PADDR_WIDTH)
@@ -124,7 +126,6 @@ module rv_pmp #(
         logic overlaps;
         logic full_match;
         logic permissions_ok;
-
         overlaps = (entry_mode_decoded[entry] != 2'b00) &&
                    (access_low < region_high_decoded[entry]) &&
                    (access_high > region_low_decoded[entry]);
@@ -137,18 +138,26 @@ module rv_pmp #(
            3'b000) &&
           !(entry_cfg_decoded[entry][1] && !entry_cfg_decoded[entry][0]);
 
-        if (check_valid_i[port] && !selected && overlaps) begin
-          selected = 1'b1;
-          matched_o[port] = 1'b1;
-          if (!full_match)
-            allow_o[port] = 1'b0;
-          else if ((check_privilege_i[port] == PRIV_M) &&
-                   !entry_cfg_decoded[entry][7])
-            allow_o[port] = 1'b1;
-          else
-            allow_o[port] = permissions_ok;
-        end
+        overlap_vector[entry] = overlaps;
+        deny_vector[entry] = !full_match ||
+          (!((check_privilege_i[port] == PRIV_M) &&
+             !entry_cfg_decoded[entry][7]) && !permissions_ok);
       end
+
+      // Compare every entry in parallel, then qualify the lowest-index
+      // overlap with a prefix reduction. Do not chain full-match/permission
+      // muxes across the entries: a late address decode must reach only the
+      // winning entry's decision, not every subsequent priority mux.
+      for (int unsigned entry = 0; entry < PMP_ENTRIES; entry++) begin
+        logic earlier_overlap;
+        earlier_overlap = 1'b0;
+        for (int unsigned earlier = 0; earlier < entry; earlier++)
+          earlier_overlap |= overlap_vector[earlier];
+        first_match_vector[entry] = overlap_vector[entry] && !earlier_overlap;
+      end
+      matched_o[port] = |overlap_vector;
+      if (|overlap_vector)
+        allow_o[port] = !(|(first_match_vector & deny_vector));
 
       if (!check_valid_i[port]) begin
         allow_o[port] = 1'b1;

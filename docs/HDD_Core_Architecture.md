@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.17 frontend refill-address isolation / balanced FPU / PMP NAPOT fix; server STA pending (2026-10-01) |
+| 상태 | v1.18.18 FIFO-age SB forwarding / parallel PMP priority / verification hardening; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -2099,10 +2099,51 @@ device load/store는 ROB head, SB empty, 다른 load outstanding 0인 때 한 �
 | enqueue | `enq_valid_i[1:0]/enq_ready_o[1:0]`, lane별 sequence/address/data/mask/size/device | dual commit prefix를 FIFO tail에 원자 추가 |
 | drain | `drain_valid_o[1:0]/drain_ready_i[1:0]`, lane별 SB index와 memory payload | head부터 최대 2개; device 또는 같은-bank/overlap은 한 건 |
 | response | `drain_rsp_valid_i[1:0]`, SB index, resp; `drain_rsp_ready_o[1:0]` | trusted normal-memory write는 OKAY에서 제거; 예상 밖 post-retire error는 sticky machine-check |
-| forwarding query | `query_valid_i[1:0]`, address/mask; lane별 `query_full_cover/partial/forward_data/forward_index_o` | FIFO에서 youngest matching committed entry 선택 |
+| forwarding query | `query_valid_i[1:0]`, address/mask; lane별 `query_full_cover_o/query_partial_o/query_data_o/query_index_o` | FIFO에서 youngest matching committed entry 선택 |
 | status | `empty_o/full_o/count_o`, `head_sequence_o`, `device_pending_o` | fence/interrupt/device serialization에 사용 |
 
 store buffer entry는 alignment/PMP/PMA/decode가 모두 성공한 trusted normal-memory store가 architectural commit한 이후 상태이므로 branch/exception flush로 제거하지 않는다. 두 drain을 같은 cycle 허용하려면 둘 다 normal memory이고 주소 byte range가 겹치지 않으며 D-Fabric target bank가 달라야 한다. 그 외에는 FIFO head 한 건만 내보낸다. write response 전 entry와 payload를 유지하며 같은 SB index를 재사용하지 않는다.
+
+**Committed store의 age는 ROB timestamp가 아니라 FIFO 삽입 순서다.** 현재
+`ROB_SEQ_WIDTH=8`이며 live ROB/LSQ window에는 signed modular age 비교가 성립한다.
+그러나 이미 retire한 SB store는 그 window 밖이다. 버스 backpressure 동안 arithmetic
+instruction이 계속 retire하면 두 SB store의 sequence 간격이128 이상 또는 전체256
+wrap이 될 수 있다. 따라서 SB query는 `sequence_after()`로 비교하지 않는다.
+sequence field는 drain/debug identity로만 유지한다. 모든 SB entry는 아직 retire하지
+않은 load보다 older이고, matching SQ store는 모든 SB store보다 younger다.
+
+16-entry query는4-level balanced tree다. 각 leaf에 `wrapped=(index < head_q)`
+한 bit를 붙인다. physical index가 head 이상인 영역이 먼저 삽입된 older 영역이고,
+head 미만 영역은 wrap 뒤에 삽입된 younger 영역이다. 매 node의 left subtree index는
+모두 right subtree보다 작다. 둘 다 hit이면 `left.wrapped && !right.wrapped`인 경우
+left를 선택하고, 나머지는 right를 선택한다. 한쪽만 hit이면 그쪽을 선택한다.
+이 규칙은 sequence subtract를 제거하며 추가 pipeline cycle 없이 FIFO age를 보존한다.
+
+예를 들어4-entry FIFO가 full이고 head=2이면 다음 순서다.
+
+| Physical index | Head-relative FIFO age | wrapped | 모두 같은 beat에 hit일 때 |
+|---|---:|---:|---|
+| 2 | 0, oldest | 0 | 먼저 비교되지만 뒤 store가 우선 |
+| 3 | 1 | 0 | index2보다 younger |
+| 0 | 2 | 1 | index2/3보다 younger |
+| 1 | 3, youngest | 1 | 최종 forwarding source |
+
+선택한 **단일 youngest overlapping entry**가 load mask 전체를 덮으면 full-cover
+forwarding이다. 일부만 덮으면 partial/stall이며 여러 store의 byte를 합성하지 않는다.
+query 두 lane은 독립적이고 같은 source를 동시에 선택할 수 있다. query는 edge 전
+resident 상태를 본다. 그 edge에서 enqueue/pop이 발생하면 edge 후 새 FIFO 상태로
+다시 계산된다. sent/done entry도 실제 head pop 전에는 forwarding 대상이다.
+branch flush는 committed SB를 지우지 않으며 fence/device serialization은 empty를
+기다린다. reset은 entry/metadata/head/tail/count/machine-check를 모두 초기화한다.
+
+검증은 half-space gap(10→210), 같은 timestamp의 재사용, 네 head 위치의 full FIFO
+wrap, dual query, partial overlap, response+enqueue, head pop을 포함한다. simulation
+assertion은 valid ring의 count 일치와 independent head→tail scan의 data/index/full/
+partial 결과를 매 clock 확인한다. `scripts/check_store_buffer_forwarding.py`는 실제
+query RTL cone을 추출하여 독립 FIFO scan과 비교한다. ENTRIES2/4/8은 unconstrained
+head를, ENTRIES16은16개 head partition 전체를 증명한다. address/mask/data/valid와
+두 query는 모두 unconstrained이며 no-hit data/index만 don't-care다. 이는 query의
+조합 증명이지 FIFO state transition/AXI protocol 전체의 formal sign-off가 아니다.
 
 SLVERR/DECERR가 architecturally 가능한 device/external store는 store buffer에 넣지 않는다. LSQ가 ROB head에서 direct non-speculative write를 발행하고 B/local response가 OKAY일 때만 store를 retire한다. error이면 store를 retire하지 않고 `EXC_STORE_ACCESS_FAULT`로 trap한다. 이미 retire한 trusted DTIM store의 예상 밖 SRAM/fabric error는 precise rollback이 불가능하므로 별도 sticky machine-check이며, baseline directed tests에서는 발생시키지 않는다.
 
@@ -2120,7 +2161,25 @@ baseline은 한 operation만 보관하는 radix-2 iterative unit이며 새 reque
 
 FADD/FSUB/FMA의 exact-zero 결과 부호는 IEEE-754 규칙을 따른다. 유효 부호가 같은 두 zero 항의 합은 해당 부호를 보존하므로 `+0 + +0`은 RDN에서도 `+0`, `-0 + -0`은 모든 rounding mode에서 `-0`다. 부호가 다른 zero 항 또는 non-zero magnitude의 exact cancellation은 RDN에서만 `-0`이고 나머지 rounding mode에서는 `+0`다. 이 규칙은 magnitude가 0이라는 사실만으로 부호를 RDN에 고정하지 않고 operand의 zero/sign metadata를 함께 사용한다.
 
-현재 arithmetic 구현은 구조·ISA 검증을 위한 synthesizable integer/bit-level fast datapath, 4-stage elastic transport, 88-step FDIV와 64-step FSQRT recurrence다. 기본 `LATENCY=4`에서 첫 경계는 decode/special-case 판정과 mantissa product 또는 exponent align/signed accumulate 결과를 `fp_precalc_t`에 저장한다. 둘째 경계는 leading-one 탐색, normalize 및 sticky shift 결과를 `fp_normalized_t`에 저장한다. 다음 round/pack 결과는 elastic result pipe로 들어가 writeback backpressure를 흡수한다. accept-to-result latency는 4 edge이고 처리율은 1 uop/cycle이다. `LATENCY=3`은 normalize와 round/pack을 합친 호환 경로이며 `LATENCY=1/2`는 소형 단위시험용 unsplit 경로다. flush는 precalc, normalized 및 모든 result stage를 같은 ROB sequence age 규칙으로 제거한다. 일반 finite FDIV result는 accept 후 약 89 edge, FSQRT는 약 65 edge 뒤 visible하며 special case는 accept 직후 slow result register에서 visible하다. 상용 PPA 단계에서는 외부 interface와 ROB precise-flag 계약을 유지하면서 fully-pipelined FMA, misc pipe, 독립 request/result queue가 있는 divsqrt cluster로 분할한다. 초기 `FLEN=32` PRF는 32-bit만 저장하며 FLEN 확장 때 NaN-boxing을 추가한다.
+현재 arithmetic은 synthesizable integer/bit-level datapath다. `MAGW=80`, `ALIGN_SH=32`이며 balanced highest-bit tree와 sliced accumulation을 사용한다. standalone 기본 `LATENCY=4`는 arithmetic/precalc → normalize/sticky → round/pack → elastic result transport로 구성한다. 기존 코어 checkpoint는 `LATENCY=5`로 multiply/alignment와 accumulation 사이에도 register를 둔다. `LATENCY=3`은 normalize/pack을 합치고 `LATENCY=1/2`는 소형 시험용 unsplit 경로다. 정상 fast throughput은 1 uop/cycle이며 stall이 없을 때의 stage 수는 `LATENCY`다.
+
+추가 timing 후보 `LATENCY>=6`는 `prepare_align_seed`와 `finish_align_seed` 사이를 실제 register로 분할한다. seed에는 special/direct precalc, 부호/zero/RM/common-exponent metadata, 아직 이동시키지 않은 두 80-bit magnitude와 signed shift count를 저장한다. FMA의 24×24 product와 exponent 준비를 먼저 끝내고, 다음 stage에서 sticky barrel shift를 수행한다. 단순히 완성된 결과 뒤에 delay FF를 붙인 변경이 아니다. special/direct operation은 `sum_pending=0`으로 arithmetic을 우회하지만 동일한 elastic stage와 identity 경로를 따른다. `LATENCY>6`의 추가 stage는 result transport다. 코어 적용 후보의 채택/전체 timing 상태는 아래 checkpoint 기록을 따른다.
+
+`LATENCY=6`, output ready=1, flush=0의 예시는 다음과 같다. C0는 request handshake가 일어난 edge이며 register 값은 각 edge **직후** 상태다.
+
+| Edge | 같은 instruction이 저장되는 상태 | 다음 단계가 사용하는 값 |
+|---|---|---|
+| C0 | `seed_calc_q`, `seed_metadata_q`, `seed_valid_q` | raw magnitude/product, shift count, sequence/destination/exception |
+| C1 | `align_calc_q`, `align_*_q` | sticky-shift된 magnitude와 부호/RM |
+| C2 | `pre_calc_q`, `pre_*_q` | signed accumulation/direct result |
+| C3 | `norm_calc_q`, `norm_*_q` | leading-bit/normalized magnitude, guard/sticky |
+| C4 | `payload_q[0]`, `valid_q[0]` | rounded data/fflags와 전체 identity |
+| C5 | `payload_q[1]`, `valid_q[1]`, result visible | writeback로 전달할 stable payload |
+| C6 | ready=1이면 result handshake | 뒤 instruction도 매 edge 연속 출력 가능 |
+
+이 표는 accept edge를 포함한 6개의 저장 경계를 명시한다. output ready=0이면 마지막 payload를 유지하고, elastic ready가 앞 단계까지 전달되어 full 상태에서는 새 request를 받지 않는다. synchronous reset은 모든 stage valid/metadata/data를 초기화한다. selective flush는 각 stage의 modular sequence age로 younger instruction만 제거하고 full flush는 모든 stage를 비운다. 새 seed stage도 fast-pipe-empty 판정에 포함하므로 DIV/SQRT가 이를 추월할 수 없다.
+
+현재 iterative FDIV는 `DIV_NUMW=25+28=53`회의 radix-2 recurrence, FSQRT는 `SQRT_ITERS=29`회의 recurrence와 각각 1회의 pack edge를 사용한다. 일반 finite result는 accept edge 이후 FDIV 54, FSQRT 30개의 추가 edge 뒤 visible하고 special result는 accept 직후 slow result register에 저장된다. 앞선 문서의 88/64 recurrence 수치는 현재 RTL에 해당하지 않는다. slow busy/result-valid 동안 모든 FP request를 backpressure한다. FP flag는 ROB commit에서만 architectural FCSR에 누적한다. 향후 fully-pipelined FMA/misc/divsqrt cluster로 분리하더라도 interface와 precise flag 계약은 유지한다. 초기 `FLEN=32` PRF는 32-bit만 저장하며 FLEN 확장 때 NaN-boxing을 추가한다.
 
 ### 15.33 Writeback/CDB와 branch recovery exact interface
 
@@ -2180,7 +2239,7 @@ CSR write, fflags accrue, counters의 architectural side effect는 commit에서�
 
 `rv_pmp` parameter는 `PADDR_WIDTH`, `PMP_ENTRIES=8`, `CHECK_PORTS`이고 CSR file의 flattened `pmpcfg_i[PMP_ENTRIES*8-1:0]`, `pmpaddr_i[PMP_ENTRIES*(PADDR_WIDTH-2)-1:0]`를 받는다. 각 조합 lookup port는 `check_valid_i`, physical address, log2-byte size, access bit R/W/X, privilege를 받고 `allow_o`, `matched_o`, `fault_address_o`를 낸다. core는 IFU용 `FETCH_BYTES/2`-port instance와 LSU용 2-port instance를 사용한다. entry priority는 낮은 index 우선이며 OFF/TOR/NA4/NAPOT과 lock bit를 구현한다. M-mode unlocked bypass와 locked entry 의미를 적용하고, **하나의 architectural access**가 첫 matching entry에 일부만 포함되면 deny한다. LSU는 AGU의 latched size/address를 검사하며 MPRV일 때 MPP를 effective privilege로 사용한다.
 
-각 PMP entry의 cfg/mode와 exclusive `[region_low, region_high)`는 port loop 밖에서 한 번 predecode한다. 특히 NAPOT trailing-one scan과 TOR previous-entry bound를 IFU/LSU check port마다 복제하지 않는다. 각 port에는 predecoded bound와 access range/permission 비교만 남으며 낮은 index priority와 partial-match deny 의미는 이전과 동일하다.
+각 PMP entry의 cfg/mode와 exclusive bound는 port loop 밖에서 한 번 predecode한다. TOR upper는 `pmpaddr << 2`, NA4 upper는 base+4, NAPOT upper는 encoded prefix-mask와 increment로 base+size를 구성한다. NAPOT trailing-one prefix와 TOR previous-entry bound를 check port마다 복제하지 않는다. 각 port는 `access_high = address + 2^size`를 extra bit와 함께 계산하여 physical-address wrap을 거부한다. 모든 entry의 overlap/containment/permission을 병렬 계산한 뒤 `first_match[e] = overlap[e] && !(|overlap[e-1:0])`를 선택한다(entry0의 earlier reduction은0). 따라서 낮은 index partial match가 뒤의 fully allowed entry보다 우선한다. interface, 권한 규칙과 조합 latency는 불변이다. inclusive-bound와 registered-predecode는 별도 실험했으나 현재 core/LSU에는 없다.
 
 IFU frontend exact interface는 `pmp_check_valid_o[FETCH_BYTES/2-1:0]`, `pmp_check_address_o[FETCH_BYTES/2-1:0][PADDR_WIDTH-1:0]`, `pmp_check_allow_i[FETCH_BYTES/2-1:0]`이다. 모든 valid port의 size는 `3'd1`(2 bytes), access는 execute, privilege는 current privilege로 core가 고정한다. current memory response가 queue 또는 target buffer에 받아들여질 때 valid이며, allow vector는 queue와 target buffer 양쪽에 기록된다. 이후 target-buffer hit는 저장된 mask를 `rv_fetch_queue.fill_pmp_allow_i`로 되돌려 보내므로 predictor redirect 경로에서 PMP를 다시 계산하지 않는다. fetch queue는 fabric response error와 parcel deny를 OR하여 parcel fault로 보존하고 instruction 길이에 맞춰 `out_fault_o`를 만든다. denied instruction은 외부에 architecturally visible한 실행이나 register/memory side effect를 만들지 않지만, side-effect-free local memory transport request 자체는 16 bytes로 유지된다.
 
@@ -5397,7 +5456,9 @@ gshare late-index-bit banking은 독립2923.37ps로 ungated baseline보다 나�
 주소 분리와 결합한2598.36ps는 최종 대비 약1% 더 짧았으나 별도 bank read cone을
 추가하지 않는 보수적 baseline2625.15ps를 선택했다. 이 banking 후보는 production에 없다.
 `out/timing_core_separate_fill_final`은 address-only ablation이며,
-최종 공개 whole-core macro run은 `out/timing_core_separate_fill_valid_final`에서 별도 수행한다.
+최종 공개 whole-core macro run `out/timing_core_separate_fill_valid_final`은 완료했으며
+3040.52ps/364956.522µm²였다(v16 3046.47ps/364484.106µm² 대비 delay −0.20%).
+이는 아래 address-only ablation과 다른 최종 address/valid 구성이다.
 address-only macro 결과는3109.23ps/358300.404µm²로 기존 v16 core3046.47ps보다
 약2.06% 느렸다. critical은 backend LSQ candidate_index[5]로 이동해 frontend-only
 개선과 구분한다. 따라서 현재 결과를 전체 코어 Fmax 개선의 확정값으로 주장하지 않는다.
@@ -5413,6 +5474,99 @@ SHA256 `2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`가 동
 filelists와 core/SoC top ports는 불변이다. 내부 `rv_fetch_queue`에만 normal address
 address/valid port와 두 parameter를 추가했으므로 이 leaf를 직접 instantiate하면 입력을 연결한다.
 default 주소 분리0이면 새 입력은 사용하지 않는다.
+
+###### 5-8. v1.18.18 timing 실험 기록 — 전체 결과로 채택 판단
+
+목표는 서버 1.2GHz와 동일 ELF의 CoreMark IPC≥1.3 동시 달성이다. leaf 숫자만
+개선되었다고 전체 코어가 빨라졌다고 판단하지 않는다. 모든 공개 측정은 같은
+Nangate45 library/constraint와 core `AGU_LOAD_BYPASS=1` 조건을 사용한다. 기준
+ABC target은1000ps다. 아래 일부 실험이 runner의 옛 기본값10000ps로 실행됐음을
+확인했으므로 해당 수치는1000ps baseline과 직접 비교하지 않는다. target은 clock
+달성 결과가 아니라 ABC mapping/upsize의 optimization budget이다.
+macro whole-core는 read-array 경로를 생략하므로 physical STA를 대체하지 않는다.
+
+| 후보/비교 | 공개 delay/area 결과 | 판단/기능 확인 |
+|---|---|---|
+| PMP parallel first-match만 | leaf1584.01→1557.48ps | 낮은 entry index 우선순위 유지; full8-entry RV32/RV64 reference equality SAT PASS |
+| PMP inclusive NA4/NAPOT bound + first-match | target1000: leaf1496.99ps/28581.700µm²; PMP-only core3102.60ps/358957.956µm² | leaf는 개선, 전체는 v17보다+2.04%; 현재 exclusive bound 유지 |
+| BTB parallel masked target select | frontend2638.63→2722.32ps | 기능 통과지만 timing 악화로 제거 |
+| FTB one-hot shared wide read | frontend3483.88ps/341147.926µm² | 25000-cycle oracle/cross-block PASS; 제거 |
+| lane1 gshare late-LSB bank read | frontend3544.46ps/340437.706µm² | predictor policy 불변, block PASS; 제거 |
+| AGU completion에 DEPTH2 registered FIFO | core3144.59ps/371224.812µm² | CoreMark431728cycles/IPC1.335216; 지연/area/IPC 비용으로 제거 |
+| FPU completion만 DEPTH2 registered FIFO | core3101.86ps/366256.996µm² | PMP-only와 차이가0.74ps뿐; +1 FP completion cycle 비용으로 제거 |
+| LSQ ready feedback 제거/registered issued로 slot 회수 | target10000: core3664.88ps/357334.824µm² | 단위/integration/CRC 통과. target1000과 악화 비교 금지; +343cycles 및 leaf 비용으로 현재 미채택 |
+| FPU exponent10-bit 또는 parallel shift count | leaf2237.72/2250.08ps vs2122.85ps | 각각 alignment equality PASS지만 모두 제거 |
+| FPU LATENCY6 실제 seed/shift 분리 | target1000 leaf2016.46ps/29061.830µm² vsLAT5 2122.85/27126.148; target1000 FP6+inclusive-PMP core3072.66ps/338145.850µm² | leaf delay −5.01%, area +7.14%; core3072.66은PMP-only3102.60보다 짧지만v17 3040.52보다 느림. optional LAT6만 구현, core는 LAT5 |
+| LSQ AGU 중복 필터를 tournament 뒤로 이동 | leaf3149.69ps; reference leaf3000.06ps; target10000 FP6+PMP combined core3734.30ps | leaf 악화. 함께 측정한FP6/PMP와 효과를 혼동하지 않음; 현재 미채택. 동일 ELF431352cycles/576450instret/IPC1.336380 |
+| PMP registered predecode + coherence backpressure | target10000 core3740.14ps/360880.072µm²; 동일 netlist target1000 재측정3120.23ps/363482.350µm² | 변경/reset/PMP-boundary/FTB permission 시험 통과. target1000 mixed-PMP-only3102.60보다 짧지 않아 현재 미채택 |
+| SB FIFO-age wrap-zone selection + PMP priority | target1000 leaf SB1009.67ps/31291.708µm², PMP1557.48ps/29110.774µm²; core2925.99ps/357144.368µm² | SB baseline1695.10ps보다−40.44%; whole3040.52보다−3.77% delay/−2.14% area. extra stage/IPC 비용 없음 |
+
+**PMP 후보의 불변조건.** 모든 entry의 overlap/full coverage/permission을 병렬
+계산하고 `first_match[e]=overlap[e] && !(|overlap[e-1:0])`로 최저 index 하나만
+선택한다. partial overlap은 뒤 entry가 허용해도 deny한다. unlocked M bypass,
+locked M permission, U/S no-match deny, physical wrap deny, invalid check의 allow1/
+matched0을 보존한다. 현재 채택 후보는 기존 exclusive bound를 유지하고 first-match만
+병렬화한다. immutable bd11890 대비 unconstrained8-entry PADDR32/64 직접 SAT(각size0..7)
+PASS이며 `out/pmp_final_priority32/64/report.json`에 exact source hash가 기록된다.
+inclusive last-byte는 별도 실험으로 upper-bound increment를 제거했지만 현재 RTL에는
+없다. TOR empty/reversed range와 last physical
+NA4 word도 directed test에 포함한다. 전 entry range가 바뀌는 모놀리식8-entry SAT는
+600초 제한에서 미완료였다. 대신 첫 entry decode와 arbitrary previous-address의
+TOR decode를 size0..7로 분할해 PADDR32/64에서 증명하고, actual first-match block은
+arbitrary overlap/deny vector로 별도 증명했다. 이 compositional 검사를 완전한 독립
+PMP specification proof 또는8-entry 직접 SAT PASS로 표기하지 않는다. 이 제한은
+제거된 inclusive 후보의 증명 범위이며, 현재 exclusive+priority 후보의 full8-entry
+reference-equivalence SAT와 혼동하지 않는다.
+
+**제거된 LSQ 후보의 동작.** held candidate exclusion/oldest-two tournament는 registered
+LQ와 raw AGU address preview만 사용한다. active bypass identity와 같은 winner를
+트리 출력에서 제거하고 남은 winner를 낮은 lane으로 compact한다. bypass identity는
+기존처럼 별도 candidate shadow에 기록한다. 따라서 duplicate request는 허용하지
+않지만 제거된 winner 대신 third-oldest를 같은 cycle에 다시 고르지 않아 refill
+bubble이 생길 수 있다. fresh ordering/SQ forwarding/PMP/effect-valid/commit-only-store
+규칙은 변경하지 않는다. 초기 conservative memory-ordering 모델 그대로다.
+
+**검증 범위/재현.** `run_block_tests.ps1 -RtlAssertions`는 FPU LATENCY2/5/6,
+PMP PADDR32/64, completion FIFO XLEN32/64를 포함해35개 구성을 검사한다.
+LSQ는 unknown older store가 resolve되는 순간 competing addressed load가 있고
+downstream ready=0인 상태의 request 안정성 및 각 load exactly-once issue를 추가했다.
+FIFO test는200000cycles에 destination/exception/branch/fflags까지 전체 payload 비교,
+selective/full flush, wrap, repeated reset을 포함하며 FAIL은 `$fatal`로 exit 실패를 낸다.
+FPU6은 static/dynamic RM 각각113600 exact-rational vectors, 기존 transport plus
+full-capacity stall/flush/DIV-no-overtake, RV32/RV64 각각993216 alignment/seed-composition
+vectors와 C/FP ELF signature009e00b9/exit0을 통과했다. 이는 장기 ISA differential
+sign-off를 대신하지 않는다. `run_fpu_corners.py --simulator verilator --latency 6`,
+`run_fpu_align_equivalence.ps1`(immutable bd11890), `check_pmp_equivalence.py`로 재현한다.
+generated reference/log/netlist는 ignored `out/` 아래에만 두며 filelists/top ports는 불변이다.
+
+**SB correctness 및 성능 gate.** 기존 sequence-based selector가10→210 간격에서
+새 store22222222 대신11111111을 고르는 red test를 재현했다. 현재는 Section15.30의
+FIFO wrap-zone tree로 수정했다. timestamp 재사용/full ring wrap/pop/dual query/partial
+overlap directed test와 ENTRIES2/4/8/16 query formal PASS다. 마지막16-entry monolithic
+proof는300초 내 미완료여서16개 head partition 전체로 증명했으며 timeout을 PASS로
+취급하지 않는다. CoreMark 동일 ELF는431358cycles/576450instret/IPC1.3363609809,
+profiler431414cycles/576462instret이며 SHA256
+`2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`로 baseline과
+모든 counter가 동일하다. C/FP signature009e00b9/Host exit0도 유지한다.
+
+**측정 재현 안전장치.** Windows/Linux runner의 기본 target을1000ps로 통일했다.
+PowerShell은 매 실행 전 command/target/library/constraint/tool/source SHA256를
+`run_manifest.json`에 보존하고 CSV에도 target/library/constraint hash를 기록한다.
+Linux는 `run_manifest.txt`에 target/command와 library/constraint/source SHA256를
+기록한다. 옛10000ps 결과3876.38ps를3040.52ps baseline과 비교해 RTL 악화라고
+단정하면 안 된다. 동일 target 재측정 결과는2925.99ps/357144.368µm²이며 macro
+read-array 경로 생략과 서버1.2GHz sign-off 미확인은 그대로다. actual ABC critical은
+`fpu_issue_operand0_q[2]`에서 FPU alignment 저장 cone으로 이동했다. named trace의
+long LZC/add 연쇄는 unit-delay 모델에서 과대평가되므로 ps로 환산하지 않는다.
+
+**Frontend 후속 후보.** CB/CJ/B/J immediate별 prefix target add를 병렬 계산한 뒤
+instruction class mux로 선택하는 zero-extra-cycle 후보를 시험한다. policy/history/
+BTB/RAS는 변경하지 않는다. RV32/RV64 각각296608-vector independent arithmetic
+oracle PASS이나 frontend 전체는2638.63→2644.86ps/area343400.946→345994.446으로
+소폭 악화했다. 동일 endpoints의 head-block→head-parcel-offset 구조 추적도73.9→75.6
+units여서 현재 미채택이다. 병목은 direct target add보다 lane0 valid/conditional/
+predicted-taken→lane1 gshare history/index→PHT read→redirect/queue enable에 있다.
+검증한 query 산술만으로 서버 fetch-queue→predictor→FTB 경로가 해결됐다고 하지 않는다.
 
 ###### 5. 도구
 

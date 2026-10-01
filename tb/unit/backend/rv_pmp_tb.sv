@@ -105,6 +105,62 @@ module rv_pmp_tb #(parameter int unsigned PADDR_WIDTH = 32);
     privilege[0] = PRIV_U;
     expect_port(0, 1'b0, 1'b1, "Lowest-index partial match has priority");
 
+    // Exercise priority at every physical entry, not only entry0/1. A
+    // later matching deny must not override the first matching allow;
+    // a later full coverage must not repair the first partial overlap.
+    for (int first=0; first<8; first++) begin
+      pmpcfg='0;
+      pmpaddr='0;
+      for (int entry=first; entry<8; entry++) begin
+        pmpaddr[entry]=(PADDR_WIDTH-2)'('h6008 >> 2);
+        pmpcfg[entry]=8'h98; // locked NAPOT, no R permission
+      end
+      pmpcfg[first]=8'h99; // first matching locked NAPOT permits R
+      address[0]=PADDR_WIDTH'('h6008);
+      size[0]=3'd2;
+      access[0]=3'b001;
+      privilege[0]=PRIV_U;
+      expect_port(0, 1'b1, 1'b1, "First allow beats every later deny");
+      access[0]=3'b010;
+      privilege[0]=PRIV_M;
+      for (int entry=first+1; entry<8; entry++) pmpcfg[entry]=8'h1f;
+      expect_port(0, 1'b0, 1'b1, "First locked deny beats later unlocked allow");
+      pmpcfg[first]=8'h11; // unlocked NA4 still denies a partial access
+      size[0]=3'd3;
+      access[0]=3'b001;
+      expect_port(0, 1'b0, 1'b1, "First partial overlap denies even unlocked M");
+    end
+
+    // Empty and reversed TOR must not accidentally match after factoring
+    // the lowest-index selection into a parallel first-match reduction.
+    pmpcfg='0;
+    pmpaddr='0;
+    pmpcfg[0]=8'h09; // TOR upper0, empty region
+    address[0]='0;
+    size[0]=3'd0;
+    privilege[0]=PRIV_U;
+    expect_port(0, 1'b0, 1'b0, "Empty TOR is not a matching deny");
+    pmpcfg[0]='0;
+    pmpaddr[0]=(PADDR_WIDTH-2)'('h7000 >> 2);
+    pmpaddr[1]=(PADDR_WIDTH-2)'('h6000 >> 2);
+    pmpcfg[1]=8'h09;
+    address[0]=PADDR_WIDTH'('h6800);
+    size[0]=3'd2;
+    expect_port(0, 1'b0, 1'b0, "Reversed TOR is empty");
+
+    // NA4 at the final physical word includes the last physical byte but
+    // rejects a request that wraps past it.
+    pmpcfg='0;
+    pmpaddr='0;
+    pmpaddr[0]='1;
+    pmpcfg[0]=8'h91; // locked NA4/R
+    address[0]={PADDR_WIDTH{1'b1}} & ~PADDR_WIDTH'(3);
+    size[0]=3'd2;
+    expect_port(0, 1'b1, 1'b1, "Final NA4 word is fully covered");
+    address[0]={PADDR_WIDTH{1'b1}};
+    size[0]=3'd1;
+    expect_port(0, 1'b0, 1'b1, "NA4 access wrapping physical space is denied");
+
     // A standalone 16-byte NAPOT region supports contained accesses and
     // rejects an access that crosses its upper boundary.
     pmpcfg = '0;
@@ -183,7 +239,7 @@ module rv_pmp_tb #(parameter int unsigned PADDR_WIDTH = 32);
     if (fault_address[0] != address[0])
       $fatal(1, "PMP fault address must preserve the request address");
 
-    $display("rv_pmp_tb PASS");
+    $display("rv_pmp_tb PASS PADDR=%0d",PADDR_WIDTH);
     $finish;
   end
 endmodule
