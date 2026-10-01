@@ -36,6 +36,11 @@ $tests = @(
               "tb/unit/backend/rv_csr_file_tb.sv")
   },
   @{
+    Top = "rv_branch_arithmetic_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_branch_unit.sv",
+              "tb/unit/backend/rv_branch_arithmetic_tb.sv")
+  },
+  @{
     Top = "rv_rob_tb"
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_rob.sv",
               "tb/unit/backend/rv_rob_tb.sv")

@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 설계 checkpoint: v1.18.15 FU predecode/LSQ parallel predicates/shared frontend target arithmetic (2026-10-01). 이전 pushed 기준 `0f654b4`. 서버 STA 목표는 미확인.
+- 현재 설계 checkpoint: v1.18.16 BRU group comparison/prefix target arithmetic (2026-10-01). 이전 pushed 기준 `0e54dbb`(v1.18.15). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -51,7 +51,12 @@
 - [x] frontend shared immediate decode +4-bit carry-select/prefix target adder 채택: full-map2940.50→2924.25ps/342718.922→341856.284µm². predictor policy/history/latency 불변. RV32/RV64 각296608-vector 독립 oracle PASS. `out/timing_frontend_target_add/timing_summary.csv`.
 - [x] 최종 두 변경 포함 CoreMark bypass1 profiler hash2BE75F…/official431358/576450/IPC1.336361, bypass0 hash168A4957…/official469994/IPC1.226505 불변. C-FP009e00b9/exit0, backend integration, assertion-enabled block27 runs PASS.
 - [x] 새 backend named-path: slow FPU valid → direct wake → IQ age-select → PRF/bypass operand → candidate branch compare → fast result payload. `out/iq_fu_predecode_critical_path.log`. 구조 추적이며 STA가 아니고 이전 push-enable 병목과 구분할 것.
-- [ ] 현재 accepted whole-core 재측정: `out/timing_core_iq_fu_target_add`, session40026(이미 실행 중; 중복 시작 금지). macro array read 경로 생략에 주의. 서버에 `rv_ooo_core.AGU_LOAD_BYPASS=1`을 명시하고 새로 elaboration/합성할 것.
+- [x] pushed checkpoint `0e54dbb`(v1.18.15), filelists/top ports 불변. whole-core 재측정 `out/timing_core_iq_fu_target_add`:3353.10ps/363156.234µm², CSR system wake class→IQ select/operand→branch mispredict→fast payload. macro array read 경로 생략에 주의. 서버에 `rv_ooo_core.AGU_LOAD_BYPASS=1`을 명시하고 새로 elaboration/합성할 것.
+- [x] BRU 4-bit group comparison+prefix target add 채택, latency 불변. native1154.27→comparator-only1173.41(거부)→comparison+add993.64ps. adder-only1028.52ps. RV32/RV64 각231072-vector oracle(정확한 taken target prediction 포함), CoreMark profiler hash2BE75F…/C-FP009e00b9/exit0 PASS. block28/integration PASS. 전체 backend3327.95→3127.15ps(−6.03%)/area324267.566→329313.054µm²(+1.56%), `out/timing_backend_branch_prefix_compare`.
+- [x] IQ payload balanced OR tree는 ignored prototype만: 4/7/56-entry×30000-cycle all-output equality PASS. 최초 호출 치환 실수로 payload0/equality FAIL여서1000.96ps 수치는 무효. 수정 후1182.07ps/113355.634µm² vs현행1180.39/112963.550으로 악화, 채택 거부/production IQ 미변경. `out/iq_balanced_payload_equiv2.log`, `out/iq_balanced_payload_timing2.log`.
+- [x] frontend block-step factoring 후보 거부/RTL 원복: request/redirect native equality SVA와 RV32/RV64/PADDR32 cross-block PASS, combined CoreMark hash2BE75F…/C-FP PASS. 그러나 full-map2924.25→3116.53ps/341856.284→342269.648µm²로 악화. `out/timing_frontend_parallel_block_step`, ignored prototype만 보관.
+- [ ] 다음 최장 backend 경로는 FPU `pre_calc_q[99]`→`norm_calc_q[20]` 정규화 내부. `out/branch_prefix_fpu_critical_path.log`는 unit-delay LZC loop를 과대평가하므로 1353 units를 STA로 해석 금지. balanced highest-bit encoder / exponent arithmetic 후보를 latency5 유지 조건으로 먼저 검토할 것. backend FPU는 LATENCY5 override이고 standalone default는4임.
+- [ ] v1.18.16 whole-core 재측정 `out/timing_core_branch_prefix_compare`, session70125 실행 중. accepted frontend(v15)와 BRU(v16) 조합, AGU_LOAD_BYPASS=1. 중복 시작 금지; macro read-array omission/서버1.2GHz 미확인 유지.
 - [ ] 서버 STA/SDC 최신 결과 필요. 공개45nm 수치를2nm Fmax로 환산 금지. 1.2GHz+IPC1.3 동시 달성 아직 미증명.
 - [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.

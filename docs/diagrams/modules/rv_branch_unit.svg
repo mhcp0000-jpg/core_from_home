@@ -21,7 +21,7 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">PC/raw/length;</tspan><tspan x="60" dy="25">operands/immediate;</tspan><tspan x="60" dy="25">prediction metadata</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="213" class="stage-text"><tspan x="410" dy="0">condition compare</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">PC/indirect target 계산</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">taken/target mispredict compare</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="203" class="stage-text"><tspan x="410">4-bit parallel magnitude compare + equality prefix</tspan><tspan x="410" dy="21">signed sign-select / EQ, NE / LT, GE</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="269" class="stage-text"><tspan x="410">PC / JALR / sequential target in parallel</tspan><tspan x="410" dy="21">4-bit carry-select + group carry prefix</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">taken/target mispredict compare (same latency)</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
 <text x="990" y="218" class="body"><tspan x="990" dy="0">actual taken/target,</tspan><tspan x="990" dy="25">mispredict, misaligned</tspan></text>

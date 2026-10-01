@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.15 locally verified checkpoint: FU predecode/LSQ predicates/shared target arithmetic; server STA pending (2026-10-01) |
+| 상태 | v1.18.16 locally verified checkpoint: branch comparison/target arithmetic; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -5263,10 +5263,43 @@ bypass0 official469994/IPC1.226505다. bypass 기본값0을 유지한다.
 backend는 unmapped array read 경로를 생략하는 macro screening, frontend는 flop full-map다.
 수치를2nm Fmax로 환산하거나 서버1.2GHz sign-off로 해석하지 않는다. 파일리스트와 core top
 port는 불변이며 IQ 내부 interface만 one-hot class 출력이 추가됐다. 현재 whole-core 재측정
-산출물 위치는 `out/timing_core_iq_fu_target_add`다. 서버도 core parameter
+산출물 위치는 `out/timing_core_iq_fu_target_add`이며3353.10ps/363156.234µm²다.
+이는 backend 단독과 다른 전체 연결이며 array read를 생략해 서버 sign-off를 대신하지 않는다.
+core 최장 구조 경로도 CSR system wake class→IQ select/operand→branch mispredict→fast payload다.
+서버도 core parameter
 `AGU_LOAD_BYPASS=1`로 새로 합성/시뮬레이션해야 IPC1.3 후보와 같은 설정이다.
 다음 backend named 구조 경로는 slow FPU valid→IQ wake/age-select→PRF/bypass operand→
 candidate branch compare→fast-result payload로, 앞선 push-enable 병목과 구분하여 분석한다.
+
+###### 5-5. v1.18.16: 분기 비교와 target carry 경로 단축
+
+**목적/상태.** wakeup→IQ 선택→operand→branch compare가 한 cycle인 경로의 마지막
+연산을 단축한다. `rv_branch_unit`은 조합 블록이고 새로운 FF나 실행 cycle을 추가하지 않는다.
+같은 global2 issue, 한 logical branch port, 두 candidate evaluator를 유지한다.
+
+**동작/불변조건.** operand를4-bit group으로 나누어 less/equal을 병렬 계산한다.
+각 group의 less는 그보다 높은 모든 group이 equal일 때만 전체 unsigned-less에 참여한다.
+signed-less는 sign이 다르면 operand A sign, 같으면 같은 unsigned 비교 결과다.
+EQ/NE는 full equality, GE/GEU는 less의 반대다. PC+instruction_bytes,
+PC+immediate, operand A+immediate는4-bit carry-select/prefix 가산기로 계산하고
+JALR는 마지막 bit0을 clear한다. target 선택/mispredict/misalignment와 flush/identity 계약은 불변이다.
+
+**타이밍/검증.** 공개 leaf1154.27→993.64ps(−13.92%), whole backend3327.95→3127.15ps
+(−6.03%), area324267.566→329313.054µm²(+1.56%)로 delay와 area를 교환한다.
+comparator만 바꾼1173.41ps와 adder-only1028.52ps는 비교 후보이며 최종값이 아니다.
+native 연산 독립 oracle로 RV32/RV64 각각231072 vectors(모든 signed-byte pair,
+random/full-width sign boundary, invalid operation default, JALR bit0, PC wrap,
+맞는/틀린 prediction, valid0/1)를 검사했다. block28 tests 및 backend integration PASS.
+같은 CoreMark official431358/576450/IPC1.336361과 profiler hash2BE75F…는 불변,
+C/FP signature009e00b9/exit0 PASS. 서버1.2GHz sign-off는 여전히 별도다.
+whole 최장은 이제 FPU `pre_calc_q[99]`→`norm_calc_q[20]` 정규화 내부로 이동했다.
+backend는 FPU LATENCY5로 instantiate하며 standalone FPU default4와 구분한다.
+
+**채택하지 않은 추가 후보.** IQ payload balanced OR tree는4/7/56-entry×30000-cycle
+등가를 통과했지만 leaf1180.39→1182.07ps/area112963.550→113355.634µm²로 악화해 제외했다.
+frontend block-step 사전 계산은 cross-block RV32/RV64/PADDR32와 주소 equality SVA,
+CoreMark counter equality를 통과했지만 full-map2924.25→3116.53ps로 악화해 원복했다.
+단위 경로의 직렬 gate 감소만으로 전체 mapping 개선을 단정하지 않는다.
 
 ###### 5. 도구
 
