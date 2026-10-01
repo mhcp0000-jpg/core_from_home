@@ -30,12 +30,14 @@ module rv_fetch_queue_tb;
 
   always #5 clk = ~clk;
 
-  rv_fetch_queue #(.RESET_VECTOR(32'h0000_1000)) u_queue (
+  rv_fetch_queue #(.RESET_VECTOR(32'h0000_1000), .SEPARATE_NORMAL_FILL_ADDRESS(1'b1)) u_queue (
     .clk_i              (clk),
     .rst_ni             (rst_n),
     .fill_valid_i       (fill_valid),
     .fill_ready_o       (fill_ready),
     .fill_addr_i        (fill_addr),
+    .normal_fill_addr_i (fill_addr),
+    .normal_fill_valid_i(fill_valid),
     .fill_id_i          (4'd1),
     .fill_epoch_i       (4'd0),
     .fill_data_i        (fill_data),
@@ -58,6 +60,8 @@ module rv_fetch_queue_tb;
     .fill_valid_i       (cross_fill_valid),
     .fill_ready_o       (cross_fill_ready),
     .fill_addr_i        (cross_fill_addr),
+    .normal_fill_addr_i (cross_fill_addr),
+    .normal_fill_valid_i(cross_fill_valid),
     .fill_id_i          (4'd2),
     .fill_epoch_i       (4'd0),
     .fill_data_i        (cross_fill_data),
@@ -316,6 +320,24 @@ module rv_fetch_queue_tb;
     end
     if (out_valid != 0)
       $fatal(1, "Single-lane block stream did not empty");
+
+    // Last aligned physical block: comparison via fill_addr+FETCH_BYTES
+    // would wrap to zero. An aligned block-tag check preserves offset 6.
+    @(negedge clk);
+    redirect_valid=1'b1;
+    redirect_pc=32'hffff_fffc;
+    @(posedge clk); #1; redirect_valid=1'b0;
+    @(negedge clk);
+    fill_addr=32'hffff_fff0;
+    fill_data='0;
+    fill_data[127:96]=32'h0010_0093;
+    fill_pmp_allow='1;
+    fill_resp=2'b00;
+    fill_valid=1'b1;
+    @(posedge clk); #1; fill_valid=1'b0;
+    if (!out_valid[0] || out_pc[0] != 32'hffff_fffc ||
+        out_instruction[0] != 32'h0010_0093 || out_fault[0])
+      $fatal(1,"Last physical block offset lost");
 
     $display("rv_fetch_queue_tb PASS");
     $finish;

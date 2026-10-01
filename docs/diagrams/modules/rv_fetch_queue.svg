@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: fill edge 뒤 block이 보이고, consume은 head/offset/PC를 갱신한다.</tspan><tspan x="60" dy="24">Throughput: 공간과 instruction boundary가 허용하면 최대 2 instruction/cycle이다.</tspan><tspan x="60" dy="24">Stall/flush: redirect fill은 block slot 0에 atomic write하며 empty이면 valid/count=0이다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60">Normal response addr/valid는 predictor/FTB mux 우회; offset = retained PC low bits.</tspan><tspan x="60" dy="24">Redirect + fill: slot0 atomic write / offset = redirect PC low bits; stage와 FF 수는 불변.</tspan><tspan x="60" dy="24">Invalid PC/raw/length는 don't-care, valid/ready만 consume 허용; 4 configs × 60000-cycle equality PASS.</tspan></text>
 </svg>

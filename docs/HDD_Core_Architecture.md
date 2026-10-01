@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.16 locally verified checkpoint: branch comparison/target arithmetic; server STA pending (2026-10-01) |
+| 상태 | v1.18.17 frontend refill-address isolation / balanced FPU / PMP NAPOT fix; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -1992,6 +1992,8 @@ flush가 handshake와 같은 cycle이면 flush가 younger dispatch/issue/writeba
 | Port group | exact signal | 계약 |
 |---|---|---|
 | fill | `fill_valid_i/ready_o`, `fill_addr_i`, `fill_id_i[3:0]`, `fill_epoch_i[3:0]`, `fill_data_i[127:0]`, `fill_resp_i[1:0]`, `fill_pmp_allow_i[7:0]` | 4-entry circular block queue에 aligned block과 2-byte parcel별 PMP 결과 보관 |
+| normal fill address | `normal_fill_addr_i[PADDR_WIDTH-1:0]` | `SEPARATE_NORMAL_FILL_ADDRESS=1`일 때 non-redirect response의 aligned 주소. frontend의 `outstanding_addr_q`에 직결한다. redirect fill은 이 입력을 사용하지 않는다. |
+| normal fill valid | `normal_fill_valid_i` | 위 parameter가1이면 non-redirect fill의 valid로 사용. frontend는 current-epoch response valid를 직접 전달한다. redirect 때는 무시하며 non-redirect 때 `fill_valid_i`와 같아야 한다(clock assertion). |
 | consume | `out_valid_o[1:0]/out_ready_i[1:0]`, lane별 `out_pc_o`, `out_instruction_o[31:0]`, `out_inst_len_o`, `out_fault_o` | C는 low 16-bit만 유효한 raw instruction을 program order로 출력 |
 | control | `redirect_valid_i`, `redirect_pc_i`, `new_epoch_i[3:0]`, `empty_o`, `byte_count_o[6:0]` | redirect가 consume보다 우선; 동시 fill은 새 target block으로 수락 |
 
@@ -2000,6 +2002,16 @@ queue는 같은 cycle fill과 최대 4-parcel consume를 허용한다. 저장 �
 일반 fill은 기존 tail slot에 쓴 뒤 tail을 modulo 4로 증가시킨다. consume은 PC와 offset을 1~4 parcel만큼 이동하고 offset이 8을 넘으면 head를 한 block 증가시키며 count를 하나 줄인다. 같은 edge에 fill도 수락하면 count는 `old_count - consumed_block + 1`이다. full 상태에서도 block 하나를 consume하면 fill을 수락할 수 있다. 현재/다음 block을 concatenate하고 offset만큼 shift해 추출하므로 byte 14에서 시작하는 32-bit 명령도 다음 block의 첫 parcel과 결합한다. 다음 block이 없으면 해당 명령은 valid가 되지 않는다.
 
 empty 상태에서는 redirect offset이 0이 아니더라도 available parcel과 `byte_count_o`를 반드시 0으로 둔다. 이를 빼먹으면 unsigned subtraction underflow로 stale instruction이 발행될 수 있다. empty 이후 첫 정상 response의 offset은 retained head PC와 aligned fill 주소로 구한다. `empty_o`는 block count=0, byte count는 nonempty일 때 `block_count*16-offset*2`다. id/epoch stale response filtering은 frontend가 수행하며 queue 자체에서는 metadata를 사용하지 않는다. fabric response error 또는 `fill_pmp_allow_i[n]=0`은 parcel `n`의 fault bit 하나로 기록한다. C instruction은 한 parcel, 32-bit instruction은 두 parcel의 fault를 OR하여 `EXC_INST_ACCESS_FAULT`를 만들고, fault가 보이면 frontend가 이후 sequential fetch를 redirect까지 정지한다.
+
+`UNGATED_PAYLOAD=0`, `SEPARATE_NORMAL_FILL_ADDRESS=0`은 standalone 호환 기본값이다.
+현재 frontend는 두 parameter를1로 설정한다. `UNGATED_PAYLOAD=1`이면 valid가0인
+lane의 PC/raw instruction/length는0이 아니라 resident bytes에서 나온 값일 수 있다.
+소비자는 반드시 valid로 gate해야 하며 queue fault, predictor fire/history/RAS update,
+decode/rename은 기존 valid/handshake 조건을 유지한다. 유효 lane의 payload는 불변이다.
+주소 분리 모드에서는 normal response의 block tag와 retained PC block tag를 비교한 후
+PC의 low parcel bits를 offset으로 쓴다. 정렬된 block의 마지막 physical address에서도
+`fill_addr+16` overflow가 없다. redirect+fill은 기존 `fill_addr_i`의 실제 target metadata와
+정합성을 assertion으로 확인하고, offset은 여전히 redirect PC low bits에서 직접 얻는다.
 
 #### `rv_fetch_target_buffer`
 
@@ -5300,6 +5312,107 @@ backend는 FPU LATENCY5로 instantiate하며 standalone FPU default4와 구분�
 frontend block-step 사전 계산은 cross-block RV32/RV64/PADDR32와 주소 equality SVA,
 CoreMark counter equality를 통과했지만 full-map2924.25→3116.53ps로 악화해 원복했다.
 단위 경로의 직렬 gate 감소만으로 전체 mapping 개선을 단정하지 않는다.
+
+###### 5-6. FPU highest-bit tree와 PMP 상한 correctness 보강 (2026-10-01)
+
+**FPU 목적/상태.** 80-bit magnitude의 descending `found` priority chain을
+`highest_magnitude_bit` 균형 트리로 대체한다. 128 leaf로 zero-pad하고 각 node가
+`{valid,index[6:0]}`를 전달한다. 오른쪽(큰 index) subtree가 valid이면 오른쪽
+index를, 아니면 왼쪽 index를 선택한다. 7개 결합 level 뒤 최고 set-bit 위치가 나온다.
+zero magnitude의 index는0이며 기존 zero/special-case 판정은 그대로 적용한다.
+`normalize_fp_pre`와 iterative div/sqrt의 `pack_finite`가 같은 helper를 사용한다.
+추가 FF, pipeline stage, handshake, ROB-age flush 변경은 없다. backend fast
+LATENCY=5, standalone default4와 throughput1/cycle은 불변이다.
+
+**FPU 측정/검증.** 동일 Nangate45 leaf2241.24→2122.85ps(−5.28%),
+area27505.198→27126.148µm²(−1.38%). FPU 변경만 포함한 whole-backend macro
+3127.15→3036.55ps(−2.90%), area329313.054→326915.862µm²(−0.73%).
+macro 측정은 array read를 생략하며 후속 PMP/frontend 변경의 전체 timing으로
+해석하지 않는다. RV32/RV64 각각1141602 vectors에서 normalize/pack bit equality,
+static/dynamic rounding 각각113600 exact-rational RV32F vectors,
+block28/backend integration/C-FP signature009e00b9/exit0를 통과했다.
+CoreMark official431358 cycles/576450 instret/IPC1.336361, profiler431414 cycles와
+모든 profiler counter hash2BE75F…가 불변이다.
+
+```bash
+python scripts/check_fpu_lzc_equivalence.py --yosys /path/to/yosys
+```
+
+위 helper SAT proof는 실제 RTL function을 추출하여 independent ascending reference와
+모든2^80 two-state 입력을 비교한다. pipeline/IEEE 전체 proof가 아니다.
+결과는 ignored `out/fpu_lzc_equivalence/report.json`과 `proof.log`에 생성한다.
+
+**PMP 발견/수정.** NAPOT exclusive high bound는 `base + bytes`여야 한다.
+기존 `base OR bytes`는 base에 size bit가 이미1일 때 빈 region을 만들었다.
+예: pmpaddr0=0x1402, pmpcfg0=0x19는8-byte `[0x5008,0x5010)`인데,
+기존 RTL은 high=0x5008로 계산해 U read를 no-match로 거부했다. locked M entry의
+권한 검사도 이 no-match 때문에 우회될 수 있었다. upper bound는 carry를 보존하는
+encoded-address increment로 계산한다. `mask[i]=AND(pmpaddr[i:0])` parallel prefix가
+trailing-one mask를 만들고 `high=((pmpaddr OR ((mask<<1) OR 1))+1)<<2`를 한 bit
+넓게 계산한다. 직렬32-bit trailing-one counter/dynamic size decoder는 제거하며
+full-space NAPOT은 별도 처리한다. TOR/NA4/entry priority/partial-overlap 정책은 유지한다.
+leaf baseline1729.21ps, 단순 base+size 수정2516.20ps, 최종 prefix/increment1584.01ps다.
+`rv_pmp_tb`는 원본에서 재현 실패한 후 수정본에서 PASS했다. PADDR32/64 각각8B~half-space,
+even/odd base, 양쪽 경계, locked M write deny, 최상위 physical byte와
+address-space wrap을 추가했다. 이 unit 발견을 서버 hang 원인으로 단정하지 않는다.
+NAPOT encoding/lowest-entry full-access matching 근거는
+[RISC-V privileged specification §2.1.7](https://docs.riscv.org/reference/isa/v20260120/priv/machine.html)이다.
+
+**서버 목표의 수치 해석.** 사용자가0e54dbb에서 보고한 arrival1.1855ns,
+1GHz required arrival0.8124ns, violation0.3731ns는 서로 일치한다.
+setup 약0.14ns 외에도 차감되는 budget은 합계0.1876ns이며,
+같은 clock uncertainty/skew 등 가정이면1.2GHz required arrival는
+`1/1.2 - 0.1876 = 0.645733ns`다. 서버 상세 SDC 없이는 나머지0.0476ns의
+원인을 특정하지 않는다. path는 fetch queue head block→predictor→target buffer→
+head parcel offset이며 사용자 추정 구간0.2/0.5/0.2/0.15ns는 대략값이다.
+공개45nm 측정으로 서버2nm Fmax 달성을 주장하지 않는다.
+
+###### 5-7. v1.18.17 frontend normal-fill 주소 경로 분리
+
+**목적/경로.** 서버가 보고한 queue head block→predictor→FTB→head parcel offset
+경로를 동일 endpoints로 tracing했다. 실제 normal-fill 주소가 `FTB hit ? target :
+outstanding_addr` mux 뒤에 있어, predicted redirect가 일반 empty-refill의 주소
+subtract/range compare에도 영향을 주는 조합 경로가 있었다. redirect가 있는 edge는
+이 normal offset을 사용하지 않지만 STA에는 해당 path가 남았다.
+
+**보관 상태/상태 전이.** FF, occupancy, redirect atomic fill, epoch/held request,
+prediction table/history/RAS 학습, fetch/issue/commit latency는 변경하지 않는다.
+frontend에서 `normal_fill_addr_i=outstanding_addr_q`와
+`normal_fill_valid_i=imem_rsp_valid_i && response_is_current`를 별도로 전달한다.
+normal empty fill은 registered PC와 registered outstanding address의 block tag가
+같으면 retained PC low bits를 offset으로 쓴다. redirect+fill은 redirect PC low bits를
+사용한다. predictor용 PC/raw/length의 invalid payload를0으로 만드는 mux는 우회하되
+유효성/consume/fault/fire/history 변경은 반드시 기존 valid/ready로 제한한다.
+
+**측정/트레이드오프.** immutable ad9c042 full-map frontend2924.25ps/341856.284µm²,
+ungated payload만2845.57ps/341814.788µm²,
+normal-address만 분리2625.15ps/343500.962µm²,
+최종 address/valid 분리2638.63ps/343400.946µm²(−9.77% delay, +0.45% area).
+valid도 분리해 target-buffer hit가 normal offset write-enable로 돌아오는 경로를 제거한다.
+주소-only 대비 whole maximum은0.51% 늘지만 사용자가 보고한 endpoint 경로는 더 분리된다.
+named 구조 모델의 head_block[1]→head_parcel_offset[2]는115.3→91.4→73.9units,
+86→66→53gates였다. 이는 회로구조 추적일 뿐 STA delay/Fmax로 환산하지 않는다.
+one-hot read cursor3109.50ps는 기능/IPC 등가지만 악화해 원복했다.
+gshare late-index-bit banking은 독립2923.37ps로 ungated baseline보다 나빴고,
+주소 분리와 결합한2598.36ps는 최종 대비 약1% 더 짧았으나 별도 bank read cone을
+추가하지 않는 보수적 baseline2625.15ps를 선택했다. 이 banking 후보는 production에 없다.
+`out/timing_core_separate_fill_final`은 address-only ablation이며,
+최종 공개 whole-core macro run은 `out/timing_core_separate_fill_valid_final`에서 별도 수행한다.
+address-only macro 결과는3109.23ps/358300.404µm²로 기존 v16 core3046.47ps보다
+약2.06% 느렸다. critical은 backend LSQ candidate_index[5]로 이동해 frontend-only
+개선과 구분한다. 따라서 현재 결과를 전체 코어 Fmax 개선의 확정값으로 주장하지 않는다.
+frontend full-map과 달리 macro array read 경로를 생략한다. 서버1.2GHz는 미확인이다.
+
+**검증/재현.** `scripts/run_fetch_queue_equivalence.ps1 -Baseline ad9c042`는 immutable
+reference와 RV32/64, fetch8/16/32, queue32/64/128 네 구성에서 각각60000 cycles의
+유효 payload/control equality를 검사한다. random C/32-bit bytes, cross-block,
+fault, stall, redirect+fill, wrap, repeated reset을 포함한다. 마지막 physical block의
+normal offset은 별도 directed `rv_fetch_queue_tb`로 검사한다. 최종 CoreMark
+official431358 cycles/576450 instret/IPC1.336361, profiler431414와 모든 counter의
+SHA256 `2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`가 동일하다.
+filelists와 core/SoC top ports는 불변이다. 내부 `rv_fetch_queue`에만 normal address
+address/valid port와 두 parameter를 추가했으므로 이 leaf를 직접 instantiate하면 입력을 연결한다.
+default 주소 분리0이면 새 입력은 사용하지 않는다.
 
 ###### 5. 도구
 

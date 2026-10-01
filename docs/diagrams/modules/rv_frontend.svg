@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60" dy="0">Latency: target-buffer hit는 memory wait 없이 queue fill 가능하고, miss는 I-memory latency에 따른다.</tspan><tspan x="60" dy="24">Throughput: backend가 소비하면 최대 두 instruction/cycle을 낸다. memory outstanding은 1 block이다.</tspan><tspan x="60" dy="24">Stall/flush: queue full 또는 outstanding request가 있으면 request를 hold하며 redirect가 최우선이다.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60">Normal response addr/valid 분리; predicted redirect/FTB가 normal offset 계산·enable에 들어가지 않음.</tspan><tspan x="60" dy="24">정책/history/RAS/latency 불변; target-hit atomic refill / request hold / stale epoch discard 유지.</tspan><tspan x="60" dy="24">Nangate45 full-map2924.25 → 2638.63 ps; CoreMark IPC1.336361 불변; 서버1.2GHz 미확인.</tspan></text>
 </svg>

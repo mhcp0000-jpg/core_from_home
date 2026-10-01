@@ -1,7 +1,6 @@
-module rv_pmp_tb;
+module rv_pmp_tb #(parameter int unsigned PADDR_WIDTH = 32);
   import rv_ooo_pkg::*;
 
-  localparam int unsigned PADDR_WIDTH = 32;
   localparam int unsigned PMP_ENTRIES = 8;
   localparam int unsigned PORTS = 2;
 
@@ -122,6 +121,62 @@ module rv_pmp_tb;
     privilege[1] = PRIV_U;
     expect_port(0, 1'b1, 1'b1, "Complete NAPOT access");
     expect_port(1, 1'b0, 1'b1, "NAPOT boundary crossing");
+
+    // 8-byte region at an odd multiple of its size: base bit3 is already1.
+    // Its exclusive high bound is base+8, not base OR8.
+    pmpaddr[0] = 30'(32'h0000_5008 >> 2);
+    pmpcfg[0] = 8'h19; // NAPOT, R, unlocked
+    address[0] = 32'h0000_5008;
+    size[0] = 3'd2;
+    access[0] = 3'b001;
+    privilege[0] = PRIV_U;
+    expect_port(0, 1'b1, 1'b1, "NAPOT high bound carries through base size bit");
+    pmpcfg[0][7] = 1'b1;
+    privilege[0] = PRIV_M;
+    access[0] = 3'b010;
+    expect_port(0, 1'b0, 1'b1, "Locked odd-base NAPOT cannot bypass M-mode permission");
+
+    for (int log_size = 3; log_size < PADDR_WIDTH; log_size++) begin
+      for (int region = 2; region <= 7; region++) begin
+        logic [PADDR_WIDTH-1:0] base, bytes;
+        bytes = PADDR_WIDTH'(1) << log_size;
+        base = PADDR_WIDTH'(region) * bytes;
+        pmpaddr[0] = (PADDR_WIDTH-2)'((base >> 2) | ((bytes >> 3)-1));
+        pmpcfg[0] = 8'h99; // locked NAPOT/R
+        size[0] = 3'd0;
+        privilege[0] = PRIV_U;
+        access[0] = 3'b001;
+        address[0] = base;
+        expect_port(0, 1'b1, 1'b1, "NAPOT first byte");
+        address[0] = base + bytes - 1;
+        expect_port(0, 1'b1, 1'b1, "NAPOT final byte");
+        address[0] = base + bytes;
+        expect_port(0, 1'b0, 1'b0, "NAPOT exclusive high bound");
+        address[0] = base - 1;
+        expect_port(0, 1'b0, 1'b0, "NAPOT byte below base");
+        size[0] = 3'd1;
+        expect_port(0, 1'b0, base != 0, "NAPOT partial lower overlap or address-space wrap");
+        address[0] = base + bytes - 1;
+        expect_port(0, 1'b0, 1'b1, "NAPOT partial upper overlap");
+        address[0] = base;
+        privilege[0] = PRIV_M;
+        access[0] = 3'b010;
+        expect_port(0, 1'b0, 1'b1, "NAPOT locked M write denied");
+      end
+    end
+    pmpaddr[0] = (PADDR_WIDTH-2)'((PADDR_WIDTH'('1) & ~PADDR_WIDTH'(7)) >> 2);
+    pmpcfg[0] = 8'h99;
+    privilege[0] = PRIV_U;
+    access[0] = 3'b001;
+    size[0] = 3'd0;
+    address[0] = '1;
+    expect_port(0, 1'b1, 1'b1, "NAPOT high bound at physical address-space end");
+    size[0] = 3'd1;
+    expect_port(0, 1'b0, 1'b1, "Address-space wrap denied");
+    pmpaddr[0] = '1;
+    address[0] = PADDR_WIDTH'('1) >> 1;
+    size[0] = 3'd2;
+    expect_port(0, 1'b1, 1'b1, "Full physical space NAPOT");
 
     valid[1] = 1'b0;
     expect_port(1, 1'b1, 1'b0, "Inactive lookup is benign");

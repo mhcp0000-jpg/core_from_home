@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 설계 checkpoint: v1.18.16 BRU group comparison/prefix target arithmetic (2026-10-01). 이전 pushed 기준 `0e54dbb`(v1.18.15). 서버 STA 목표는 미확인.
+- 현재 설계 checkpoint: v1.18.17 frontend normal-fill address isolation / balanced FPU / PMP NAPOT (2026-10-01). 이전 pushed 기준 `ad9c042`(v1.18.16). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -19,7 +19,7 @@
 
 ## 작업 체크리스트
 
-- [ ] 동시 목표: 서버 2 nm STA **1.2 GHz 이상 + 동일 CoreMark official IPC 1.3 이상**. 같은 overhead 가정 시 1.2 GHz arrival 약 0.6475 ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
+- [ ] 동시 목표: 서버 2 nm STA **1.2 GHz 이상 + 동일 CoreMark official IPC 1.3 이상**. 최신 required0.8124ns 기준 동일overhead 가정1.2GHz arrival0.645733ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
 - [x] IQ allocator: 직렬 first-free 2회 → saturating any/ge2 + prefix tree one-hot. age-matrix update에 allocator one-hot 직접 사용. IQ 2443.77→1181.50 ps, whole backend(priority bypass, IQ만)4444.72→3619.99 ps. 4/7/56 entries ×30000 cycle equality PASS.
 - [x] early-load `EARLY_LOAD_SELECT=1` 기본 채택: registered AGU raw preview로 identity를 예약하고 다음 cycle resident LQ로만 request 허용. fault/withheld-update/sequence/flush guard 및 conservative ordering 불변. A/B baseline은 PS `-CoreEarlyLoadSelect:$false` / timing·integration `-EarlyLoadSelect:$false`, Linux timing `EARLY_LOAD_SELECT=0`.
 - [x] 같은 ELF official469739/576450/IPC1.227171, profiler469795/576462. CRC/exit PASS. 1.3 목표443423 cycles까지26316 cycle 추가 절감 필요. 최신 `out/iq_preview_fpu_csr_final_perf.json`. C/FP signature009e00b9 exit0 PASS.
@@ -56,7 +56,15 @@
 - [x] IQ payload balanced OR tree는 ignored prototype만: 4/7/56-entry×30000-cycle all-output equality PASS. 최초 호출 치환 실수로 payload0/equality FAIL여서1000.96ps 수치는 무효. 수정 후1182.07ps/113355.634µm² vs현행1180.39/112963.550으로 악화, 채택 거부/production IQ 미변경. `out/iq_balanced_payload_equiv2.log`, `out/iq_balanced_payload_timing2.log`.
 - [x] frontend block-step factoring 후보 거부/RTL 원복: request/redirect native equality SVA와 RV32/RV64/PADDR32 cross-block PASS, combined CoreMark hash2BE75F…/C-FP PASS. 그러나 full-map2924.25→3116.53ps/341856.284→342269.648µm²로 악화. `out/timing_frontend_parallel_block_step`, ignored prototype만 보관.
 - [ ] 다음 최장 backend 경로는 FPU `pre_calc_q[99]`→`norm_calc_q[20]` 정규화 내부. `out/branch_prefix_fpu_critical_path.log`는 unit-delay LZC loop를 과대평가하므로 1353 units를 STA로 해석 금지. balanced highest-bit encoder / exponent arithmetic 후보를 latency5 유지 조건으로 먼저 검토할 것. backend FPU는 LATENCY5 override이고 standalone default는4임.
-- [ ] v1.18.16 whole-core 재측정 `out/timing_core_branch_prefix_compare`, session70125 실행 중. accepted frontend(v15)와 BRU(v16) 조합, AGU_LOAD_BYPASS=1. 중복 시작 금지; macro read-array omission/서버1.2GHz 미확인 유지.
+- [x] v1.18.16 pushed `ad9c042`, whole-core 재측정 `out/timing_core_branch_prefix_compare`:3353.10→3046.47ps/area363156.234→364484.106µm². accepted frontend(v15)+BRU(v16), AGU_LOAD_BYPASS=1. 새 critical PMP address→anonymous ROB memory write-enable `$161916` 구조 추적 중. macro read-array omission/서버1.2GHz 미확인 유지.
+- [x] FPU balanced highest-bit 채택 후보: normalize+pack2122.85ps/27126.148µm² vsbaseline2241.24/27505.198. latency/FF/API 불변. RV32/RV64 각1141602-vector full-normalize/pack bit equality PASS, static/dynamic 각각113600 exact-rational vectors PASS. CoreMark hash2BE75F…/IPC1.336361, C-FP009e00b9 exit0, block28/backend integration PASS. FPU 단독 변경의 전체 backend `out/timing_backend_balanced_fpu_lzc`:3127.15→3036.55ps/area329313.054→326915.862. 후속 PMP/frontend 변경의 전체값으로 주장 금지.
+- [x] PMP NAPOT odd-base high-bound bug red→green: pmpaddr0=0x1402/cfg0x19의5008~5010 region이 기존 OR bound에서는 empty. prefix-mask / encoded high increment로base+size를 구현, counter/dynamic size decode 제거. leaf1729.21→1584.01ps(단순ADD수정2516.20보다개선). PADDR32/64 각각8B~half-space, six even/odd bases 경계/lockedM/write/fullspace/wrap PASS (`out/pmp_prefix_32_result.log`, `out/pmp_prefix_64_result.log`). 큰 region에서 base가0으로wrap된 TB lower-overlap 기대값 수정(해당 access는 physicalwrap/nooverlap). 서버 hang 원인으로 단정 금지.
+- [x] 서버 최신0e54dbb path: queue head_block→predictor(~0.5ns)→FTB→head_parcel_offset. arrival1.1855ns/required0.8124ns/slack−0.3731ns. `normal_fill_addr_i=outstanding_addr_q`로 주소 분리 + aligned tag compare/PC lowbits offset/invalid payload ungating. address-only2625.15ps, 최종normal_fill_valid도분리2638.63ps vsbaseline2924.25(−9.77%)/area343400.946vs341856.284(+0.45%). extra valid 분리는max0.51%비용 대신FTBhit→normal-offset-enable 경로제거. named구조115.3→91.4→73.9units/86→66→53gates는STA아님. 4구성×60000cycles equality/최상위주소블록 unit PASS, 최종 CoreMark hash2BE75F…/IPC1.336361 불변. block28/backend integration/C-FP009e00b9 exit0 PASS. filelists/top ports 불변, queue 내부 address/valid ports와params만추가.
+- [x] 제외한 frontend 후보: flat one-hot parcel cursor3109.50ps(악화) 원복. late gshare LSB bank-select 단독2923.37vsungated2845.57로악화, normal-fill분리와결합2598.36ps는약1%개선이나 extra bank-read 없이nativehistory2625.15ps를선택(해당candidate미반영). predictor policy/latency불변.
+- [x] address-only whole-core ablation `out/timing_core_separate_fill_final` 완료3109.23ps/358300.404µm² vsv16 core3046.47ps(+2.06%delay). 최장backend LSQ candidate_index[5]→anonymousgate. frontend full-map 개선을 wholecore 개선으로 주장 금지. 최종address/valid `out/timing_core_separate_fill_valid_final`/session59930이 순차 시작됐고 structural check PASS. 공개 macro array read omission에 주의. server candidate는v1.18.17, timing1.2GHz sign-off 미확인.
+- [ ] 다음은 최종 whole-core 결과의 LSQ candidate→older memory guard→request-ready→candidate replacement 무등록 경로 재추적. memory ordering/hold stability를 약화시켜 timing을 맞추지 말 것. 회사 서버에서는 이번 frontend endpoint 제거 효과와 새 worst path를 확인한다.
+- [x] FPU helper SAT 재현script: Windows child PATH에oss-cad-suite/lib를추가해 DLL-loader대기 방지, 재실행시report를running/passedfalse로초기화해stalePASS방지. PATH미설정으로멈춘ownYosysPID15652만명령확인후정리. 최종`out/fpu_balanced_lzc_formal_final`/Unicode+space경로에서도SATPASS. helper-only2^80입력증명이며IEEE/pipeline전체증명아님.
+- [x] `scripts/check_fpu_lzc_equivalence.py`는 현재 RTL helper를 그대로 추출해 ascending native reference와 Yosys/read_slang SAT 비교. 모든2^80 two-state 입력에 equality 증명 PASS; 공백 경로도 PASS. `out/fpu_balanced_lzc_formal/report.json`. 범위는 helper 조합 논리뿐이며 pipeline/IEEE 전체 증명으로 주장하지 말 것.
 - [ ] 서버 STA/SDC 최신 결과 필요. 공개45nm 수치를2nm Fmax로 환산 금지. 1.2GHz+IPC1.3 동시 달성 아직 미증명.
 - [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.

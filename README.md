@@ -21,13 +21,14 @@ CoreMark CRC/exit, 실제 C/FP/load-store ELF, assertion-enabled block/backend �
 RV32F는 exact-rational oracle로 static/dynamic rounding 각각113,600 vector를 비교했습니다.
 전체 ISA 장기 differential, 외부 Spike/Sail·riscv-arch-test 및 서버 공정 STA sign-off는 아직 완료하지 않았습니다.
 
-> 최신 설계 checkpoint는 v1.18.16(분기 비교/target 산술 경로 단축)입니다. 이전 pushed 기준은 `0e54dbb`(v1.18.15)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 동시 달성은 아직 미확인입니다.
+> 최신 설계 checkpoint는 v1.18.17(frontend 일반 리필 주소 분리/FPU 균형 highest-bit tree/PMP NAPOT 보강)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 동시 달성은 아직 미확인입니다.
 > v1.18.13 기준값은469,739 cycles / 576,450 instret / IPC1.227171입니다. working request-hold 보강 후 bypass=0은469,994 cycles / IPC1.226505입니다.
 > opt-in `AGU_LOAD_BYPASS=1` 후보는 같은 ELF에서431,358 cycles / IPC1.336361, CRC/exit/assertions PASS입니다. 기본값은0입니다.
-> Nangate45 screening: whole-backend macro3327.95→3127.15 ps, full-map frontend2924.25 ps. IPC1.336361은 유지하며 서버 2 nm Fmax로 환산할 수 없습니다. backend macro는 array read 경로가 생략됩니다.
+> Nangate45 screening: frontend full-map2924.25→2638.63 ps(−9.77%). FPU 단독 변경의 whole-backend macro3127.15→3036.55 ps. 최종 whole-core screening은 별도 진행하며 macro array read 경로는 생략됩니다. IPC1.336361은 유지하며 서버 2 nm Fmax로 환산할 수 없습니다.
 > 기본 FPU fast latency는5입니다. 상세 최신 구조/측정 조건은 [HDD](docs/HDD_Core_Architecture.md)의 v1.18.13 절을 보세요.
 > branch 병렬 평가 및 load bypass의 상태·타이밍·안전 조건은 HDD v1.18.14 절에 기록합니다. 서버 1.2GHz 달성은 아직 확인되지 않았습니다.
 > 기존 `sources_core.f`, `rtl/filelist.f`, Xcelium RTL/TB file list와 `rv_ooo_core` top port는 변경하지 않았습니다. IPC1.3 후보 비교에는 시뮬레이션과 합성 모두 `AGU_LOAD_BYPASS=1`을 사용하세요(기본0).
+> v1.18.17은 내부 `rv_fetch_queue`의 `normal_fill_addr_i/normal_fill_valid_i`를 추가하고 frontend에서 연결합니다. 이 leaf를 별도로 instantiate하는 검증환경에서만 연결 확인이 필요합니다. 두 신규 parameter의 standalone 기본값은0입니다. 상세 동작/시험/서버 timing budget은 HDD §5-6/5-7 checkpoint를 참고하세요.
 
 ## Linux 서버에서 ELF 바로 실행
 

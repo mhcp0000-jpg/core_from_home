@@ -294,6 +294,8 @@ module rv_frontend #(
     .PADDR_WIDTH  (PADDR_WIDTH),
     .FETCH_BYTES  (FETCH_BYTES),
     .QUEUE_BYTES  (QUEUE_BYTES),
+    .UNGATED_PAYLOAD(1'b1),
+    .SEPARATE_NORMAL_FILL_ADDRESS(1'b1),
     .RESET_VECTOR (RESET_VECTOR)
   ) u_fetch_queue (
     .clk_i,
@@ -301,6 +303,8 @@ module rv_frontend #(
     .fill_valid_i      (queue_fill_valid),
     .fill_ready_o      (queue_fill_ready),
     .fill_addr_i       (queue_fill_addr),
+    .normal_fill_addr_i(outstanding_addr_q),
+    .normal_fill_valid_i(imem_rsp_valid_i && response_is_current),
     .fill_id_i         (redirect_uses_target_buffer ? 4'h0 : imem_rsp_id_i),
     .fill_epoch_i      (redirect_uses_target_buffer ? epoch_q + 1'b1 :
                                                       imem_rsp_epoch_i),

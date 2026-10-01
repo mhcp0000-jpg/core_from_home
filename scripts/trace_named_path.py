@@ -235,7 +235,14 @@ for b in range(nbits):
 def exact_root(spec):
     m = re.match(r'(.*)\[(\d+)\]$', spec)
     name, idx = (m.group(1), int(m.group(2))) if m else (spec, 0)
-    return find(wire_base[chr(92) + name] + idx)
+    # RTLIL has escaped user identifiers (\name) and unescaped internal $ids.
+    # ABC endpoints may be either; also accept an explicitly escaped CLI name.
+    key = name if name in wire_base else chr(92) + name
+    if key not in wire_base:
+        raise SystemExit(f'Wire not found: {name}')
+    if idx >= wire_width[key]:
+        raise SystemExit(f'Bit index out of range: {spec}; width={wire_width[key]}')
+    return find(wire_base[key] + idx)
 src_ok = None
 if args.srcbit:
     src_ok = {exact_root(args.srcbit)}

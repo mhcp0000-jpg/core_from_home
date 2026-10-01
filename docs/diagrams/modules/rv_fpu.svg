@@ -29,5 +29,5 @@
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>
 <text x="60" y="448" class="label">Timing contract</text>
-<text x="60" y="480" class="timing-text"><tspan x="60">Backend fast LATENCY=5 불변; static / dynamic RM 각각 113600-vector equality PASS.</tspan><tspan x="60" dy="24">Throughput: stall이 없으면 1 fast FP op/cycle; elastic stage backpressure / ROB-age flush 유지.</tspan><tspan x="60" dy="24">동일 Nangate45 leaf: 2712.96 → 2241.24 ps; 최종 Fmax는 서버 STA로 sign-off.</tspan></text>
+<text x="60" y="480" class="timing-text"><tspan x="60">80-bit highest-bit tree: 128 padded leaves / 7 levels; normalize + pack helper 공유.</tspan><tspan x="60" dy="24">Backend LATENCY=5 / throughput1 불변; static/dynamic RM 각113600 vectors + helper SAT PASS.</tspan><tspan x="60" dy="24">Nangate45 leaf2241.24 → 2122.85 ps; FPU ablation backend3127.15 → 3036.55 ps; 서버 STA 별도.</tspan></text>
 </svg>

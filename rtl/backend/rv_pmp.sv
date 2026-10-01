@@ -22,6 +22,13 @@ module rv_pmp #(
   logic [1:0] entry_mode_decoded [0:PMP_ENTRIES-1];
   logic [PADDR_WIDTH:0] region_low_decoded [0:PMP_ENTRIES-1];
   logic [PADDR_WIDTH:0] region_high_decoded [0:PMP_ENTRIES-1];
+  logic [PMP_ADDR_WIDTH-1:0] napot_prefix_ones [0:PMP_ENTRIES-1];
+  for (genvar entry=0; entry<PMP_ENTRIES; entry++) begin : g_napot_prefix
+    for (genvar bit_index=0; bit_index<PMP_ADDR_WIDTH; bit_index++) begin : g_bit
+      assign napot_prefix_ones[entry][bit_index] =
+        &pmpaddr_i[entry*PMP_ADDR_WIDTH +: bit_index+1];
+    end
+  end
 
   // Decode each PMP entry once, independently of the number of access ports.
   // In particular, NAPOT trailing-one detection and TOR bound construction
@@ -32,8 +39,7 @@ module rv_pmp #(
       logic [PMP_ADDR_WIDTH-1:0] entry_addr;
       logic [PMP_ADDR_WIDTH-1:0] previous_addr;
       logic [PMP_ADDR_WIDTH-1:0] napot_low_mask;
-      logic trailing;
-      int unsigned trailing_ones;
+      logic [PMP_ADDR_WIDTH:0] napot_encoded_high;
 
       entry_cfg_decoded[entry] = pmpcfg_i[entry*8 +: 8];
       entry_mode_decoded[entry] = entry_cfg_decoded[entry][4:3];
@@ -44,9 +50,8 @@ module rv_pmp #(
       if (entry != 0)
         previous_addr = pmpaddr_i[(entry-1)*PMP_ADDR_WIDTH +:
                                   PMP_ADDR_WIDTH];
-      napot_low_mask = '0;
-      trailing = 1'b1;
-      trailing_ones = 0;
+      napot_low_mask = napot_prefix_ones[entry];
+      napot_encoded_high = '0;
 
       case (entry_mode_decoded[entry])
         2'b01: begin // TOR
@@ -60,24 +65,21 @@ module rv_pmp #(
                                        (PADDR_WIDTH+1)'(4);
         end
         2'b11: begin // NAPOT
-          for (int unsigned bit_index = 0;
-               bit_index < PMP_ADDR_WIDTH; bit_index++) begin
-            if (trailing && entry_addr[bit_index]) begin
-              napot_low_mask[bit_index] = 1'b1;
-              trailing_ones++;
-            end else begin
-              trailing = 1'b0;
-            end
-          end
-          if ((trailing_ones + 3) >= PADDR_WIDTH) begin
+          if (&entry_addr[PMP_ADDR_WIDTH-2:0]) begin
             region_low_decoded[entry] = '0;
             region_high_decoded[entry] = '0;
             region_high_decoded[entry][PADDR_WIDTH] = 1'b1;
           end else begin
             region_low_decoded[entry] = {1'b0,
               (entry_addr & ~napot_low_mask), 2'b00};
-            region_high_decoded[entry] = region_low_decoded[entry];
-            region_high_decoded[entry][trailing_ones + 3] = 1'b1;
+            // N trailing ones encode 2^(N+3) bytes. Set N+1 low bits
+            // of the encoded address, increment, then restore byte units.
+            // This is base+size including carry, never base OR size, and
+            // avoids a 32-bit trailing-one counter/dynamic size-bit decoder.
+            napot_encoded_high = {1'b0,
+              (entry_addr | ((napot_low_mask << 1) | PMP_ADDR_WIDTH'(1)))} +
+              (PMP_ADDR_WIDTH+1)'(1);
+            region_high_decoded[entry] = {napot_encoded_high, 2'b00};
           end
         end
         default: begin

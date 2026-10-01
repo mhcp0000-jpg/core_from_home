@@ -40,7 +40,7 @@ module rv_fpu #(
 
   // LATENCY>=3 uses an explicit arithmetic/pre-normalization stage.  The
   // default LATENCY=4 also separates leading-bit normalization/barrel shift
-  // from rounding/packing; this is the timing-safe 1 GHz-oriented pipeline.
+  // from rounding/packing. Backend uses LATENCY=5; clock sign-off needs STA.
   // LATENCY 1/2 keeps the compact unsplit datapath.
   // float32 exact FMA/add 에 실제로 필요한 누산 폭.  product 48-bit +
   // ALIGN_SH 만큼의 하위 여유 + carry.  128-bit 은 과했다.
@@ -377,7 +377,6 @@ module rv_fpu #(
     logic [24:0] rounded;
     logic guard_bit, sticky_bit, increment, inexact;
     logic [7:0] exponent_field;
-    logic found;
     logic [6:0] highest_bit;
     logic [6:0] shift_unsigned;
     logic [6:0] shift_minus1;
@@ -410,13 +409,7 @@ module rv_fpu #(
     subnormal_shift     = -(lsb_exp + signed'(EXPW'(149)));
     biased_base         =  lsb_exp + signed'(EXPW'(127));
 
-    highest_bit = 7'd0;
-    found = 1'b0;
-    for (integer bit_index = int'(MAGW)-1; bit_index >= 0; bit_index--)
-      if (!found && magnitude[bit_index]) begin
-        highest_bit = 7'(bit_index);
-        found = 1'b1;
-      end
+    highest_bit = highest_magnitude_bit(magnitude);
     highest_signed  = signed'(EXPW'({9'b0, highest_bit}));
     is_overflow     = highest_signed >  overflow_threshold;
     is_normal_range = highest_signed >= subnormal_threshold;
@@ -512,9 +505,29 @@ module rv_fpu #(
     return result;
   endfunction
 
+  // Highest-set-bit priority is explicit and balanced: each tree node picks
+  // its higher-index child iff that subtree contains a one. Invalid padding
+  // covers MAGW=80 without reading outside the magnitude. No new state/stage.
+  function automatic logic [6:0] highest_magnitude_bit(
+    input logic [MAGW-1:0] magnitude
+  );
+    localparam int LEAVES = 1 << $clog2(MAGW);
+    logic [7:0] nodes [1:2*LEAVES-1];
+    for (int bit_index = 0; bit_index < LEAVES; bit_index++) begin
+      if (bit_index < MAGW)
+        nodes[LEAVES+bit_index] = {magnitude[bit_index], 7'(bit_index)};
+      else nodes[LEAVES+bit_index] = '0;
+    end
+    for (int node = LEAVES-1; node > 0; node--) begin
+      nodes[node][7] = nodes[node*2][7] | nodes[node*2+1][7];
+      nodes[node][6:0] = nodes[node*2+1][7] ? nodes[node*2+1][6:0] : nodes[node*2][6:0];
+    end
+    return nodes[1][7] ? nodes[1][6:0] : 7'd0;
+  endfunction
+
   // Stage 1 of the timing-oriented packer: leading-one detection, exponent
-  // classification and the 128-bit alignment/sticky shift.  The registered
-  // output leaves only a 25-bit round/add and final field assembly for stage 2.
+  // classification and the 80-bit alignment/sticky shift. The registered
+  // output leaves a 25-bit round/add and final field assembly for stage 2.
   function automatic fp_normalized_t normalize_fp_pre(
     input fp_precalc_t pre
   );
@@ -523,7 +536,6 @@ module rv_fpu #(
     logic [MAGW-1:0] magnitude;
     logic [MAGW-1:0] retained_wide;
     logic sticky;
-    logic found;
     logic [6:0] highest_bit;
     logic [6:0] shift_unsigned;
     logic [6:0] shift_minus1;
@@ -561,13 +573,7 @@ module rv_fpu #(
     subnormal_threshold = -signed'(EXPW'(126)) - lsb_exp;
     subnormal_shift     = -(lsb_exp + signed'(EXPW'(149)));
 
-    highest_bit = 7'd0;
-    found = 1'b0;
-    for (integer bit_index = int'(MAGW)-1; bit_index >= 0; bit_index--)
-      if (!found && magnitude[bit_index]) begin
-        highest_bit = 7'(bit_index);
-        found = 1'b1;
-      end
+    highest_bit = highest_magnitude_bit(magnitude);
     highest_signed = signed'(EXPW'({9'b0, highest_bit}));
 
     // hb + lsb > 127  <=>  hb >  127 - lsb

@@ -3,6 +3,10 @@ module rv_fetch_queue #(
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned FETCH_BYTES = 16,
   parameter int unsigned QUEUE_BYTES = 64,
+  // Payload has no architectural meaning when out_valid_o is zero. Allow
+  // a tightly coupled predictor to read bytes/PC without a validity mux.
+  parameter bit UNGATED_PAYLOAD = 1'b0,
+  parameter bit SEPARATE_NORMAL_FILL_ADDRESS = 1'b0,
   parameter logic [XLEN-1:0] RESET_VECTOR = 'h8000_0000,
   localparam int unsigned COUNT_WIDTH = $clog2(QUEUE_BYTES + 1),
   localparam int unsigned FETCH_ADDR_LSB = $clog2(FETCH_BYTES)
@@ -12,6 +16,13 @@ module rv_fetch_queue #(
   input  logic                               fill_valid_i,
   output logic                               fill_ready_o,
   input  logic [PADDR_WIDTH-1:0]             fill_addr_i,
+  // With SEPARATE_NORMAL_FILL_ADDRESS, normal response address/valid bypass
+  // the predicted-target/FTB mux. The frontend supplies its outstanding
+  // address register and current-epoch response valid. fill_addr_i still
+  // describes the actual block for redirect/metadata assertions. Both normal
+  // inputs are ignored on redirect; without redirect both valids must agree.
+  input  logic [PADDR_WIDTH-1:0]             normal_fill_addr_i,
+  input  logic                               normal_fill_valid_i,
   input  logic [3:0]                         fill_id_i,
   input  logic [3:0]                         fill_epoch_i,
   input  logic [FETCH_BYTES*8-1:0]           fill_data_i,
@@ -158,6 +169,19 @@ module rv_fetch_queue #(
           INST_LEN_16 : INST_LEN_32;
       end
     end
+    if (UNGATED_PAYLOAD) begin
+      out_pc_o[0] = head_pc_q;
+      out_pc_o[1] = head_pc_q + ((parcel0[1:0] == 2'b11) ? XLEN'(4) : XLEN'(2));
+      out_instruction_o[0] = (parcel0[1:0] == 2'b11) ? {parcel1,parcel0} : {16'b0,parcel0};
+      if (parcel0[1:0] != 2'b11) begin
+        out_instruction_o[1] = (parcel1[1:0] == 2'b11) ? {parcel2,parcel1} : {16'b0,parcel1};
+        out_inst_len_o[1] = (parcel1[1:0] == 2'b11) ? INST_LEN_32 : INST_LEN_16;
+      end else begin
+        out_instruction_o[1] = (parcel2[1:0] == 2'b11) ? {parcel3,parcel2} : {16'b0,parcel2};
+        out_inst_len_o[1] = (parcel2[1:0] == 2'b11) ? INST_LEN_32 : INST_LEN_16;
+      end
+      out_inst_len_o[0] = (parcel0[1:0] == 2'b11) ? INST_LEN_32 : INST_LEN_16;
+    end
   end
 
   always_comb begin
@@ -181,7 +205,15 @@ module rv_fetch_queue #(
     fill_reference_paddr = head_paddr;
     fill_address_delta = fill_reference_paddr - fill_addr_i;
     fill_head_offset = 0;
-    if ((block_count_q == 0) &&
+    if (SEPARATE_NORMAL_FILL_ADDRESS) begin
+      // Transport blocks are aligned. Equal block tags imply the retained
+      // PC's low bits are the offset; neither an add nor subtract is needed.
+      // Crucially this cone never consumes predicted target/FTB hit signals.
+      if ((block_count_q == 0) &&
+          (fill_reference_paddr[PADDR_WIDTH-1:FETCH_ADDR_LSB] ==
+           normal_fill_addr_i[PADDR_WIDTH-1:FETCH_ADDR_LSB]))
+        fill_head_offset = fill_reference_paddr[FETCH_ADDR_LSB-1:1];
+    end else if ((block_count_q == 0) &&
         (fill_reference_paddr >= fill_addr_i) &&
         (fill_reference_paddr <
          (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES)))) begin
@@ -227,7 +259,8 @@ module rv_fetch_queue #(
 
       block_count_q <= block_count_q -
                        BLOCK_COUNT_WIDTH'(consume_blocks);
-      if (fill_valid_i && fill_ready_o) begin
+      if ((SEPARATE_NORMAL_FILL_ADDRESS ? normal_fill_valid_i : fill_valid_i) &&
+          fill_ready_o) begin
         block_data_q[tail_block_q] <= fill_data_i;
         for (int unsigned parcel = 0; parcel < FETCH_PARCELS; parcel++)
           block_fault_q[tail_block_q][parcel] <=
@@ -258,6 +291,9 @@ module rv_fetch_queue #(
   assign empty_o = (block_count_q == 0);
 
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (SEPARATE_NORMAL_FILL_ADDRESS && !redirect_valid_i) |->
+      normal_fill_valid_i == fill_valid_i);
   always_comb begin
     if (rst_ni === 1'b1) begin
       assert (!out_valid_o[1] || out_valid_o[0]);
@@ -269,6 +305,8 @@ module rv_fetch_queue #(
                 (redirect_paddr <
                  (fill_addr_i + PADDR_WIDTH'(FETCH_BYTES))));
       end
+      if (SEPARATE_NORMAL_FILL_ADDRESS && fill_valid_i && !redirect_valid_i)
+        assert (normal_fill_addr_i[FETCH_ADDR_LSB-1:0] == '0);
     end
   end
 `endif
