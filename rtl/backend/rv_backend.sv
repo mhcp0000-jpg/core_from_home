@@ -734,6 +734,7 @@ module rv_backend #(
   logic [1:0] cand_valid, cand_accept;
   logic [1:0][ROB_SEQ_WIDTH-1:0] cand_sequence;
   fu_class_e [1:0] cand_fu;
+  logic [1:0][(1 << $bits(fu_class_e))-1:0] cand_fu_onehot;
   logic [1:0][4:0] cand_port_mask;
   logic [1:0][2:0][PHYS_TAG_WIDTH-1:0] cand_src_phys;
   reg_class_e [1:0][2:0] cand_src_class;
@@ -790,6 +791,7 @@ module rv_backend #(
     .writeback_phys_i(direct_wake_phys),.candidate_valid_o(cand_valid),
     .candidate_accept_i(cand_accept),.candidate_index_o(),
     .candidate_sequence_o(cand_sequence),.candidate_fu_o(cand_fu),
+    .candidate_fu_onehot_o(cand_fu_onehot),
     .candidate_port_mask_o(cand_port_mask),.candidate_src_phys_o(cand_src_phys),
     .candidate_src_class_o(cand_src_class),
     .candidate_destination_valid_o(cand_dst_valid),
@@ -877,22 +879,23 @@ module rv_backend #(
   always_comb begin
     effective_mask='0;
     for(int unsigned candidate=0;candidate<2;candidate++) begin
-      case(cand_fu[candidate])
-        FU_INT:begin
-          effective_mask[candidate][0]=cand_port_mask[candidate][0]&&fast_req_ready[0];
-          effective_mask[candidate][1]=cand_port_mask[candidate][1]&&fast_req_ready[1];
-        end
-        FU_BRANCH:effective_mask[candidate][0]=cand_port_mask[candidate][0]&&fast_req_ready[0];
-        FU_MUL:effective_mask[candidate][1]=cand_port_mask[candidate][1]&&mul_req_ready;
-        FU_DIV:effective_mask[candidate][1]=cand_port_mask[candidate][1]&&div_req_ready;
-        FU_LOAD,FU_STORE:begin
-          effective_mask[candidate][2]=cand_port_mask[candidate][2]&&lsu_issue_ready[0];
-          effective_mask[candidate][3]=cand_port_mask[candidate][3]&&lsu_issue_ready[1];
-        end
-        FU_FP:effective_mask[candidate][4]=cand_port_mask[candidate][4]&&
-          (!fpu_issue_valid_q||fpu_req_ready);
-        default:effective_mask[candidate]='0;
-      endcase
+      // Class decode runs from registered IQ entries in parallel with wakeup
+      // and age selection, not after selecting/encoding the class payload.
+      effective_mask[candidate][0] = cand_port_mask[candidate][0] &&
+        (cand_fu_onehot[candidate][FU_INT] || cand_fu_onehot[candidate][FU_BRANCH]) &&
+        fast_req_ready[0];
+      effective_mask[candidate][1] = cand_port_mask[candidate][1] &&
+        ((cand_fu_onehot[candidate][FU_INT] && fast_req_ready[1]) ||
+         (cand_fu_onehot[candidate][FU_MUL] && mul_req_ready) ||
+         (cand_fu_onehot[candidate][FU_DIV] && div_req_ready));
+      effective_mask[candidate][2] = cand_port_mask[candidate][2] &&
+        (cand_fu_onehot[candidate][FU_LOAD] || cand_fu_onehot[candidate][FU_STORE]) &&
+        lsu_issue_ready[0];
+      effective_mask[candidate][3] = cand_port_mask[candidate][3] &&
+        (cand_fu_onehot[candidate][FU_LOAD] || cand_fu_onehot[candidate][FU_STORE]) &&
+        lsu_issue_ready[1];
+      effective_mask[candidate][4] = cand_port_mask[candidate][4] &&
+        cand_fu_onehot[candidate][FU_FP] && (!fpu_issue_valid_q || fpu_req_ready);
 `ifndef SYNTHESIS
       // Bundles are split at a serializing lane 0 (see uq_split), so no
       // issue candidate can be younger than the live serial barrier.
@@ -903,6 +906,31 @@ module rv_backend #(
 `endif
     end
   end
+`ifndef SYNTHESIS
+  // Clocked equality avoids comparing old/new upstream bundles during a
+  // simulator delta-cycle settle. The production mask must match legacy.
+  function automatic logic [4:0] legacy_resource_mask(
+    input fu_class_e fu, input logic [4:0] static_mask
+  );
+    logic [4:0] resource;
+    resource = '0;
+    case (fu)
+      FU_INT: resource[1:0] = fast_req_ready;
+      FU_BRANCH: resource[0] = fast_req_ready[0];
+      FU_MUL: resource[1] = mul_req_ready;
+      FU_DIV: resource[1] = div_req_ready;
+      FU_LOAD, FU_STORE: resource[3:2] = lsu_issue_ready;
+      FU_FP: resource[4] = !fpu_issue_valid_q || fpu_req_ready;
+      default: resource = '0;
+    endcase
+    return static_mask & resource;
+  endfunction
+  for (genvar candidate = 0; candidate < 2; candidate++) begin : g_resource_mask_equal
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      cand_valid[candidate] |-> effective_mask[candidate] ==
+        legacy_resource_mask(cand_fu[candidate], cand_port_mask[candidate]));
+  end
+`endif
   logic [1:0] cand_grant;
   logic [1:0][2:0] cand_grant_port;
   logic [4:0] selected_port_valid;

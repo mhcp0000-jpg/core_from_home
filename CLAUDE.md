@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 pushed checkpoint: `8c5d93e` v1.18.14 branch factoring + opt-in AGU_LOAD_BYPASS (2026-10-01). 서버 STA 목표는 미확인.
+- 현재 설계 checkpoint: v1.18.15 FU predecode/LSQ parallel predicates/shared frontend target arithmetic (2026-10-01). 이전 pushed 기준 `0f654b4`. 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -43,7 +43,15 @@
 - [x] parallel FTB tag checks/one-hot wide select 후보는 CoreMark 모든 counter equality와 RV32/RV64/PADDR32 cross-block, 25000-cycle independent FTB oracle PASS. 그러나 whole frontend2940.50→3043.41 ps/area342718.922→343633.696으로 악화해 production RTL 원복. oracle TB는 유지.
 - [x] issue arbiter one-hot port choice/exclusion 채택: 262144 exhaustive cases에서 generic search와 all-output equality PASS. CoreMark all profiler counters/hash 동일(431414 profile cycles), C-FP009e00b9 exit0/backend integration/block26 runs PASS. whole backend **3392.51→3381.88 ps/327680.346→324563.092 µm²**. binary encode/decode는 exported port number에만 남김. `out/timing_backend_issue_onehot/timing_summary.csv`.
 - [x] FTB independent25000-cycle oracle는 production 원복 후에도 PASS (`out/ftb_oracle_baseline.log`). Xcelium runner에 opt-in `AGU_LOAD_BYPASS=1` compile option 추가, HTIF TB actual config 로그 추가. Verilator preprocess0/1 및 define1 HTIF elaboration PASS; Xcelium 실행 자체는 서버에서 확인 필요.
-- [ ] 다음 whole critical: LSQ `candidate_index[0]` → `candidate_sequence[9]`; named 구조 경로를 추적한 뒤 후보 identity replacement cone을 검토. 1.2GHz 서버 sign-off 아직없음.
+- [x] 다음 whole critical: LSQ `candidate_index[0]` → resident/active sequence → older MMIO/unknown-address reduction → request-ready → candidate replacement → `candidate_sequence[9]`. `out/issue_onehot_critical_path.log`. 1.2GHz 서버 sign-off 아직없음.
+- [x] LSQ per-entry parallel predicate/reduction 채택: officialIPC1.336361/all profiler hash2BE75F… 그대로. baseline0f654b4와 all-output cycle cosim EARLY0/1×BYPASS0/1 4조합 PASS. leaf2759.97→2850.11ps는 악화했지만 whole3381.88→3381.34ps(실질 timing 중립)/area324563.092→322202.608(−0.73%). `out/timing_backend_lsq_reduction/timing_summary.csv`.
+- [x] sequence comparator 대안은 prototype에서65536 byte-pair equality+directed cosim PASS, leaf2850.11→2769.62ps지만 bypass baseline2759.97보다 여전히 느려 production 미반영. issued/completed 기반 refill은 official431701/IPC1.335299, block26/C-FP/integration PASS지만 leaf2850.11→2901.64ps 악화 및+343cycles 비용으로 원복; whole clock 개선이라고 주장하지 않음. candidate released through ready semantics 유지.
+- [x] 최신 control/PRF leaf11종 합성 완료 (`out/timing_current_control_prf/timing_summary.csv`): rename1728.68/PMP1729.21/BRU1154.27/INT-PRF751.43/FP-PRF590.17/LSU-pipe998.50/result-buffer589.39/decode968.86/trap311.97/recovery194.12/fence137.78ps. leaf만으로 whole clock 주장 금지, PRF는 async mux 포함 full-map.
+- [x] IQ FU predecode 채택: `candidate_fu_onehot_o`(16bits), 추가 state/stage/issue policy 없음. class/mask clocked SVA, 4/7/56-entry×30000-cycle all-output equality PASS. whole backend3381.34→3327.95ps/area322202.608→324267.566µm². `out/timing_backend_iq_fu_predecode/timing_summary.csv`. filelist 변경 없음.
+- [x] frontend shared immediate decode +4-bit carry-select/prefix target adder 채택: full-map2940.50→2924.25ps/342718.922→341856.284µm². predictor policy/history/latency 불변. RV32/RV64 각296608-vector 독립 oracle PASS. `out/timing_frontend_target_add/timing_summary.csv`.
+- [x] 최종 두 변경 포함 CoreMark bypass1 profiler hash2BE75F…/official431358/576450/IPC1.336361, bypass0 hash168A4957…/official469994/IPC1.226505 불변. C-FP009e00b9/exit0, backend integration, assertion-enabled block27 runs PASS.
+- [x] 새 backend named-path: slow FPU valid → direct wake → IQ age-select → PRF/bypass operand → candidate branch compare → fast result payload. `out/iq_fu_predecode_critical_path.log`. 구조 추적이며 STA가 아니고 이전 push-enable 병목과 구분할 것.
+- [ ] 현재 accepted whole-core 재측정: `out/timing_core_iq_fu_target_add`, session40026(이미 실행 중; 중복 시작 금지). macro array read 경로 생략에 주의. 서버에 `rv_ooo_core.AGU_LOAD_BYPASS=1`을 명시하고 새로 elaboration/합성할 것.
 - [ ] 서버 STA/SDC 최신 결과 필요. 공개45nm 수치를2nm Fmax로 환산 금지. 1.2GHz+IPC1.3 동시 달성 아직 미증명.
 - [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.

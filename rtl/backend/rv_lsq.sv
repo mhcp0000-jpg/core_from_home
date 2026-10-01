@@ -670,6 +670,8 @@ module rv_lsq #(
     always_comb begin
       logic unknown_address;
       logic older_device_memory;
+      logic [SQ_ENTRIES-1:0] sq_older_device, sq_unknown_address;
+      logic [LQ_ENTRIES-1:0] lq_older_device, lq_unknown_address;
       logic partial_overlap;
       logic sq_match;
       logic sq_match_data_valid;
@@ -688,6 +690,10 @@ module rv_lsq #(
 
       unknown_address = 1'b0;
       older_device_memory = 1'b0;
+      sq_older_device = '0;
+      sq_unknown_address = '0;
+      lq_older_device = '0;
+      lq_unknown_address = '0;
       partial_overlap = 1'b0;
       sq_match = 1'b0;
       sq_match_data_valid = 1'b0;
@@ -734,9 +740,9 @@ module rv_lsq #(
         if (candidate_present && sq_valid_q[store] &&
             (distance != 0) && !distance[SEQ_WIDTH-1]) begin
           if (sq_device_q[store]) begin
-            older_device_memory = 1'b1;
+            sq_older_device[store] = 1'b1;
           end else if (!sq_address_valid_q[store]) begin
-            unknown_address = 1'b1;
+            sq_unknown_address[store] = 1'b1;
           end else if ((sq_address_q[store]
                         [PADDR_WIDTH-1:BYTE_OFFSET_WIDTH] ==
                         selected_address
@@ -815,11 +821,17 @@ module rv_lsq #(
         if (candidate_present && lq_valid_q[older_load] &&
             (load_distance != 0) && !load_distance[SEQ_WIDTH-1]) begin
           if (!lq_address_valid_q[older_load])
-            unknown_address = 1'b1;
+            lq_unknown_address[older_load] = 1'b1;
           else if (lq_device_q[older_load])
-            older_device_memory = 1'b1;
+            lq_older_device[older_load] = 1'b1;
         end
       end
+
+      // Independent per-entry predicates, then balanced reduction. Repeated
+      // conditional writes to a scalar accumulated an SQ+LQ priority chain
+      // on the request -> candidate-refill path. Ordering policy is unchanged.
+      older_device_memory = (|sq_older_device) || (|lq_older_device);
+      unknown_address = (|sq_unknown_address) || (|lq_unknown_address);
 
       if (candidate_present) begin
         if (older_device_memory) begin

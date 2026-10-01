@@ -45,6 +45,7 @@ module rv_iq_equiv_case #(parameter ENTRIES=56)(output logic done);
   logic [1:0][INDEX_WIDTH-1:0] candidate_index;
   logic [1:0][ROB_SEQ_WIDTH-1:0] candidate_sequence;
   fu_class_e [1:0] candidate_fu;
+  logic [1:0][(1 << $bits(fu_class_e))-1:0] candidate_fu_onehot;
   logic [1:0][4:0] candidate_port_mask;
   logic [1:0][2:0][TAG_WIDTH-1:0] candidate_src_phys;
   reg_class_e [1:0][2:0] candidate_src_class;
@@ -155,6 +156,7 @@ module rv_iq_equiv_case #(parameter ENTRIES=56)(output logic done);
     .candidate_index_o         (candidate_index),
     .candidate_sequence_o      (candidate_sequence),
     .candidate_fu_o            (candidate_fu),
+    .candidate_fu_onehot_o     (candidate_fu_onehot),
     .candidate_port_mask_o     (candidate_port_mask),
     .candidate_src_phys_o      (candidate_src_phys),
     .candidate_src_class_o     (candidate_src_class),
@@ -323,7 +325,7 @@ module rv_iq_equiv_case #(parameter ENTRIES=56)(output logic done);
         dispatch_checkpoint_valid=$urandom;dispatch_checkpoint_id=$urandom;
         dispatch_lq_index=$urandom;dispatch_sq_index=$urandom;
         for(int lane=0;lane<2;lane++) begin
-          dispatch_fu[lane]=(n%5==0)?FU_STORE:FU_INT;
+          dispatch_fu[lane]=(n%5==0)?FU_STORE:fu_class_e'($urandom_range(0,9));
           dispatch_destination_class[lane]=REG_INT;
           dispatch_destination_phys[lane]=7'($urandom_range(1,79));
           for(int src=0;src<3;src++) begin
@@ -339,6 +341,10 @@ module rv_iq_equiv_case #(parameter ENTRIES=56)(output logic done);
         if(n%23==22) begin flush_younger=1;flush_sequence=next_seq-4;end
       end
       #1;
+      for (int slot=0; slot<2; slot++)
+        if (candidate_valid[slot] && candidate_fu_onehot[slot] !==
+            ((1 << $bits(fu_class_e))'(1) << candidate_fu_ref[slot]))
+          $fatal(1,"IQ onehot-class equivalence ENTRIES=%0d cycle=%0d",ENTRIES,n);
       if ({dispatch_ready,dispatch_index,candidate_valid,candidate_index,candidate_sequence,candidate_fu,candidate_port_mask,candidate_src_phys,candidate_src_class,candidate_destination_valid,candidate_destination_class,candidate_destination_phys,candidate_pc,candidate_instruction,candidate_inst_len,candidate_prediction,candidate_immediate,candidate_operation,candidate_use_pc,candidate_use_immediate,candidate_word_operation,candidate_mem_size,candidate_mem_unsigned,candidate_rounding_mode,candidate_checkpoint_valid,candidate_checkpoint_id,candidate_lq_index,candidate_sq_index,candidate_store_address_valid,candidate_store_data_valid,count,empty,full} !== {dispatch_ready_ref,dispatch_index_ref,candidate_valid_ref,candidate_index_ref,candidate_sequence_ref,candidate_fu_ref,candidate_port_mask_ref,candidate_src_phys_ref,candidate_src_class_ref,candidate_destination_valid_ref,candidate_destination_class_ref,candidate_destination_phys_ref,candidate_pc_ref,candidate_instruction_ref,candidate_inst_len_ref,candidate_prediction_ref,candidate_immediate_ref,candidate_operation_ref,candidate_use_pc_ref,candidate_use_immediate_ref,candidate_word_operation_ref,candidate_mem_size_ref,candidate_mem_unsigned_ref,candidate_rounding_mode_ref,candidate_checkpoint_valid_ref,candidate_checkpoint_id_ref,candidate_lq_index_ref,candidate_sq_index_ref,candidate_store_address_valid_ref,candidate_store_data_valid_ref,count_ref,empty_ref,full_ref})
         $fatal(1,"IQ all-output equivalence ENTRIES=%0d cycle=%0d",ENTRIES,n);
       if(dispatch_ready && dispatch_valid!=0) next_seq+=dispatch_valid[1]?2:1;

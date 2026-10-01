@@ -161,7 +161,81 @@ module rv_branch_predictor #(
     return pc + ((length == INST_LEN_16) ? XLEN'(2) : XLEN'(4));
   endfunction
 
+  // Shared target add: decode immediate first, then one 4-bit carry-select
+  // prefix adder. Prediction policy/history/BTB/RAS and cycle latency are
+  // unchanged. The generic native-add helper remains the simulation oracle.
+  function automatic logic [XLEN-1:0] target_add(
+    input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs
+  );
+    localparam int GROUPS = XLEN/4;
+    logic [GROUPS-1:0] propagate, generate_carry, carry;
+    logic [4:0] sum0 [0:GROUPS-1], sum1 [0:GROUPS-1];
+    logic term;
+    for (int group=0; group<GROUPS; group++) begin
+      sum0[group] = {1'b0,lhs[group*4 +: 4]} + {1'b0,rhs[group*4 +: 4]};
+      sum1[group] = sum0[group] + 5'd1;
+      propagate[group] = &(lhs[group*4 +: 4] ^ rhs[group*4 +: 4]);
+      generate_carry[group] = sum0[group][4];
+    end
+    for (int group=0; group<GROUPS; group++) begin
+      carry[group] = 1'b0;
+      for (int source=0; source<group; source++) begin
+        term = generate_carry[source];
+        for (int between=source+1; between<group; between++)
+          term &= propagate[between];
+        carry[group] |= term;
+      end
+      target_add[group*4 +: 4] = carry[group] ? sum1[group][3:0] : sum0[group][3:0];
+    end
+  endfunction
+
   function automatic logic [XLEN-1:0] calculate_direct_target(
+    input logic [XLEN-1:0] pc,
+    input logic [31:0] instruction,
+    input inst_len_e length
+  );
+    logic [31:0] immediate;
+    logic [XLEN-1:0] delta;
+    immediate = '0;
+    delta = '0;
+    if (length == INST_LEN_16) begin
+      if ((instruction[15:13] == 3'b110) ||
+          (instruction[15:13] == 3'b111)) begin
+        immediate[8] = instruction[12];
+        immediate[7:6] = instruction[6:5];
+        immediate[5] = instruction[2];
+        immediate[4:3] = instruction[11:10];
+        immediate[2:1] = instruction[4:3];
+        delta = sign_extend_imm(immediate, 9);
+      end else begin
+        immediate[11] = instruction[12];
+        immediate[10] = instruction[8];
+        immediate[9:8] = instruction[10:9];
+        immediate[7] = instruction[6];
+        immediate[6] = instruction[7];
+        immediate[5] = instruction[2];
+        immediate[4] = instruction[11];
+        immediate[3:1] = instruction[5:3];
+        delta = sign_extend_imm(immediate, 12);
+      end
+    end else if (instruction[6:0] == 7'b1100011) begin
+      immediate[12] = instruction[31];
+      immediate[11] = instruction[7];
+      immediate[10:5] = instruction[30:25];
+      immediate[4:1] = instruction[11:8];
+      delta = sign_extend_imm(immediate, 13);
+    end else begin
+      immediate[20] = instruction[31];
+      immediate[19:12] = instruction[19:12];
+      immediate[11] = instruction[20];
+      immediate[10:1] = instruction[30:21];
+      delta = sign_extend_imm(immediate, 21);
+    end
+    return target_add(pc, delta);
+  endfunction
+
+`ifndef SYNTHESIS
+  function automatic logic [XLEN-1:0] calculate_direct_target_legacy(
     input logic [XLEN-1:0] pc,
     input logic [31:0] instruction,
     input inst_len_e length
@@ -203,6 +277,13 @@ module rv_branch_predictor #(
     immediate[10:1] = instruction[30:21];
     return pc + sign_extend_imm(immediate, 21);
   endfunction
+  for (genvar lane=0; lane<2; lane++) begin : g_target_add_equal
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      query_valid_i[lane] |->
+        calculate_direct_target(query_pc_i[lane], query_instruction_i[lane], query_inst_len_i[lane]) ==
+        calculate_direct_target_legacy(query_pc_i[lane], query_instruction_i[lane], query_inst_len_i[lane]));
+  end
+`endif
 
   function automatic logic [PHT_BITS-1:0] history_shift(
     input logic [PHT_BITS-1:0] history,

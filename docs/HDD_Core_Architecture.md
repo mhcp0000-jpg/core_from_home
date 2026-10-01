@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.14 working candidate: parallel branch evaluation + opt-in AGU load bypass; server STA pending (2026-10-01) |
+| 상태 | v1.18.15 locally verified checkpoint: FU predecode/LSQ predicates/shared target arithmetic; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -1836,17 +1836,27 @@ retire와 allocate가 같은 cycle이면 retire로 생긴 공간을 즉시 재�
 
 `rv_issue_queue`는 현재 backend에서 한 번 인스턴스화되는 unified queue다.
 `ENTRIES=INT_IQ_ENTRIES+MEM_IQ_ENTRIES+FP_IQ_ENTRIES=56`,
-`SELECT_WIDTH=2`, `EXEC_PORTS=5`, `WRITEBACK_PORTS=4`로 사용한다.
+`SELECT_WIDTH=2`, `EXEC_PORTS=5`, `WRITEBACK_PORTS=8`로 사용한다.
+단독 module default의 WRITEBACK_PORTS=4와 backend 실제 instance8을 구분한다.
+backend는7개 live execution producer와1개 등록된 system/CSR wakeup을 연결한다.
 
 | Interface group | 핵심 signal | 계약 |
 |---|---|---|
 | dispatch2 | sequence, FU, execution-port mask, source used/tag/ready 3개, destination, PC/instruction/immediate/op, LQ/SQ index | free slot이 두 lane 모두에 충분할 때 원자 accept |
-| wakeup | 기본 4개 `writeback_valid/phys` | 저장 ready bit를 edge에서 갱신하고 같은 cycle candidate 판정에도 tag-match bypass |
+| wakeup | 단독 기본4, backend8개 `writeback_valid/class/phys` | 저장 ready bit를 edge에서 갱신하고 같은 cycle candidate 판정에도 tag-match bypass; WB grant와 producer presented result를 구분 |
 | candidate | 기본 2개 oldest-ready payload, `candidate_store_address_valid_o`, `candidate_store_data_valid_o`, `candidate_accept_i` | 일반 uop/최종 store phase만 제거; address-only store는 entry에 잔류 |
 | flush | all 또는 younger-than-sequence | flush cycle candidate/dispatch를 차단하고 해당 valid를 제거 |
 | status | count/empty/full | 현재 저장된 valid entry 수이며 예상 issue count가 아니다 |
 
-IQ allocation은 현재 register에 저장된 invalid slot만 사용한다. 그 cycle에 accept된 candidate slot을 dispatch가 조합으로 즉시 재사용하지 않으므로 full IQ는 한 cycle dispatch를 멈춘 뒤 다음 cycle 반환 slot을 사용한다. 이 경계가 result/WB→issue accept→allocation→`fu_q` D로 이어지던 장경로를 끊는다. 일반 uop은 저장 ready 또는 현재 WB broadcast tag match를 사용하므로 dependent uop의 same-cycle wakeup/select는 유지한다. oldest/second-oldest 후보는 56-entry 직렬 scan 대신 각 subtree가 oldest two를 운반하는 균형 tournament tree로 고른다. P0~P3의 정수·분기·memory payload는 fall-through이고 P4 FP payload와 최대 3개 operand만 register에 capture되어 다음 cycle FPU에 도달한다. store는 `address-issued=0`이면 base(src0)만 준비돼도 address phase candidate가 되고 data(src1)가 준비되지 않았으면 accept 후에도 같은 entry를 유지한다. 이후 src1 wakeup은 address-valid=0/data-valid=1인 최종 phase를 만들며 그 accept에서만 entry를 제거한다. 두 phase 모두 동일 ROB sequence와 SQ index를 유지하고 flush는 잔류 phase도 동일한 age 규칙으로 제거한다. `rv_issue_queue_tb`는 same-cycle wakeup/select, oldest-ready dual select, full-queue next-cycle slot reuse, younger flush와 split store-address/data 재발행을 기술한다.
+v1.18.15 FU predecode에는 `candidate_fu_onehot_o[SELECT_WIDTH][FU_ONEHOT_WIDTH]`
+출력을 추가한다. `FU_ONEHOT_WIDTH=1 << $bits(fu_class_e)=16`이며 class enum 값에 해당하는
+한 bit만 set된다. 각 entry의 저장 `fu_q`를 먼저 decode하고 기존 candidate one-hot 선택으로
+reduce하므로 추가 FF나 pipeline cycle은 없다. encoded `candidate_fu_o`도 그대로 제공한다.
+payload와 마찬가지로 flush cycle에는 valid만 막으며 one-hot class도 invalid 동안 don't-care다.
+backend resource mask는 이 class bit를 사용하고 clocked legacy-mask equality로 검증한다.
+whole-backend 공개 screening3381.34→3327.95 ps와 기능 등가 검증 후 채택했다. 서버 STA는 별도 확인한다.
+
+IQ allocation은 현재 register에 저장된 invalid slot만 사용한다. 그 cycle에 accept된 candidate slot을 dispatch가 조합으로 즉시 재사용하지 않으므로 full IQ는 한 cycle dispatch를 멈춘 뒤 다음 cycle 반환 slot을 사용한다. 이 경계가 result/WB→issue accept→allocation→`fu_q` D로 이어지던 장경로를 끊는다. 일반 uop은 저장 ready 또는 현재 live producer/system tag match를 사용하므로 dependent uop의 same-cycle wakeup/select는 유지한다. 현재 oldest/second-oldest 후보는 저장된 age matrix와 subtree의 saturating {any, ge2} 정보를 이용해 병렬로 고르며, 선택 one-hot으로 payload를 AND-OR reduce한다. P0~P3의 정수·분기·memory payload는 fall-through이고 P4 FP payload와 최대 3개 operand만 register에 capture되어 다음 cycle FPU에 도달한다. store는 `address-issued=0`이면 base(src0)만 준비돼도 address phase candidate가 되고 data(src1)가 준비되지 않았으면 accept 후에도 같은 entry를 유지한다. 이후 src1 wakeup은 address-valid=0/data-valid=1인 최종 phase를 만들며 그 accept에서만 entry를 제거한다. 두 phase 모두 동일 ROB sequence와 SQ index를 유지하고 flush는 잔류 phase도 동일한 age 규칙으로 제거한다. `rv_issue_queue_tb`는 same-cycle wakeup/select, oldest-ready dual select, full-queue next-cycle slot reuse, younger flush와 split store-address/data 재발행을 기술한다.
 
 `rv_issue_arbiter`의 module 기본 parameter는 `CANDIDATE_COUNT=5`지만 현재 backend
 instance는 unified IQ가 만든 후보 두 개만 연결하므로 `CANDIDATE_COUNT=2`,
@@ -2876,8 +2886,10 @@ architectural instruction이 physical identity와 ROB sequence를 얻고 실행�
 **Step-by-step.**
 
 1. dispatch uop과 physical source tags를 빈 entry에 쓴다.
-2. WB tag가 일치하면 source ready를 세운다.
-3. 모든 source와 target FU가 ready인 oldest entry를 candidate로 낸다.
+2. backend의 live producer/system 8개 wakeup tag가 일치하면 source ready를 저장하고 같은 cycle 선택에도 반영한다.
+3. source-ready entry 중 age matrix와 saturating any/ge2 reduction으로 oldest 두 후보를 먼저 고른다. store address-only phase는 base만 준비되어도 후보가 된다.
+4. entry별 FU class predecode를 동일한 선택 one-hot으로 payload와 함께 reduce한다. backend가 FU ready와 port mask를 비교해 최대 두 후보를 accept한다. 기본 정책은 FU-busy 후보 대신 제3 후보를 다시 검색하지 않는다.
+5. accept된 일반 uop/최종 store phase만 제거하며 address-only store는 data wakeup까지 같은 sequence/SQ index로 남는다.
 
 **타이밍.** WB는 ready를 edge에서 저장하며 tag-match bypass로 같은 cycle candidate에도 참여한다. 처리율은 최대 두 dispatch와 두 accepted issue/cycle이다. Backpressure/flush 규칙은 candidate는 실행 port가 accept하기 전 제거되지 않는다.
 
@@ -5189,6 +5201,72 @@ C/FP009e00b9 exit0, backend integration,26-case block regression도 통과했다
 Xcelium runner의 `AGU_LOAD_BYPASS=1`은 compile/elaboration에만 전달되며 HTIF TB의
 default를1로 선택한다. TB가 실제 설정을 출력한다. RTL 합성은 core parameter를1로
 지정해야 같은 후보를 측정하며 core default0은 유지한다.
+
+**추가 control/array leaf 점검(2026-10-01).** 같은 Nangate45 typical/1000 ps target로
+다음11개 leaf를 full-map했다. PRF80-entry/8-read-port는 async mux까지 mapping해 확인했다.
+이는 각 모듈의 고립된 입력→출력/FF 경로이므로 서로 더하거나2nm Fmax로 환산하지 않는다.
+전체 backend macro flow가 생략하는 read-array 경로를 별도로 살피는 용도다.
+
+| 블록/설정 | Delay ps | 점검 의미 |
+|---|---:|---|
+| rename2 | 1728.68 | free-list/resource allocation |
+| PMP, CHECK_PORTS=8 | 1729.21 | permission decode/check |
+| branch unit | 1154.27 | target/compare/mispredict |
+| decode2 | 968.86 | instruction/control decode |
+| trap controller | 311.97 | trap/interrupt state |
+| branch recovery | 194.12 | redirect/flush control |
+| INT PRF80×32, read8, WRITE_BYPASS=0 | 751.43 | full-map async read/ready logic |
+| FP PRF80×32, read8, WRITE_BYPASS=0 | 590.17 | full-map async read/ready logic |
+| LSU pipe, DEPTH=2 | 998.50 | address generation/queue |
+| execution result buffer, DEPTH=2 | 589.39 | hold/flush/push control |
+| fence controller | 137.78 | serializing completion control |
+
+전체 연결에서 load ordering → request-ready → candidate refill도 최장 경로 후보다.
+LSQ의 scalar 누적 predicate를 엔트리별 vector와 reduction으로 바꾸는 실험은
+네 EARLY/BYPASS 설정의 all-output cycle cosim 및 CoreMark counter equality를 통과했다.
+LSU leaf는2759.97→2850.11 ps로 악화했지만 whole backend3381.88→3381.34 ps는
+실질 timing 중립이며 area324563.092→322202.608 µm²(−0.73%)로 감소해 reduction 표현을 채택했다.
+ROB sequence comparator 대안은65536-byte-pair 및 directed equality를 통과했지만
+leaf2769.62 ps로 기존 bypass2759.97 ps보다 느려 production에 반영하지 않았다.
+request-ready 대신 registered issued/completed로 resident 후보를 해제하는 대안도
+CoreMark431701 cycles/IPC1.335299,26-case block/C-FP/integration을 통과했다.
+그러나 leaf2901.64 ps 및+343cycles 비용에 비해 clock 개선 근거가 없어 원복했다.
+이 대안의 whole clock은 측정하지 않았으며 production은 same-cycle ready advance를 유지한다.
+
+###### 5-4. v1.18.15: FU predecode와 direct-target 산술 공유
+
+**목적/저장 상태.** IQ의 oldest 선택 뒤 FU class를 다시 decode하는 직렬 경로와
+frontend의 형식별 target 가산기 중복을 줄인다. 추가 FF, 실행 단계, 예측 정책 변경은 없다.
+LSQ는 older-device/unknown-address 조건을 엔트리별 vector로 만든 뒤 reduction한다.
+보수적 ordering, forwarding 및 commit-only store visibility는 그대로다.
+
+**상태 전이/불변조건.** IQ entry의 `fu_q`를16-bit one-hot으로 조합 decode하고,
+payload를 고르는 age-selection one-hot으로 함께 reduce한다. backend는 이 class bit와
+각 FU ready로 resource mask를 만들며 기존 encoded-class 함수와 valid cycle에서 같아야 한다.
+dispatch/wakeup/issue/flush의 edge 및 store split-phase 규칙은 변하지 않는다.
+predictor는 C.B/C.J/B/J immediate를 먼저 sign-extend하여 공통 delta를 고른 뒤,
+4-bit carry-select/prefix 가산기로 PC+delta를 계산한다. XLEN modular overflow도 기존과 같다.
+query/resolve/commit timing, BTB/PHT/chooser/RAS/GHR 알고리즘은 변경하지 않는다.
+
+**검증/절충.** IQ4/7/56-entry 각각30000-cycle all-output equality와 class/mask SVA PASS.
+target 독립 oracle는 모든65536 compressed encoding×3 PC와100000 random B/J/other를
+RV32/RV64 각각 검사해296608 vectors씩 통과했다. assertion-enabled block27 tests,
+backend integration, C/FP signature009e00b9/exit0 PASS. 같은 CoreMark ELF의 모든 profiler
+counter/hash가 동일하며 bypass1 official431358 cycles/576450 instret/IPC1.336361,
+bypass0 official469994/IPC1.226505다. bypass 기본값0을 유지한다.
+
+| 공개 Nangate45 typical, target1000ps | 이전→채택 delay ps | 이전→채택 area µm² |
+|---|---:|---:|
+| whole backend, LSQ reduction→FU predecode | 3381.34→3327.95 | 322202.608→324267.566 |
+| whole frontend, shared target arithmetic | 2940.50→2924.25 | 342718.922→341856.284 |
+
+backend는 unmapped array read 경로를 생략하는 macro screening, frontend는 flop full-map다.
+수치를2nm Fmax로 환산하거나 서버1.2GHz sign-off로 해석하지 않는다. 파일리스트와 core top
+port는 불변이며 IQ 내부 interface만 one-hot class 출력이 추가됐다. 현재 whole-core 재측정
+산출물 위치는 `out/timing_core_iq_fu_target_add`다. 서버도 core parameter
+`AGU_LOAD_BYPASS=1`로 새로 합성/시뮬레이션해야 IPC1.3 후보와 같은 설정이다.
+다음 backend named 구조 경로는 slow FPU valid→IQ wake/age-select→PRF/bypass operand→
+candidate branch compare→fast-result payload로, 앞선 push-enable 병목과 구분하여 분석한다.
 
 ###### 5. 도구
 

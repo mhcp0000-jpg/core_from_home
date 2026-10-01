@@ -46,6 +46,7 @@ module rv_issue_queue_tb #(parameter bit CompatiblePairSelect = 1'b0);
   logic [1:0][INDEX_WIDTH-1:0] candidate_index;
   logic [1:0][ROB_SEQ_WIDTH-1:0] candidate_sequence;
   fu_class_e [1:0] candidate_fu;
+  logic [1:0][(1 << $bits(fu_class_e))-1:0] candidate_fu_onehot;
   logic [1:0][4:0] candidate_port_mask;
   logic [1:0][2:0][TAG_WIDTH-1:0] candidate_src_phys;
   reg_class_e [1:0][2:0] candidate_src_class;
@@ -124,6 +125,7 @@ module rv_issue_queue_tb #(parameter bit CompatiblePairSelect = 1'b0);
     .candidate_index_o         (candidate_index),
     .candidate_sequence_o      (candidate_sequence),
     .candidate_fu_o            (candidate_fu),
+    .candidate_fu_onehot_o     (candidate_fu_onehot),
     .candidate_port_mask_o     (candidate_port_mask),
     .candidate_src_phys_o      (candidate_src_phys),
     .candidate_src_class_o     (candidate_src_class),

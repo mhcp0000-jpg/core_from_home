@@ -15,7 +15,8 @@ module rv_issue_queue #(
   parameter int unsigned SQ_INDEX_WIDTH = 4,
   parameter int unsigned CHECKPOINT_ID_WIDTH = 3,
   localparam int unsigned INDEX_WIDTH = $clog2(ENTRIES),
-  localparam int unsigned COUNT_WIDTH = $clog2(ENTRIES + 1)
+  localparam int unsigned COUNT_WIDTH = $clog2(ENTRIES + 1),
+  localparam int unsigned FU_ONEHOT_WIDTH = 1 << $bits(rv_ooo_pkg::fu_class_e)
 ) (
   input  logic                                  clk_i,
   input  logic                                  rst_ni,
@@ -64,6 +65,10 @@ module rv_issue_queue #(
                                                    candidate_sequence_o,
   output rv_ooo_pkg::fu_class_e [SELECT_WIDTH-1:0]
                                                    candidate_fu_o,
+  // Decode each registered entry's class before the late oldest-ready select.
+  // No new state; the encoded class remains available for execution payload.
+  output logic [SELECT_WIDTH-1:0][FU_ONEHOT_WIDTH-1:0]
+                                                   candidate_fu_onehot_o,
   output logic [SELECT_WIDTH-1:0][EXEC_PORTS-1:0]
                                                    candidate_port_mask_o,
   output logic [SELECT_WIDTH-1:0][2:0][PHYS_TAG_WIDTH-1:0]
@@ -195,6 +200,8 @@ module rv_issue_queue #(
   cand_payload_t entry_payload [0:ENTRIES-1];
   logic [CAND_W-1:0] sel_payload [0:SELECT_WIDTH-1];
   cand_payload_t sel_pl [0:SELECT_WIDTH-1];
+  logic [FU_ONEHOT_WIDTH-1:0] entry_fu_onehot [0:ENTRIES-1];
+  logic [SELECT_WIDTH-1:0][FU_ONEHOT_WIDTH-1:0] sel_fu_onehot;
   logic [SELECT_WIDTH-1:0] sel_store_data_ready;
   logic [SELECT_WIDTH-1:0][ENTRIES-1:0] am_hot;
   // PROTOTYPE: age-ordering matrix.  age_matrix_q[i][j]=1 means entry j is
@@ -392,6 +399,7 @@ module rv_issue_queue #(
     for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
       entry_payload[entry].sequence_id       = sequence_q[entry];
       entry_payload[entry].fu                = fu_q[entry];
+      entry_fu_onehot[entry] = FU_ONEHOT_WIDTH'(1) << fu_q[entry];
       entry_payload[entry].port_mask         = port_mask_q[entry];
       entry_payload[entry].src_phys          = src_phys_q[entry];
       entry_payload[entry].src0_class        = src0_class_q[entry];
@@ -425,10 +433,13 @@ module rv_issue_queue #(
       am_hot[1] = am_second;
     for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
       sel_payload[slot] = '0;
+      sel_fu_onehot[slot] = '0;
       sel_store_data_ready[slot] = 1'b0;
       for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
         sel_payload[slot] |= {CAND_W{am_hot[slot][entry]}} &
                              CAND_W'(entry_payload[entry]);
+        sel_fu_onehot[slot] |= {FU_ONEHOT_WIDTH{am_hot[slot][entry]}} &
+                               entry_fu_onehot[entry];
         sel_store_data_ready[slot] |= am_hot[slot][entry] &
                                       store_data_ready_vec[entry];
       end
@@ -441,6 +452,7 @@ module rv_issue_queue #(
     candidate_index_o             = '0;
     candidate_sequence_o          = '0;
     candidate_fu_o                = '0;
+    candidate_fu_onehot_o         = '0;
     candidate_port_mask_o         = '0;
     candidate_src_phys_o          = '0;
     candidate_src_class_o         = '0;
@@ -476,6 +488,7 @@ module rv_issue_queue #(
           candidate_valid_o[slot]        = !flush_all_i && !flush_younger_i;
           candidate_sequence_o[slot]     = sel_pl[slot].sequence_id;
           candidate_fu_o[slot]           = sel_pl[slot].fu;
+          candidate_fu_onehot_o[slot]    = sel_fu_onehot[slot];
           candidate_port_mask_o[slot]    = sel_pl[slot].port_mask;
           candidate_src_phys_o[slot]     = sel_pl[slot].src_phys;
           candidate_src_class_o[slot][0] = sel_pl[slot].src0_class;
@@ -753,6 +766,13 @@ module rv_issue_queue #(
   assert property (p_lane1_dispatch_requires_lane0);
 
   for (genvar slot = 0; slot < SELECT_WIDTH; slot++) begin : g_accept_assert
+    property p_predecoded_class_matches_payload;
+      @(posedge clk_i) disable iff (!rst_ni)
+        candidate_valid_o[slot] |->
+          candidate_fu_onehot_o[slot] ==
+            (FU_ONEHOT_WIDTH'(1) << candidate_fu_o[slot]);
+    endproperty
+    assert property (p_predecoded_class_matches_payload);
     property p_accept_requires_candidate;
       @(posedge clk_i) disable iff (!rst_ni)
         candidate_accept_i[slot] |-> candidate_valid_o[slot];

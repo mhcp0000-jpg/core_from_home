@@ -21,10 +21,10 @@
 <text x="60" y="218" class="body"><tspan x="60" dy="0">dispatch uop; PRF/WB wakeup;</tspan><tspan x="60" dy="25">flush; candidate accept</tspan></text>
 <rect x="370" y="126" width="540" height="258" rx="10" class="core"/>
 <text x="390" y="158" class="label">Internal flow / state</text>
-<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="203" class="stage-text"><tspan x="410">free any/ge2 ↑ + prefix 0/1 ↓ tree</tspan><tspan x="410" dy="21">first/second one-hot → payload + age matrix</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="279" class="stage-text"><tspan x="410" dy="0">56-entry ready scoreboard + WB wakeup</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="345" class="stage-text"><tspan x="410" dy="0">age matrix oldest-two → port arbitration</tspan></text>
+<rect x="390" y="180" width="500" height="54" class="stage"/><text x="410" y="203" class="stage-text"><tspan x="410">free any/ge2 ↑ + prefix 0/1 ↓ tree</tspan><tspan x="410" dy="21">first/second one-hot → payload + age matrix</tspan></text><rect x="390" y="246" width="500" height="54" class="stage"/><text x="410" y="269" class="stage-text"><tspan x="410">56-entry ready + 8 producer/system wakeups</tspan><tspan x="410" dy="21">entry FU class → 16-bit one-hot (combinational)</tspan></text><rect x="390" y="312" width="500" height="54" class="stage"/><text x="410" y="335" class="stage-text"><tspan x="410">age matrix + any/ge2 → oldest-two one-hot</tspan><tspan x="410" dy="21">payload + FU class → backend port arbitration</tspan></text>
 <rect x="970" y="146" width="270" height="218" rx="8" class="panel"/>
 <text x="990" y="180" class="label">Outputs / effects</text>
-<text x="990" y="218" class="body"><tspan x="990" dy="0">두 candidate와 occupancy</tspan></text>
+<text x="990" y="218" class="body"><tspan x="990">2 candidate payloads</tspan><tspan x="990" dy="25">+ encoded/one-hot FU class</tspan><tspan x="990" dy="25">+ occupancy</tspan></text>
 <path d="M310 255 H350 V255 H370" class="wire"/>
 <path d="M910 255 H950 V255 H970" class="wire"/>
 <rect x="40" y="414" width="1200" height="166" rx="8" class="timing"/>

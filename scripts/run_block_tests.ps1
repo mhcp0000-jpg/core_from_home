@@ -100,6 +100,11 @@ $tests = @(
               "tb/unit/frontend/rv_branch_predictor_tb.sv")
   },
   @{
+    Top = "rv_branch_target_arithmetic_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/frontend/rv_branch_predictor.sv",
+              "tb/unit/frontend/rv_branch_target_arithmetic_tb.sv")
+  },
+  @{
     Top = "rv_fetch_target_buffer_tb"
     Files = @("rtl/frontend/rv_fetch_target_buffer.sv",
               "tb/unit/frontend/rv_fetch_target_buffer_tb.sv")
