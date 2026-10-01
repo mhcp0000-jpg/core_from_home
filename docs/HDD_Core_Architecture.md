@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.18 FIFO-age SB forwarding / parallel PMP priority / verification hardening; server STA pending (2026-10-01) |
+| 상태 | v1.18.19 lane1 gshare history-lookahead / FIFO-age SB forwarding / parallel PMP priority; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -5567,6 +5567,51 @@ oracle PASS이나 frontend 전체는2638.63→2644.86ps/area343400.946→345994.
 units여서 현재 미채택이다. 병목은 direct target add보다 lane0 valid/conditional/
 predicted-taken→lane1 gshare history/index→PHT read→redirect/queue enable에 있다.
 검증한 query 산술만으로 서버 fetch-queue→predictor→FTB 경로가 해결됐다고 하지 않는다.
+
+###### 5-9. v1.18.19 lane1 gshare history-lookahead
+
+**문제와 목적.** 기존 경로는 fetch queue의 명령/valid 판정 → lane0 조건분기
+판정/예측 방향 → lane1 global-history 갱신 → gshare index → 2048-entry PHT
+read → redirect/FTB/queue 갱신으로 이어졌다. 첫 명령의 늦은 결과 뒤에 큰
+테이블 read mux가 연결되어 서버에서 보고한 head-block→head-parcel-offset
+경로를 길게 만든다. 이번 변경은 예측 정책 개선이 아니라 같은 결과를 더
+일찍 계산하는 조합 회로 재배치이며 추가 pipeline cycle은 없다.
+
+**세 후보와 선택 규칙.** lane1의 PC가 준비되면 현재 history 그대로,
+`history_shift(GH,0)`, `history_shift(GH,1)` 각각으로 index를 계산하고 global
+PHT의 direction bit를 병렬 조회한다. lane0가 valid 조건분기가 아니면 첫
+후보를, valid 조건분기이면 lane0 predicted-taken에 맞는 shifted 후보를
+선택한다. 늦은 lane0 결과가 선택하는 것은 전체 index가 아니라 이미
+조회된 **1-bit direction**이다. bimodal/chooser/BTB/RAS, speculative history
+update, metadata snapshot, resolve recovery, commit training 규칙은 불변이다.
+lane0 taken으로 lane1을 소비하지 않는 경우에도 공개 출력은 기존과 같게
+유지한다. 외부 port/parameter/filelist 및 backend FPU LATENCY5는 변경 없다.
+
+**검증과 비용.** `scripts/run_predictor_equivalence.ps1`는 immutable `3f9b0ea`
+reference와 RV32/RV64 × PHT32/2048 네 구성을 각각100000cycles/200000
+edge 전후 비교로 검사한다. taken/target/lookup-target/전체 prediction metadata,
+invalid lane 조합, compressed branch/call/return, BTB alias, dual commit training,
+reset/redirect/mispredict recovery를 비교하며 양쪽 assertion도 활성화한다.
+이는 reference-equivalence 회귀이지 독립 ISA proof는 아니다. assertion-enabled
+block 회귀35개도 PASS다. 추가 테이블 저장소는 없지만 조합 read 후보가
+늘어 mux 면적/팬아웃 비용이 있다. 동일 Nangate45 full-map/ABC target1000ps
+frontend 결과는2638.63→2564.64ps(−2.80%), area343400.946→348869.906µm²
+(+1.59%)다. 로그는 `out/timing_frontend_history_lookahead/timing_summary.csv`와
+`out/predictor_history_lookahead_equiv/*/result.log`다.
+
+**성능 회귀.** 동일 CoreMark ELF를 assertion-enabled SoC와
+`CoreAguLoadBypass=1`로 재실행하여431358cycles/576450instret/IPC1.3363609809,
+CRC/Host exit0을 확인했다. profiler431414cycles/576462instret 및 전체 JSON
+SHA256 `2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`가
+baseline과 동일하다. C/FP ELF signature009e00b9/Host exit0도 PASS다.
+로그는 `out/history_lookahead_coremark_run.log`,
+`out/history_lookahead_coremark_perf.json`, `out/history_lookahead_fp_run.log`다.
+
+동일 head-block→head-parcel-offset named 구조 추적은73.9→63.0 units로
+짧아졌으며 현재 선택된 경로에는 predictor가 아닌 queue valid/consume/fill-ready가
+나타난다. unit-delay 추적은 physical STA가 아니므로 이 수치를 ns로 환산하거나
+서버의 기존 path가 해결됐다고 단정하지 않는다. whole-core 재합성과 서버
+2nm STA(실제 SRAM/SDC/PVT 포함)는 별도 gate이며 1.2GHz는 아직 미확인이다.
 
 ###### 5. 도구
 

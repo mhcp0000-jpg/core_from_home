@@ -328,6 +328,25 @@ module rv_branch_predictor #(
       query_bimodal_taken[lane] = pht_q[query_pht_index[lane]][1];
       query_global_taken[lane] =
         global_pht_q[query_global_pht_index[lane]][1];
+      if (lane == 1) begin
+        logic [PHT_BITS-1:0] unshifted_index, shifted_zero_index, shifted_one_index;
+        logic unshifted_taken, shifted_zero_taken, shifted_one_taken;
+        // Lane0 changes GH only for a valid conditional branch. Read all
+        // possible lane1 histories ahead of that late classification/direction
+        // decision, then select ONE BIT. Table contents, history snapshots,
+        // recovery, training and prediction latency are exactly unchanged.
+        unshifted_index = query_pc_i[lane][PHT_BITS:1] ^ speculative_history_q;
+        shifted_zero_index = query_pc_i[lane][PHT_BITS:1] ^
+                             history_shift(speculative_history_q, 1'b0);
+        shifted_one_index = query_pc_i[lane][PHT_BITS:1] ^
+                            history_shift(speculative_history_q, 1'b1);
+        unshifted_taken = global_pht_q[unshifted_index][1];
+        shifted_zero_taken = global_pht_q[shifted_zero_index][1];
+        shifted_one_taken = global_pht_q[shifted_one_index][1];
+        query_global_taken[lane] = (query_valid_i[0] && query_conditional[0]) ?
+          (prediction_taken_o[0] ? shifted_one_taken : shifted_zero_taken) :
+          unshifted_taken;
+      end
       query_use_global[lane] = chooser_q[query_pht_index[lane]][1];
       query_btb_set[lane] = query_pc_i[lane][BTB_SET_BITS:1];
       query_btb_tag[lane] = query_pc_i[lane][XLEN-1:BTB_SET_BITS+1];

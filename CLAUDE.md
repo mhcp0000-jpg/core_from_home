@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 설계 checkpoint: v1.18.18 SB FIFO-age forwarding / PMP parallel first-match / verification hardening (2026-10-01). 이전 pushed 기준 `bd11890`(v1.18.17). 서버 STA 목표는 미확인.
+- 현재 설계 checkpoint: v1.18.19 lane1 gshare history-lookahead (2026-10-01). 이전 pushed 기준 `3f9b0ea`(v1.18.18). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -19,6 +19,7 @@
 
 ## 작업 체크리스트
 
+- [x] v1.18.19: lane1 GH unshifted/shift0/shift1 table read를 lane0 valid/conditional/direction보다 먼저 병렬 계산하고 direction1bit만 선택. 추가 FF/stage/정책 변경 없음. immutable3f9b0ea 대비 RV32/RV64×PHT32/2048 각100000cycles/200000 all-public-output 비교+SVA PASS (`run_predictor_equivalence.ps1`). 블록35개 PASS. 동일 CoreMark431358/576450/IPC1.336361, profiler hash2BE75F… 전체 동일, C/FP009e00b9/exit0 PASS. frontend full-map target1000:2638.63→2564.64ps/area343400.946→348869.906; head-block→head-parcel-offset named trace73.9→63.0units (STA 아님). filelists/top ports/FP LAT5 불변. 새 whole-core/서버1.2GHz는 아직 미확인. 합성 top rv_ooo_core/AGU_LOAD_BYPASS=1.
 - [ ] 동시 목표: 서버 2 nm STA **1.2 GHz 이상 + 동일 CoreMark official IPC 1.3 이상**. 최신 required0.8124ns 기준 동일overhead 가정1.2GHz arrival0.645733ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
 - [x] IQ allocator: 직렬 first-free 2회 → saturating any/ge2 + prefix tree one-hot. age-matrix update에 allocator one-hot 직접 사용. IQ 2443.77→1181.50 ps, whole backend(priority bypass, IQ만)4444.72→3619.99 ps. 4/7/56 entries ×30000 cycle equality PASS.
 - [x] early-load `EARLY_LOAD_SELECT=1` 기본 채택: registered AGU raw preview로 identity를 예약하고 다음 cycle resident LQ로만 request 허용. fault/withheld-update/sequence/flush guard 및 conservative ordering 불변. A/B baseline은 PS `-CoreEarlyLoadSelect:$false` / timing·integration `-EarlyLoadSelect:$false`, Linux timing `EARLY_LOAD_SELECT=0`.
