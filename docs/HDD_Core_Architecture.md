@@ -5694,6 +5694,92 @@ ROB live CAM→WB writer rank→completion rank→sequence select→ROB completi
 보여준다(`out/queue_btb_forward_named_paths.log`). 후속 목표는 같은 cycle/순서/flush
 정확성을 유지하면서 중복 identity decode를 제거하는 것이다.
 
+###### 5-11. v20 이후 로컬 timing 후보: 단독 블록 개선과 전체 개선 구분
+
+서버에서 재현할 승인 checkpoint는 `081e714`(v1.18.20)다. 아래는 그 이후
+로컬 실험 기록이며, 미채택 변경을 해당 GitHub RTL에 포함한 것으로 해석하면
+안 된다. 비교는 같은 Nangate45 Liberty/constraint, ABC target1000ps,
+`AGU_LOAD_BYPASS=1`, whole-core macro flow다. **array read 경로는 생략되므로
+수치는 실제 2 nm Fmax/sign-off가 아니다.**
+
+| 후보 | 단독 블록 지연(ps) | 전체 코어 지연(ps) | 전체 코어 면적(µm², memory 제외) | 판단 |
+|---|---:|---:|---:|---|
+| 승인 v20 기준 | WB 1722.21 | 2998.79 | 352749.782 | GitHub081e714 |
+| ROB live-query entry mask를 WB source 선택과 결합 | — | 3047.90 | 354461.226 | 악화, RTL 원복 |
+| WB INT/FP rank를 any/ge2로 축약 | WB 1430.84 | 2996.97 | 357660.674 | 실질 timing 중립·면적 증가, 미채택 |
+| 위 변경 + completion rank를 count0..3/ge4로 축약 | WB 1380.81 | 3049.21 | 360314.822 | 악화, RTL 원복 |
+| LSQ resident sequence/status 병렬 비교 | — | 3081.58 | 355541.718 | 악화, RTL 원복 |
+| LQ exact-order FF cache + winner-mask tournament | LSQ 2617.67(원본2610.11) | 3119.64 | 365175.440 | 악화, RTL 원복 |
+| ROB early-entry-mask + WB threshold2 조합 | — | 3106.21 | 357248.374 | 악화 및 source invariant 미확인, 원복 |
+
+**기능 검증의 범위.** ROB mask 후보는 RV32/64 × ROB4/7/48 각각60000cycle에서
+원본 public output와 entry/head/tail/count/sequence 상태가 일치했다. WB 후보는
+SOURCE3/8/11, INT/FP1/2/3 및 completion2/3 fallback을 포함한8구성에서 모든
+public output의 unconstrained two-state SAT가 통과했다. raw SAT의180초 timeout은
+PASS가 아니며 ABC gate simplification 후 성공한 결과만 PASS로 기록한다.
+위 후보들의 assertion-enabled SoC CoreMark 전체 profiler SHA256은 모두
+`2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`로
+기준과 같았고 C/FP signature009e00b9/Hostexit0도 통과했다. 그래도 전체 timing이
+악화하면 채택하지 않는다. 독립 ISA/4-state 증명을 했다는 의미는 아니다.
+
+**LSQ resident 후보의 검사.** `scripts/check_lsq_directed_equivalence.py`는
+immutable081e714과 유지되는 directed TB를 같은 입력으로 실행한다. EARLY0/1 ×
+AGU bypass0/1에서43개 public output(유효하지 않은 payload 포함)과 resident
+predicate를 양 clock edge에 비교했다(각176/226/194/244회). directed cycle
+equality이며 모든 상태를 증명한 formal은 아니다. 원본 indexed 식을 비교하는
+SVA도 SoC에서 활성화했다. 실험본·manifest·로그는 ignored `out/lsq_resident_equiv_*`,
+`out/timing_core_lsq_resident_predicate_1000`에 남기고 production 변경은 원복했다.
+
+**미채택 LQ 선택 후보(기능 PASS, timing 악화로 원복).** late eligibility 뒤에 매 tournament
+level마다 selected sequence mux→subtract/compare가 반복되는 경로를 줄이기 위해
+entry pair의 정확한 modulo-sequence ordering을 allocation edge에 캐시하고,
+원래 두-oldest merge topology를 Boolean winner mask로 실행한다. 추가 scheduling
+cycle/issue 규칙 변경은 없다. cache는 SRAM으로 가정하지 않는 packed FF이며
+synchronous reset을 가진다. sequence equality/index tie와 half-range 동작까지
+원본과 같아야 하므로 단순 '나중 allocation은 항상 younger' 가정으로 대체하지
+않는다. flush는 sequence를 바꾸지 않아 cache를 유지하며, entry 재할당 및 dual
+allocation에서는 바뀐 두 sequence를 동시에 반영한다. 매 pair의 원본 comparison
+equality SVA, directed/reference random test, SoC, 전체 합성을 통과해야 채택한다.
+현재 단독 macro 측정은 기준2610.11ps/25489.982µm²와 후보2617.67ps/32440.828µm²로,
+단독 개선은 없었고 whole은3119.64ps/365175.44µm²로 악화하여 LSQ 변경을 모두
+원복했다. PADDR32/64·LQ4/7/24·SQ4/5/16을 포함한6구성×60000cycle에서 원본 public
+output/내부 state/cache equality PASS(36만cycle), assertion-directed4구성,
+backend integration/35block 회귀/최신SoC CoreMark profiler hash 일치와C-FP009e00b9도
+PASS했다. selector SAT4/7은 native miter로 PASS,24는 raw180초 timeout 뒤 ABC
+gate simplification+SAT에서 PASS했다. 두-state 조합 증명과 bounded cycle test이며
+독립 ISA/전체 cache 갱신에 대한 unbounded formal은 아니다. unpacked cache의 이전 측정은 read path가
+생략될 위험이 있어 승인 근거로 쓰지 않는다.
+
+재현 도구는 `check_lsq_random_equivalence.py`(seeded two-state public output/원본
+내부 상태 비교, protocol SVA 비활성), `check_lsq_selector_equivalence.py`(실제
+selector를 추출한 arbitrary eligibility/sequence SAT)다. 후자의 조합 증명은
+cache의 순차 갱신이나 전체 LSQ/ISA/protocol을 증명하지 않는다. 최종 결과는
+각 `out/lsq_cached_order_*`의 hash manifest/exit code/완료 marker로 확인한다.
+실험본은 `out/lsq_cached_order_packed_random_32_24_16_1_1/candidate.sv`에 있고
+각 도구의 `--rtl <saved candidate>`로 재현할 수 있다. ROB early-entry-mask와
+WB threshold2의 조합도 별도로 최신SoC CoreMark/C-FP를 통과했으나 whole3106.21ps로
+악화하여 모두 원복했다. 개별 실험 결과를 조합의 결과로 간주하지 않는다.
+현재 production RTL은081e714와 같다.
+
+**WB source identity에 발견된 증명 조건.** 기존 public-output equality 외에
+새 `complete_source_o`가 항상onehot이며 complete sequence와 일치한다는 property를
+무제약 two-state 입력에서 추가하면 SAT는 FAIL이다
+(`out/rob_mask_wb_threshold2_sat_32`). modulo sequence가 같은 half-range cohort에
+있지 않으면 pairwise age가 순환적일 수 있다. 예를 들어 seq00/55/aa의 서로
+다른3source는 각자 predecessor1개로 같은 completion rank를 얻을 수 있다.
+원본 WB는 그러한 여러 source의 payload를 OR하므로 새 ROB entry-mask OR와
+원본 complete-sequence CAM이 같다고 무조건 주장할 수 없다.
+
+이것은 실제SoC에서 위 상태를 재현했다는 뜻은 아니다. 그러나 ROB48개라는
+entry count만으로 allocation generation span<128이 보장되는 것은 아니다:
+현재 `next_sequence_q`는 younger flush에서 rewind하지 않는다. 향후 mask 재사용을
+다시 시도한다면 live sequence의 cohort invariant를 실제 RTL에서 검증하고,
+필요하면 ROB allocation span guard 또는 다른 total-order 중재를 설계해야 한다.
+`check_wb_equivalence.py --allow-completion-source --assume-source-cohort`는
+원본 public output은 무제약으로, 새 source identity만 명시적인 unsigned<128
+cohort 조건 아래 검사한다. 그 조건이 실제 ROB에서 성립한다는 증명은 아니며,
+해당 조건부 검사 결과를 무제약/full-core PASS로 표현하면 안 된다.
+
 ###### 5. 도구
 
 - `scripts/trace_named_path.py`: pre-ABC RTLIL에서 named 신호를 따라 최장 구조 경로를
