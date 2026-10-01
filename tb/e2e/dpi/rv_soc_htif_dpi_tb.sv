@@ -3,7 +3,12 @@
 // the existing HostIF is used only as the Boot ROM entry mailbox.
 module rv_soc_htif_dpi_tb #(
   parameter int unsigned CoreBranchCheckpoints = 8,
+`ifdef RV_AGU_LOAD_BYPASS
+  // Server compile option; explicit parameter overrides still take priority.
+  parameter bit CoreAguLoadBypass = 1'b1,
+`else
   parameter bit CoreAguLoadBypass = 1'b0,
+`endif
   parameter bit CoreEarlyLoadSelect = 1'b1,
   parameter bit CoreCompatiblePairSelect = 1'b0
 );
@@ -455,6 +460,8 @@ module rv_soc_htif_dpi_tb #(
     void'($value$plusargs("timeout_cycles=%d", timeout_cycles));
     $display("[TB][%0t] rv_soc_htif_dpi_tb started; timeout=%0d cycles",
              $time, timeout_cycles);
+    $display("[TB] core configuration: AGU_LOAD_BYPASS=%0b EARLY_LOAD_SELECT=%0b COMPATIBLE_PAIR_SELECT=%0b",
+             CoreAguLoadBypass, CoreEarlyLoadSelect, CoreCompatiblePairSelect);
     repeat (3) @(posedge clk);
     @(negedge clk);
     rst_n = 1'b1;

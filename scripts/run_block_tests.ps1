@@ -51,6 +51,11 @@ $tests = @(
               "tb/unit/backend/rv_issue_arbiter_tb.sv")
   },
   @{
+    Top = "rv_issue_arbiter_equiv_tb"
+    Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_arbiter.sv",
+              "tb/unit/backend/rv_issue_arbiter_equiv_tb.sv")
+  },
+  @{
     Top = "rv_issue_queue_tb"
     ParameterArgs = @("-GCompatiblePairSelect=1")
     Files = @("rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_queue.sv",

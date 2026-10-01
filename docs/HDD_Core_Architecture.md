@@ -5139,7 +5139,7 @@ LSQ directed+SVA와 backend integration도 통과했다. late-permit factoring�
 counter equality와 integration/C-FP PASS 후 shadow와 request-hold 보강을 추가했고 최종 회귀 중이다.
 shadow 이전/이후 LSU leaf2744.70→2726.55 ps였다. request-hold 보강 전 whole fixed-lane/PMP-gated
 후보는4053.94 ps로 branch-only3288.92 ps보다 악화했다. 최종 hold+late-permit whole timing과
-서버 STA는 진행 중이며 아직 기본 적용하지 않는다.
+서버 STA는 아직 확인되지 않았으며 기본 적용하지 않는다.
 
 **Request-hold 최종 기능 재회귀(2026-10-01).** 같은 ELF official431358 cycles/
 576450 instret/IPC1.336361, profiler431414/576462, CRC/status9/exit0와 assertions PASS.
@@ -5149,7 +5149,13 @@ bypass0은 official469994/576450/IPC1.226505다. 새 safety hold가 추가되기
 이는 PC/instruction 순서 비교이지 cycle CSR 값을 포함한 전체 ISA differential sign-off가 아니다.
 C/FP signature009e00b9/exit0 PASS, EARLY_LOAD_SELECT=0/1+bypass1 LSQ stability SVA PASS.
 latest25-case block regression과 backend integration도 PASS다.
-latest LSU leaf2759.97 ps/59114.244 µm², whole backend는 실행 중이다.
+latest LSU leaf2759.97 ps/59114.244 µm², whole backend는3392.51 ps/327680.346 µm²다.
+branch-only3288.92 ps/320850.530 µm² 대비 delay+3.15%, area+2.13%다.
+IPC 목표1.3은 이 opt-in 설정으로 넘었지만 서버1.2 GHz와의 동시 달성을 뜻하지 않는다.
+최장 구조 경로는 dmem response ID → live producer wakeup → IQ operand-ready/age
+selection → FU/resource mask → issue-port arbitration → fast result-buffer push enable다.
+끝점이 payload exception_tval bit이어도 branch 계산 자체를 pipeline해야 한다는 증거는 아니다.
+이 경로에는 grant/enable control이 포함되어 있다. named-path trace는 구조 진단이고 실제 cell STA가 아니다.
 재현: `run_soc_elf_test.ps1 -CoreAguLoadBypass -RtlAssertions`,
 `run_integration_tests.ps1 -AguLoadBypass -RtlAssertions`,
 `run_open_timing.ps1 -AguLoadBypass -Mode Blocks -IncludeWholeTop -BlockFilter rv_backend -TargetDelayPs 1000`.
@@ -5163,6 +5169,26 @@ history lookahead(shift-no/shift-0/shift-1 parallel gshare read)도26-case block
 CoreMark counter equality를 통과했지만3190.37 ps로 악화해 제거했다. predictor policy/size/training은
 바뀌지 않는다. cross-block C.NOP+JAL/redirect/stall 테스트는 RV32/RV64/32-bit physical alias
 회귀로 남긴다. 신호 분리 자체가 성능 개선의 증거는 아니므로 전체 합성으로 판정한다.
+추가로 두 lane의 FTB tag compare를 병렬화하고 data/PMP를 one-hot로 선택한 후보는
+CoreMark 전체 profiler equality, cross-block3개 설정, independent25000-cycle FTB oracle을
+통과했지만 whole frontend3043.41 ps/343633.696 µm²로 악화했다. production RTL은 원복했고
+alias/fill/invalidate/query selection을 독립 모델과 비교하는 FTB 테스트만 유지한다.
+
+**Issue-port one-hot 선택(채택).** age-ordered 두 IQ 후보의 ready-port mask를
+fm0/fm1이라 한다. fm0에서 fm1의 다른 port를 남기는 선택(fpair)을 우선하고,
+그 안의 lowest port를 one-hot으로 보존한다. candidate1의 mask에서 이 one-hot만 제외해
+두 번째 lowest port를 정한다. port-valid와 candidate owner는 one-hot에서 직접 생성하며,
+encoded port number는 외부 출력에만 사용한다. 목적은 first encode → dynamic shift/decode →
+second encode → port-valid decode의 직렬 왕복 제거다. stage/issue width/선택 정책은 불변이다.
+generic search와 valid4 × mask32 × mask32 × ready32 × sequence2 =262144 조합의 모든
+출력이 같음을 확인했다. 같은 CoreMark의 profiler counter도 전부 같으며 profile431414 cycles다.
+whole backend3392.51→3381.88 ps, area327680.346→324563.092 µm²로 개선해 채택했다.
+C/FP009e00b9 exit0, backend integration,26-case block regression도 통과했다.
+최장 경로는 LSQ candidate index → candidate sequence replacement로 이동했다.
+공개 단위/전체 합성과 서버 STA는 별개이며 아직1.2GHz sign-off는 아니다.
+Xcelium runner의 `AGU_LOAD_BYPASS=1`은 compile/elaboration에만 전달되며 HTIF TB의
+default를1로 선택한다. TB가 실제 설정을 출력한다. RTL 합성은 core parameter를1로
+지정해야 같은 후보를 측정하며 core default0은 유지한다.
 
 ###### 5. 도구
 

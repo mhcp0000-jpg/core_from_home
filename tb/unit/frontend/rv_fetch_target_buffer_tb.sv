@@ -67,6 +67,12 @@ module rv_fetch_target_buffer_tb;
 
   initial begin : p_target_buffer_test
     logic [FETCH_BYTES*8-1:0] block_a, block_b;
+    logic [127:0] model_data [0:3];
+    logic [7:0] model_pmp [0:3];
+    logic [25:0] model_tag [0:3];
+    logic [3:0] model_valid;
+    logic [31:0] random_state;
+    int unsigned chosen;
     block_a = 128'h0011_2233_4455_6677_8899_aabb_ccdd_eeff;
     block_b = 128'hfedc_ba98_7654_3210_0123_4567_89ab_cdef;
     clk = 1'b0;
@@ -118,7 +124,43 @@ module rv_fetch_target_buffer_tb;
     invalidate = 1'b0;
     expect_lookup(32'h8000_0140, 1'b0, '0, '0);
 
-    $display("rv_fetch_target_buffer_tb PASS");
+    // Independent direct-mapped state oracle, including simultaneous fill,
+    // selected-port changes, tag aliases and invalidate priority.
+    @(negedge clk); rst_n = 1'b0; fill_valid = 1'b0; invalidate = 1'b0;
+    repeat (2) @(posedge clk);
+    @(negedge clk); rst_n = 1'b1;
+    model_valid = '0; random_state = 32'h476b_a921;
+    for (int entry = 0; entry < 4; entry++) begin
+      model_data[entry] = '0; model_pmp[entry] = '0; model_tag[entry] = '0;
+    end
+    repeat (25000) begin
+      @(negedge clk);
+      random_state ^= random_state << 13;
+      random_state ^= random_state >> 17;
+      random_state ^= random_state << 5;
+      lookup_select = random_state[3]; lookup_valid = random_state[2:1];
+      lookup_addr[0] = 32'h8000_0000 | (random_state & 32'h3f0);
+      lookup_addr[1] = 32'h8000_0000 | ((random_state >> 10) & 32'h3f0);
+      fill_addr = 32'h8000_0000 | ((random_state >> 20) & 32'h3f0);
+      fill_valid = random_state[0]; invalidate = random_state[7:4] == 0;
+      fill_data = {random_state, ~random_state, random_state ^ 32'h1234_5678, random_state + 32'd1};
+      fill_pmp_allow = random_state[15:8];
+      @(posedge clk);
+      if (invalidate) model_valid = '0;
+      else if (fill_valid) begin
+        model_valid[fill_addr[5:4]] = 1'b1;
+        model_tag[fill_addr[5:4]] = fill_addr[31:6];
+        model_data[fill_addr[5:4]] = fill_data;
+        model_pmp[fill_addr[5:4]] = fill_pmp_allow;
+      end
+      #1;
+      chosen = lookup_addr[lookup_select][5:4];
+      if (lookup_hit !== (lookup_valid[lookup_select] && model_valid[chosen] &&
+                          model_tag[chosen] == lookup_addr[lookup_select][31:6]) ||
+          lookup_data !== model_data[chosen] || lookup_pmp_allow !== model_pmp[chosen])
+        $fatal(1, "Random target-buffer lookup/state oracle mismatch");
+    end
+    $display("rv_fetch_target_buffer_tb PASS (25000 randomized cycles)");
     $finish;
   end
 endmodule

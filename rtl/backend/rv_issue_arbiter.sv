@@ -61,6 +61,8 @@ module rv_issue_arbiter #(
                                                      fo_issue_candidate;
   logic [ISSUE_WIDTH-1:0][PORT_INDEX_WIDTH-1:0] gen_issue_port, fo_issue_port;
   logic [EXEC_PORTS-1:0] fm0, fm1, fallow, fpair, fm1_rest;
+  logic [EXEC_PORTS-1:0] fm0_hot, fm1_hot, fpair_hot,
+                          fm0_choice_hot, first_hot, second_hot;
   logic fe0, fe1, fgrant2;
   logic [PORT_INDEX_WIDTH-1:0] fp_first, fp_second;
 
@@ -198,15 +200,28 @@ module rv_issue_arbiter #(
       for (int unsigned port = 0; port < EXEC_PORTS; port++)
         fallow[port] = fe1 && (|(fm1 & ~(EXEC_PORTS'(1) << port)));
       fpair = fm0 & fallow;
-      fp_first = fe0 ? lowest_port((|fpair) ? fpair : fm0) : lowest_port(fm1);
-      fm1_rest = fm1 & ~(EXEC_PORTS'(1) << fp_first);
+      // Keep selected ports one-hot through exclusion and port-valid decode.
+      // Encoding is only for exported port numbers, not fed back into the
+      // second choice. The generic search below remains the equality oracle.
+      for (int unsigned port = 0; port < EXEC_PORTS; port++) begin
+        fm0_hot[port] = fm0[port] && !(|(fm0 & ((EXEC_PORTS'(1) << port) - 1)));
+        fm1_hot[port] = fm1[port] && !(|(fm1 & ((EXEC_PORTS'(1) << port) - 1)));
+        fpair_hot[port] = fpair[port] && !(|(fpair & ((EXEC_PORTS'(1) << port) - 1)));
+      end
+      fm0_choice_hot = (|fpair) ? fpair_hot : fm0_hot;
+      first_hot = fe0 ? fm0_choice_hot : fm1_hot;
+      fp_first = lowest_port(first_hot);
+      // Candidate1 may issue only with fe0. Its alternative can therefore be
+      // computed before the late fe0 decision, independently of first_hot.
+      fm1_rest = fm1 & ~fm0_choice_hot;
       fgrant2 = fe0 && fe1 && (|fm1_rest);
-      fp_second = lowest_port(fm1_rest);
+      for (int unsigned port = 0; port < EXEC_PORTS; port++)
+        second_hot[port] = fm1_rest[port] &&
+          !(|(fm1_rest & ((EXEC_PORTS'(1) << port) - 1)));
+      fp_second = lowest_port(second_hot);
       if (fe0 || fe1) begin
         fo_candidate_grant[fe0 ? 0 : 1] = 1'b1;
         fo_candidate_port[fe0 ? 0 : 1]  = fp_first;
-        fo_port_valid[fp_first]         = 1'b1;
-        fo_port_candidate[fp_first]     = fe0 ? '0 : CANDIDATE_INDEX_WIDTH'(1);
         fo_issue_valid[0]               = 1'b1;
         fo_issue_candidate[0]           = fe0 ? '0 : CANDIDATE_INDEX_WIDTH'(1);
         fo_issue_port[0]                = fp_first;
@@ -214,11 +229,16 @@ module rv_issue_arbiter #(
       if (fgrant2) begin
         fo_candidate_grant[1]       = 1'b1;
         fo_candidate_port[1]        = fp_second;
-        fo_port_valid[fp_second]    = 1'b1;
-        fo_port_candidate[fp_second] = CANDIDATE_INDEX_WIDTH'(1);
         fo_issue_valid[1]           = 1'b1;
         fo_issue_candidate[1]       = CANDIDATE_INDEX_WIDTH'(1);
         fo_issue_port[1]            = fp_second;
+      end
+      for (int unsigned port = 0; port < EXEC_PORTS; port++) begin
+        fo_port_valid[port] = ((fe0 || fe1) && first_hot[port]) ||
+                             (fgrant2 && second_hot[port]);
+        if (((fe0 || fe1) && first_hot[port] && !fe0) ||
+            (fgrant2 && second_hot[port]))
+          fo_port_candidate[port] = CANDIDATE_INDEX_WIDTH'(1);
       end
     end
 

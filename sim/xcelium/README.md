@@ -1,5 +1,29 @@
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
+## Timing/IPC 후보의 서버 재현 설정
+
+load-bypass 후보는 기본값0이며 실행 시 plusarg가 아니라 **compile/elaboration 옵션**이다.
+기존 실행 방법을 그대로 사용하고 bash에서는 다음처럼 지정한다.
+
+```bash
+AGU_LOAD_BYPASS=1 RTL_ASSERTIONS=1 FSDB_ENABLE=0 \
+  ./sim/xcelium/run_verilog_sub.sh /server/path/coremark.elf
+```
+
+csh/tcsh에서는 `setenv AGU_LOAD_BYPASS 1` 후 기존 runner를 실행한다.
+runner는 compile job에 `-AGU_LOAD_BYPASS=1`을 전달하고 `isrun.scr`가
+`RV_AGU_LOAD_BYPASS`를 define한다. HTIF TB의 `CoreAguLoadBypass` 기본값만1로 선택하며
+합성 RTL의 기본 parameter0이나 ISA/memory map은 변경하지 않는다.
+compile 로그의 `Core configuration: AGU_LOAD_BYPASS=1`을 확인한다.
+simulation만 `xrun -R`로 재실행해서 설정을 바꿀 수는 없고 재elaboration이 필요하다.
+원래 기준으로 비교하려면0으로 다시 compile한다. 직접 compile job을 제출할 때도
+`verilog_sub -Is -compile ./sim/xcelium/isrun.scr -AGU_LOAD_BYPASS=1`로 전달할 수 있다.
+
+로컬 같은 ELF의 공식 측정은431358 cycles/576450 instret/IPC1.336361이지만,
+서버 ELF/compiler/TIM 응답 조건이 다르면 동일 IPC를 보장하지 않는다.
+합성에서는 TB define 대신 `rv_ooo_core.AGU_LOAD_BYPASS=1` parameter를 지정해야
+동일 RTL 후보의 STA를 측정한다. 서버1.2GHz sign-off는 아직 미확인이다.
+
 ## FSDB 파형 생성
 
 `run_verilog_sub.sh`는 기본적으로 FSDB를 활성화하며 결과는 다음 위치에 생성된다.

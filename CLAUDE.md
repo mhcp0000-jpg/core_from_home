@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 pushed checkpoint: `55f2712` v1.18.13. working v1.18.14 branch factoring + opt-in AGU_LOAD_BYPASS (2026-10-01). 서버 STA 목표는 미확인.
+- 현재 pushed checkpoint: `8c5d93e` v1.18.14 branch factoring + opt-in AGU_LOAD_BYPASS (2026-10-01). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -38,7 +38,12 @@
 - [x] backpressure stability SVA가 기존 stale blocked-bit replacement를 발견. eligible replacement가 있는 stale-blocked 전환에는 effect-valid를 막고 raw ordering은 유지해 blocked bit를 clear. LSQ EARLY0/1+bypass1 directed/stability SVA PASS (`out/lsq_agu_bypass_hold_0.log`, `_1.log`).
 - [x] latest hold CoreMark A/B SVA PASS: bypass1 official431358/576450/IPC1.336361(profiler431414), bypass0 official469994/576450/IPC1.226505(profiler470050). CRC/status9/exit0, C-FP009e00b9/exit0 PASS. bypass1 PC/instr593267개 hash6d997065…이 hold 전 baseline과 같음. `out/agu_bypass_hold_*`.
 - [x] latest hold25-case block regression 및 backend integration PASS (`out/agu_bypass_hold_blocks.log`, `out/agu_bypass_hold_integration.log`). bypass0의 extra shutdown PC80000f34 한 개는 host-finish 이후 로그 tail 차이이며 측정 instret576450은 같다.
-- [ ] latest whole `out/timing_backend_agu_bypass_hold` 실행 중(session9415), LSU leaf2759.97/59114.244. physical STA 아직없음. 초기 flexible/PMP-gated whole4872.52와 fixed3682-leaf 시점 whole4053.94는 최종 아님. 기본0 유지. 결과를 받기 전에 새 동일 합성을 시작하지 말 것.
+- [x] latest hold whole `out/timing_backend_agu_bypass_hold/timing_summary.csv`: **3392.51 ps/327680.346 µm²**, LSU leaf2759.97/59114.244. branch-only3288.92 대비 delay+3.15%/area+2.13%, officialIPC1.336361. physical STA 아직없음. 초기 flexible/PMP-gated whole4872.52와 fixed3682-leaf 시점 whole4053.94는 최종 아님. 기본0 유지.
+- [x] whole critical structure: `dmem_rsp_id_i[9]` → live load wakeup → IQ ready/age/select → FU mask → issue-port arbitration → `g_fast[0].u_buffer.payload_q[68]` push-enable. endpoint bit가 exception_tval이어도 branch datapath가 병목이라는 뜻은 아니다. `out/agu_bypass_hold_critical_path.log`.
+- [x] parallel FTB tag checks/one-hot wide select 후보는 CoreMark 모든 counter equality와 RV32/RV64/PADDR32 cross-block, 25000-cycle independent FTB oracle PASS. 그러나 whole frontend2940.50→3043.41 ps/area342718.922→343633.696으로 악화해 production RTL 원복. oracle TB는 유지.
+- [x] issue arbiter one-hot port choice/exclusion 채택: 262144 exhaustive cases에서 generic search와 all-output equality PASS. CoreMark all profiler counters/hash 동일(431414 profile cycles), C-FP009e00b9 exit0/backend integration/block26 runs PASS. whole backend **3392.51→3381.88 ps/327680.346→324563.092 µm²**. binary encode/decode는 exported port number에만 남김. `out/timing_backend_issue_onehot/timing_summary.csv`.
+- [x] FTB independent25000-cycle oracle는 production 원복 후에도 PASS (`out/ftb_oracle_baseline.log`). Xcelium runner에 opt-in `AGU_LOAD_BYPASS=1` compile option 추가, HTIF TB actual config 로그 추가. Verilator preprocess0/1 및 define1 HTIF elaboration PASS; Xcelium 실행 자체는 서버에서 확인 필요.
+- [ ] 다음 whole critical: LSQ `candidate_index[0]` → `candidate_sequence[9]`; named 구조 경로를 추적한 뒤 후보 identity replacement cone을 검토. 1.2GHz 서버 sign-off 아직없음.
 - [ ] 서버 STA/SDC 최신 결과 필요. 공개45nm 수치를2nm Fmax로 환산 금지. 1.2GHz+IPC1.3 동시 달성 아직 미증명.
 - [x] checkpoint16 실험은 stall0이어도 CoreMark+77cycles/ROB-LSQ 압박 증가: default8 유지. benchmark predictor 튜닝/비현실적 memory latency 변경 금지. 다음 병목은 load-head90284/operand80625/frontendempty52103/portconflict20523, counter 중첩 주의.
 - [x] Backend leaf 후보: ALU32 1096.49→994.88 ps, ALU64 2118.34→993.54, DIV2232.56→1901.92, MUL2675.43→2378.11(area −46.2%), WB2048.74→1691.00(area −16.1%). latency 불변.
