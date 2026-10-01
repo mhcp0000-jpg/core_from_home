@@ -248,7 +248,7 @@ module rv_frontend #(
 
   rv_branch_predictor #(
     .XLEN(XLEN), .BTB_ENTRIES(256), .BTB_WAYS(4),
-    .PHT_ENTRIES(2048), .RAS_DEPTH(16)
+    .PHT_ENTRIES(2048), .RAS_DEPTH(16), .SEQUENTIAL_QUERIES(1'b1)
   ) u_branch_predictor (
     .clk_i, .rst_ni, .query_valid_i(queue_valid), .query_pc_i(queue_pc),
     .query_instruction_i(queue_instruction), .query_inst_len_i(queue_inst_len),

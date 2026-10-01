@@ -21,10 +21,10 @@ CoreMark CRC/exit, 실제 C/FP/load-store ELF, assertion-enabled block/backend �
 RV32F는 exact-rational oracle로 static/dynamic rounding 각각113,600 vector를 비교했습니다.
 전체 ISA 장기 differential, 외부 Spike/Sail·riscv-arch-test 및 서버 공정 STA sign-off는 아직 완료하지 않았습니다.
 
-> 최신 설계 checkpoint는 v1.18.19(lane1 gshare history-lookahead, 기존 SB/PMP 수정 포함)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 동시 달성은 아직 미확인입니다.
+> 최신 설계 checkpoint는 v1.18.20(queue availability 병렬 판정 + sequential BTB prelookup, 기존 SB/PMP 수정 포함)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 동시 달성은 아직 미확인입니다.
 > v1.18.13 기준값은469,739 cycles / 576,450 instret / IPC1.227171입니다. working request-hold 보강 후 bypass=0은469,994 cycles / IPC1.226505입니다.
 > opt-in `AGU_LOAD_BYPASS=1` 후보는 같은 ELF에서431,358 cycles / IPC1.336361, CRC/exit/assertions PASS입니다. 기본값은0입니다.
-> Nangate45 screening: frontend full-map2924.25→2638.63 ps(−9.77%), 최신 whole-core macro3040.52→2925.99 ps(−3.77%, ABC target1000ps 동일). Macro array read 경로는 생략됩니다. IPC1.336361은 유지하며 서버 2 nm Fmax로 환산할 수 없습니다. 합성 runner의 기본 target은1000ps이며 manifest/CSV에 실제 조건을 기록합니다.
+> Nangate45 screening(ABC target1000ps 동일): v19→v20 frontend full-map2564.64→2443.47ps(−4.72%, area+4.65%), whole-core macro3036.62→2998.79ps(−1.25%, area−0.63%). 이전 v18 whole-core2925.99ps보다는 아직 느립니다. Macro array read 경로는 생략됩니다. IPC1.336361은 유지하며 서버 2 nm Fmax로 환산할 수 없습니다. 합성 runner의 기본 target은1000ps이며 manifest/CSV에 실제 조건을 기록합니다.
 > 기본 FPU fast latency는5입니다. 상세 최신 구조/측정 조건은 [HDD](docs/HDD_Core_Architecture.md)의 v1.18.13 절을 보세요.
 > branch 병렬 평가 및 load bypass의 상태·타이밍·안전 조건은 HDD v1.18.14 절에 기록합니다. 서버 1.2GHz 달성은 아직 확인되지 않았습니다.
 > 기존 `sources_core.f`, `rtl/filelist.f`, Xcelium RTL/TB file list와 `rv_ooo_core` top port는 변경하지 않았습니다. IPC1.3 후보 비교에는 시뮬레이션과 합성 모두 `AGU_LOAD_BYPASS=1`을 사용하세요(기본0).
@@ -32,7 +32,7 @@ RV32F는 exact-rational oracle로 static/dynamic rounding 각각113,600 vector�
 
 > v1.18.18의 RTL filelist와 core/SoC 외부 interface는 그대로입니다. Backend FPU는 LATENCY5를 유지하며 optional LATENCY6 시험만 추가했습니다. 서버 합성 및 성능 비교는 `rv_ooo_core.AGU_LOAD_BYPASS=1`을 같은 값으로 설정하세요. SB/PMP의 상세 불변조건·검증 범위와 미채택 timing 후보는 HDD §15.30/§15.34/§5-8에 구분해 기록했습니다.
 
-> v1.18.19는 lane0 분기 결과 뒤의 lane1 PHT read를 세 history 후보의 병렬 조회+1-bit 선택으로 재배치합니다. predictor 정책/latency/filelist/top port는 불변입니다. 동일 frontend full-map screening은2638.63→2564.64ps(−2.80%, area+1.59%), CoreMark431358cycles/IPC1.336361 및 모든 profiler counter가 동일합니다. assertion-enabled block35개와 RV32/RV64 predictor cycle-equivalence PASS. 서버에서는 기존 `sim/xcelium/sources_core.f`, top `rv_ooo_core`, `AGU_LOAD_BYPASS=1`로 **재-elaboration/재합성**하세요. 서버1.2GHz와 새 whole-core 공개 결과는 아직 미확인입니다. 상세는 HDD §5-9입니다.
+> v1.18.20은 queue의 1~4 parcel 가용성을 병렬 판정하고 lane1 BTB의 PC0+2/PC0+4 조회를 명령 길이 선택보다 먼저 수행합니다. predictor 정책/latency/filelist/top port는 불변이며 내부 predictor parameter `SEQUENTIAL_QUERIES`는 standalone 기본0, frontend 연결1입니다. CoreMark431358cycles/IPC1.336361 및 모든 profiler counter가 동일합니다. assertion-enabled block35개, RV32/RV64 predictor8구성/queue16구성 cycle-equivalence PASS. 서버에서는 기존 `sim/xcelium/sources_core.f`, top `rv_ooo_core`, `AGU_LOAD_BYPASS=1`로 **재-elaboration/재합성**하세요. 서버1.2GHz는 아직 미확인입니다. 상세는 HDD §5-10입니다.
 
 ## Linux 서버에서 ELF 바로 실행
 

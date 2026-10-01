@@ -34,28 +34,35 @@ try {
     cyclesPerConfiguration=100000
     configurations=@("XLEN32/PHT32/BTB16/WAYS2","XLEN64/PHT32/BTB16/WAYS2",
                      "XLEN32/PHT2048/BTB256/WAYS4","XLEN64/PHT2048/BTB256/WAYS4")
+    modes=@("General/unrelated query PCs","Sequential lane1=lane0+length0")
     scope="Stateful all-public-output comparison, not independent ISA proof"
   } | ConvertTo-Json | Set-Content "$BuildRoot/run_manifest.json" -Encoding UTF8
   $env:PATH="$W64DevkitRoot\bin;"+$oldPath
   $env:VERILATOR_ROOT=$VerilatorRoot
   foreach($config in @(@(32,32,16,2),@(64,32,16,2),@(32,2048,256,4),@(64,2048,256,4))){
+    foreach($sequential in @(0,1)) {
     $width,$pht,$btb,$ways=$config
-    $build="$BuildRoot/x${width}_pht${pht}"
+    $build="$BuildRoot/x${width}_pht${pht}_s${sequential}"
     New-Item -ItemType Directory -Force $build | Out-Null
     $savedErrorAction=$ErrorActionPreference
     $ErrorActionPreference="Continue"
     & "$VerilatorRoot\bin\verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal -Werror-UNOPTFLAT `
       --top-module rv_branch_predictor_equiv_tb --Mdir $build "-GXLEN=$width" "-GPHT_ENTRIES=$pht" `
-      "-GBTB_ENTRIES=$btb" "-GBTB_WAYS=$ways" "$drive`:/rtl/rv_ooo_pkg.sv" $refPath `
+      "-GBTB_ENTRIES=$btb" "-GBTB_WAYS=$ways" "-GSEQUENTIAL_QUERIES=$sequential" "$drive`:/rtl/rv_ooo_pkg.sv" $refPath `
       "$drive`:/rtl/frontend/rv_branch_predictor.sv" "$drive`:/tb/unit/frontend/rv_branch_predictor_equiv_tb.sv" *> "$build/compile.log"
     $ErrorActionPreference=$savedErrorAction
     if($LASTEXITCODE){throw "Predictor generation failed: $build/compile.log"}
+    $savedErrorAction=$ErrorActionPreference
+    $ErrorActionPreference="Continue"
     & "$W64DevkitRoot\bin\make.exe" -j $BuildJobs -C $build -f Vrv_branch_predictor_equiv_tb.mk `
       CXX=g++ CC=gcc LINK=g++ VM_PARALLEL_BUILDS=1 *> "$build/build.log"
-    if($LASTEXITCODE){throw "Predictor C++ build failed: $build/build.log"}
+    $buildCode=$LASTEXITCODE
+    $ErrorActionPreference=$savedErrorAction
+    if($buildCode){throw "Predictor C++ build failed: $build/build.log"}
     & "$build/Vrv_branch_predictor_equiv_tb.exe" *> "$build/result.log"
     if($LASTEXITCODE){throw "Predictor equivalence failed: $build/result.log"}
     Get-Content "$build/result.log" | Select-Object -First 1
+    }
   }
 } finally {
   if($locationPushed){Pop-Location}

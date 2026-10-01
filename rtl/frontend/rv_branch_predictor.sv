@@ -3,7 +3,10 @@ module rv_branch_predictor #(
   parameter int unsigned BTB_ENTRIES = 256,
   parameter int unsigned BTB_WAYS = 4,
   parameter int unsigned PHT_ENTRIES = 2048,
-  parameter int unsigned RAS_DEPTH = 16
+  parameter int unsigned RAS_DEPTH = 16,
+  // Tightly coupled queue supplies lane1=lane0+length0 even when invalid.
+  // General standalone callers keep zero and may query unrelated PCs.
+  parameter bit SEQUENTIAL_QUERIES = 1'b0
 ) (
   input  logic                                  clk_i,
   input  logic                                  rst_ni,
@@ -47,6 +50,11 @@ module rv_branch_predictor #(
     logic [BTB_TAG_BITS-1:0] tag;
     logic [XLEN-1:0]         target;
   } btb_entry_t;
+  typedef struct packed {
+    logic hit;
+    logic [XLEN-1:0] target;
+    logic [$clog2(BTB_WAYS)-1:0] way;
+  } btb_lookup_t;
 
   btb_entry_t btb_q [0:BTB_SETS-1][0:BTB_WAYS-1];
   logic [$clog2(BTB_WAYS)-1:0] btb_replace_q [0:BTB_SETS-1];
@@ -71,6 +79,42 @@ module rv_branch_predictor #(
   logic [1:0] query_btb_hit;
   logic [1:0][XLEN-1:0] query_btb_target;
   logic [1:0][$clog2(BTB_WAYS)-1:0] query_btb_way;
+  btb_lookup_t [1:0] sequential_btb_lookup;
+
+  function automatic btb_lookup_t lookup_btb(input logic [XLEN-1:0] pc);
+    btb_lookup_t found;
+    logic [BTB_SET_BITS-1:0] set_index;
+    logic [BTB_TAG_BITS-1:0] tag;
+    found='0;
+    set_index=pc[BTB_SET_BITS:1];
+    tag=pc[XLEN-1:BTB_SET_BITS+1];
+    for (int way=0; way<BTB_WAYS; way++) begin
+      if (btb_q[set_index][way].valid && btb_q[set_index][way].tag==tag) begin
+        found.hit=1'b1;
+        found.target=btb_q[set_index][way].target;
+        found.way=$clog2(BTB_WAYS)'(way);
+      end
+    end
+    return found;
+  endfunction
+
+  if (SEQUENTIAL_QUERIES) begin : g_sequential_btb
+    // Decode/address/table compare run before length0; select only a completed
+    // result afterward. No state, prediction policy, training or cycle changes.
+    assign sequential_btb_lookup[0]=lookup_btb(query_pc_i[0]+XLEN'(2));
+    assign sequential_btb_lookup[1]=lookup_btb(query_pc_i[0]+XLEN'(4));
+`ifndef SYNTHESIS
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      query_valid_i[1] |-> query_pc_i[1] ==
+        query_pc_i[0]+((query_inst_len_i[0]==INST_LEN_16) ? XLEN'(2) : XLEN'(4)));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      query_valid_i[1] |->
+        {query_btb_hit[1],query_btb_target[1],query_btb_way[1]} ==
+        lookup_btb(query_pc_i[1]));
+`endif
+  end else begin : g_general_btb
+    assign sequential_btb_lookup='0;
+  end
 
   function automatic logic [XLEN-1:0] sign_extend_imm(
     input logic [31:0] immediate,
@@ -357,6 +401,13 @@ module rv_branch_predictor #(
           query_btb_target[lane] = btb_q[query_btb_set[lane]][way].target;
           query_btb_way[lane] = $clog2(BTB_WAYS)'(way);
         end
+      end
+      if (SEQUENTIAL_QUERIES && lane==1) begin
+        btb_lookup_t selected;
+        selected=sequential_btb_lookup[query_inst_len_i[0]!=INST_LEN_16];
+        query_btb_hit[lane]=selected.hit;
+        query_btb_target[lane]=selected.target;
+        query_btb_way[lane]=selected.way;
       end
 
       prediction_meta_o[lane].valid = query_valid_i[lane] &&

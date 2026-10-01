@@ -6,6 +6,7 @@ module rv_fpu_align_equiv_tb #(parameter int XLEN=32);
   logic [63:0] rng=64'h8391_a765_40dc_b21f;
   logic [XLEN+293:0] actual, expected;
   int vectors=0;
+  int integer_vectors=0;
   rv_fpu #(.XLEN(XLEN),.LATENCY(5)) dut(
     .clk_i(clk),.rst_ni(rst_n),.request_valid_i(1'b0),.request_ready_o(),
     .instruction_i('0),.operand_a_i('0),.operand_b_i('0),.operand_c_i('0),
@@ -59,10 +60,38 @@ module rv_fpu_align_equiv_tb #(parameter int XLEN=32);
       vectors++;
     end
   endtask
+  task automatic check_integer(input logic [31:0] a);
+    logic [XLEN+4:0] actual_integer, expected_integer;
+    // Compare every helper RM encoding, including the default cases that
+    // architectural illegal-RM handling filters before this helper is used.
+    for (int kind=0; kind<4; kind++) for (int rm=0; rm<8; rm++) begin
+      actual_integer=dut.fp_to_integer(a,2'(kind),3'(rm));
+      expected_integer=reference.fp_to_integer(a,2'(kind),3'(rm));
+      if(actual_integer!==expected_integer)
+        $fatal(1,"fp-to-integer mismatch xlen=%0d a=%h kind=%0d rm=%0d actual=%h expected=%h",
+               XLEN,a,kind,rm,actual_integer,expected_integer);
+      integer_vectors++;
+    end
+  endtask
   initial begin
     if ($bits(dut.align_calc_q)!=XLEN+294)
       $fatal(1,"Update alignment struct dimensions in test");
     repeat(3) @(negedge clk); rst_n=1;
+    // All exponent/sign combinations, every fraction-bit transition and its
+    // adjacent values: tiny fractions, half ties, signed/unsigned 32/64-bit
+    // limits, exact negative minima, infinities and both classes of NaN.
+    for (int exponent=0; exponent<256; exponent++)
+      for (int sign=0; sign<2; sign++) for (int sample=0; sample<73; sample++) begin
+        logic [22:0] fraction;
+        case(sample)
+          0: fraction='0;
+          1: fraction='1;
+          2: fraction=23'h400000;
+          3: fraction=23'h3fffff;
+          default: fraction=(23'd1 << ((sample-4)/3)) + 23'((sample-4)%3) - 23'd1;
+        endcase
+        check_integer({1'(sign),8'(exponent),fraction});
+      end
     // Every exponent combination for add, plus extrema on FMA's third
     // operand. Fraction/sign samples include subnormal/zero/Inf/NaN paths.
     for (int ea=0; ea<256; ea++) for (int eb=0; eb<256; eb++) begin
@@ -75,11 +104,13 @@ module rv_fpu_align_equiv_tb #(parameter int XLEN=32);
     for (int trial=0; trial<100000; trial++) begin
       logic [31:0] a,b,c;
       a=random32(); b=random32(); c=random32();
+      check_integer(a);
       if (trial%17==0) a='0;
       if (trial%19==0) b=32'h80000000;
       check(a,b,c,3'(trial%5));
     end
     $display("FPU alignment bit-exact PASS XLEN=%0d vectors=%0d",XLEN,vectors);
+    $display("FPU fp-to-integer bit-exact PASS XLEN=%0d vectors=%0d",XLEN,integer_vectors);
     $finish;
   end
 endmodule

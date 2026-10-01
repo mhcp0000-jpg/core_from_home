@@ -5,7 +5,7 @@
 ## 현재 기준
 
 - Branch: `main`
-- 현재 설계 checkpoint: v1.18.19 lane1 gshare history-lookahead (2026-10-01). 이전 pushed 기준 `3f9b0ea`(v1.18.18). 서버 STA 목표는 미확인.
+- 현재 설계 checkpoint: v1.18.20 queue availability + sequential BTB prelookup (2026-10-01). 이전 pushed 기준 `2b17093`(v1.18.19). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
 - 이전 RTL commit: `be78fec Document backend timing checkpoint` (v1.18.3)
 - v1.18.11 commit 범위: frontend queue RTL/queue TB/HDD/그림/본 체크리스트; 사용자 소유 untracked 파일과 `debug.txt`는 제외
@@ -19,6 +19,9 @@
 
 ## 작업 체크리스트
 
+- [x] v1.18.20: queue have1..4 threshold를 병렬화하고 sequential BTB PC0+2/+4 lookup 뒤 길이 mux를 배치. 추가 FF/stage/예측정책 변경 없음. predictor8구성×100000cycles/200000비교, queue16구성×60000cycles all-output equality+SVA PASS(immutable2b17093). frontend2564.64→2483.16→2443.47ps/area348869.906→365101.758. whole macro3036.62→2998.79ps/354977→352749.782(같은 target1000/AGU1); 이전v18 whole2925.99보다 느림을 숨기지 말 것. CoreMark IPC1.336361/profiler hash2BE75F…/C-FP009e00b9/35blocks PASS. filelists/top ports/FPU5 불변. 상세 HDD §5-10.
+- [x] 미채택 후보: queue PC 두 adder 조기계산은2654.78ps로 악화하여 원복. FCVT65bit helper는 SAT32/64·대규모 corner equality PASS이나 최종 leaf2154.79ps vsoriginal2122.85로 악화; FPU6 조합 whole3080.75ps로 악화하여 backend/FPU production 변경 전부 원복. 테스트 보강만 유지한다.
+- [ ] 다음 실제 whole cone: LSU forward_valid_q → ROB live CAM → WB INT/FP rank → completion rank → complete sequence mux → ROB completion CAM. `out/queue_btb_forward_named_paths.log` 구조 증거이며 unit delay를 ns로 환산하지 말 것. 재조회 제거/one-hot completion routing을 검토하되 flush·예외·WB backpressure·동일 IPC를 유지할 것.
 - [x] v1.18.19: lane1 GH unshifted/shift0/shift1 table read를 lane0 valid/conditional/direction보다 먼저 병렬 계산하고 direction1bit만 선택. 추가 FF/stage/정책 변경 없음. immutable3f9b0ea 대비 RV32/RV64×PHT32/2048 각100000cycles/200000 all-public-output 비교+SVA PASS (`run_predictor_equivalence.ps1`). 블록35개 PASS. 동일 CoreMark431358/576450/IPC1.336361, profiler hash2BE75F… 전체 동일, C/FP009e00b9/exit0 PASS. frontend full-map target1000:2638.63→2564.64ps/area343400.946→348869.906; head-block→head-parcel-offset named trace73.9→63.0units (STA 아님). filelists/top ports/FP LAT5 불변. 새 whole-core/서버1.2GHz는 아직 미확인. 합성 top rv_ooo_core/AGU_LOAD_BYPASS=1.
 - [ ] 동시 목표: 서버 2 nm STA **1.2 GHz 이상 + 동일 CoreMark official IPC 1.3 이상**. 최신 required0.8124ns 기준 동일overhead 가정1.2GHz arrival0.645733ns; 실제 SDC 확인 필요. Nangate45를 2 nm로 환산하지 말 것.
 - [x] IQ allocator: 직렬 first-free 2회 → saturating any/ge2 + prefix tree one-hot. age-matrix update에 allocator one-hot 직접 사용. IQ 2443.77→1181.50 ps, whole backend(priority bypass, IQ만)4444.72→3619.99 ps. 4/7/56 entries ×30000 cycle equality PASS.

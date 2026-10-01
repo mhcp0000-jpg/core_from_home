@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.19 lane1 gshare history-lookahead / FIFO-age SB forwarding / parallel PMP priority; server STA pending (2026-10-01) |
+| 상태 | v1.18.20 queue availability / sequential BTB prelookup / FIFO-age SB forwarding / parallel PMP priority; server STA pending (2026-10-01) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -5612,6 +5612,87 @@ baseline과 동일하다. C/FP ELF signature009e00b9/Host exit0도 PASS다.
 나타난다. unit-delay 추적은 physical STA가 아니므로 이 수치를 ns로 환산하거나
 서버의 기존 path가 해결됐다고 단정하지 않는다. whole-core 재합성과 서버
 2nm STA(실제 SRAM/SDC/PVT 포함)는 별도 gate이며 1.2GHz는 아직 미확인이다.
+
+**전체 코어 후속 측정.** pushed `2b17093` 자체를 같은 target1000/macro/
+AGU bypass1 조건으로 재합성한 결과는3036.62ps/354977µm²다. 이전 v18의
+2925.99ps/357144.368µm²보다 delay+3.78%, area−0.61%이며 최장 경로는
+FPU `fpu_issue_operand2_q[19]`→alignment 저장 cone이다. 따라서 frontend
+full-map 개선을 whole-core 또는 서버 clock 개선으로 일반화하지 않는다.
+`out/timing_core_history_lookahead_1000/timing_summary.csv`에 원본 결과가 있다.
+
+###### 5-10. v1.18.20 queue availability와 sequential BTB prelookup
+
+**목적/보관 상태.** v19 이후에도 queue의 `available_parcels` 산술과 명령 길이
+판정 뒤 lane1 PC 생성→BTB read가 prediction feedback에 직렬로 남았다.
+이번 변경은 같은 cycle의 결과를 미리 병렬 계산하는 조합 회로 변경이다.
+head/tail/count/parcel storage, predictor BTB/PHT/RAS state와 reset/update 우선순위,
+예측 정책, consume/redirect/fill 타이밍은 불변이며 추가 FF나 pipeline stage는 없다.
+
+**Queue의 step-by-step 판정.** `count`는 resident fetch-block 수이고 `offset`은
+첫 block에서 다음에 읽을 16-bit parcel 위치다. `have1=(count!=0)`이고 k=2~4는
+`haveK=(count>1)||((count==1)&&(offset<=FETCH_PARCELS-k))`다. 두 block이 있으면
+최소 FETCH_PARCELS+1개의 parcel이 남고 FETCH_PARCELS>=4이므로 네 parcel까지
+항상 사용할 수 있다. 첫 parcel의 low2가11이면 첫 명령에는 have2, 아니면
+have1이 필요하다. 두 번째 명령은 첫 길이가16bit일 때 parcel1과 have2/3,
+첫 길이가32bit일 때 parcel2와 have3/4를 선택한다. 예를 들어 FETCH_BYTES16,
+count1/offset7이면 have1만 참이라 C 명령 한 개만 내보낸다. count2/offset7이면
+block 경계에 걸친 32bit 첫 명령과 다음 명령 모두 기존과 같이 공급할 수 있다.
+명령의 fault parcel OR, PC, raw payload, exported occupancy는 바꾸지 않는다.
+clocked SVA는 기존 `available_parcels` 산술과 두 complete 조건의 동치성을
+검사한다. 서로 다른 조합 cone의 delta-cycle 과도 상태를 즉시 비교하지 않는다.
+
+**BTB interface/알고리즘/타이밍.** `rv_branch_predictor.SEQUENTIAL_QUERIES`는
+새 내부 parameter이며 standalone 기본0은 서로 독립인 query PC 두 개를 허용한다.
+`rv_frontend`는 `rv_fetch_queue.UNGATED_PAYLOAD=1`과 함께 이 값을1로 설정한다.
+따라서 query1 PC는 invalid일 때도 PC0+len0이며 XLEN overflow는 modulo로 처리한다.
+mode1에서는 lane0의 원래 lookup과 별도로 PC0+2, PC0+4의 set/tag/4-way hit/target/
+way를 병렬 조회한다. 명령 길이가 늦게 정해져도 이미 읽힌 두 lookup record 중
+하나만 고른다. duplicate tag가 있을 때 기존 loop와 같은 높은 way 우선순위를
+유지하고 prediction metadata의 raw set/index, history/commit training은 그대로다.
+mode0은 native PC1 lookup을 사용한다. SVA는 valid lane1의 sequential PC 관계와
+선택된 hit/target/way가 native `lookup_btb(PC1)`과 같은지를 검사한다. 테이블
+저장소는 추가되지 않지만 lane1 read가 두 개가 되어 mux/팬아웃/면적 비용이 든다.
+외부 core/SoC port, source filelist와 backend fast-FPU LATENCY5는 변경 없다.
+
+**검증 범위.** immutable `2b17093`과 predictor RV32/RV64×PHT32/2048×mode0/1
+8구성을 각각100000cycles/200000 edge 전후 비교했다. 모든 공개 출력/metadata를
+invalid lane에서도 비교하고 BTB alias, C/32bit, XLEN PC wrap, reset/recovery와
+dual training을 포함한다. queue는 (XLEN,FETCH_BYTES,QUEUE_BYTES)=(32,16,64),
+(64,16,64),(32,8,32),(64,32,128)×UNGATED0/1×SEPARATE0/1의16구성을 각60000cycles
+검사했다. RV64 high-PC/PADDR32 alias, redirect/fill/consume/stall/fault를 포함하며
+invalid payload까지 모든 출력을 비교했다. 로그는 `out/predictor_btb_final_equiv_runner.log`,
+`out/queue_final_full_equiv_runner.log`이고 runner manifest에 source/reference hash를
+남긴다. 이는 reference 동치 검사이지 독립 ISA 또는 Xcelium 실행의 증명은 아니다.
+assertion-enabled block35구성, 동일 SoC CoreMark CRC/Host exit0와 C/FP signature
+009e00b9/exit0도 PASS다. CoreMark official431358cycles/576450instret/IPC1.3363609809,
+profiler431414/576462 및 전체 profiler JSON SHA256은 §5-9와 동일하다.
+
+**같은 조건의 비용/결과.** Nangate45/ABC target1000ps/동일 Liberty·constraint:
+
+| 구성 | frontend full-map delay(ps) | frontend area(µm²) | whole-core macro delay(ps) | whole area(µm²) |
+|---|---:|---:|---:|---:|
+| pushed v19 `2b17093` | 2564.64 | 348869.906 | 3036.62 | 354977 |
+| queue availability만 | 2483.16 | 350393.022 | 별도 최종 측정 없음 | — |
+| queue + sequential BTB(v20) | 2443.47 | 365101.758 | 2998.79 | 352749.782 |
+
+v19 대비 frontend delay−4.72%/area+4.65%, whole delay−1.25%/area−0.63%다.
+이전 v18 whole2925.99ps보다는 아직2.49% 느리므로 전체 코어 최선값을 갱신한
+것으로 표현하지 않는다. whole macro는 memory async read 경로를 생략하는 screening이다.
+원본은 `out/timing_frontend_btb_sequential_1000/timing_summary.csv`,
+`out/timing_core_queue_btb_final_1000/timing_summary.csv`다. actual server1.2GHz는
+실제 SRAM/SDC/PVT를 적용한 STA가 필요하며 아직 미확인이다.
+
+**미채택 후보/다음 병목.** queue의 PC0+2/+4 두 adder를 먼저 계산한 대안은 동치
+PASS지만 frontend2654.78ps로 악화하여 제거했다. FCVT FP→integer 65bit helper
+축소는 RV32/64 SAT와 각4396032 conversion corner equality에서 PASS였지만 최종
+leaf2154.79ps가 원래2122.85ps보다 느렸다. FPU6 조합 whole3080.75ps도 v19보다
+느려 production backend/FPU는 원래 LATENCY5/helper로 복구했다. 시험 보강과
+`scripts/check_fpu_integer_equivalence.py`만 유지하며 SAT는 실제 helper의 결과/
+flags를 immutable reference와 비교할 뿐 pipeline/독립 IEEE proof는 아니다.
+현재 whole 최장 경로는 LSU `forward_valid_q`에서 시작한다. named 구조 추적은
+ROB live CAM→WB writer rank→completion rank→sequence select→ROB completion CAM을
+보여준다(`out/queue_btb_forward_named_paths.log`). 후속 목표는 같은 cycle/순서/flush
+정확성을 유지하면서 중복 identity decode를 제거하는 것이다.
 
 ###### 5. 도구
 

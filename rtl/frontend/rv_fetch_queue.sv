@@ -69,6 +69,9 @@ module rv_fetch_queue #(
   logic [PADDR_WIDTH-1:0] head_paddr, redirect_paddr;
   logic [PADDR_WIDTH-1:0] fill_reference_paddr, fill_address_delta;
   logic [15:0] lane1_first_parcel;
+  logic have_one_parcel, have_two_parcels, have_three_parcels, have_four_parcels;
+  logic first_is_word, second_at_one_is_word, second_at_two_is_word;
+  logic first_complete, second_complete;
 
   integer unsigned available_parcels;
   integer unsigned length0_parcels, length1_parcels;
@@ -105,6 +108,25 @@ module rv_fetch_queue #(
   assign fault2 = aligned_fault[2];
   assign fault3 = aligned_fault[3];
 
+  // Two resident blocks always supply at least FETCH_PARCELS+1 parcels,
+  // hence all four needed by dual RV32/64 instructions (FETCH_BYTES>=8).
+  // Compare the retained offset to CONSTANT limits before instruction length
+  // arrives, rather than serial length addition -> availability comparison.
+  assign have_one_parcel = (block_count_q != 0);
+  assign have_two_parcels = (block_count_q > 1) ||
+    ((block_count_q == 1) && (head_parcel_offset_q <= FETCH_PARCELS-2));
+  assign have_three_parcels = (block_count_q > 1) ||
+    ((block_count_q == 1) && (head_parcel_offset_q <= FETCH_PARCELS-3));
+  assign have_four_parcels = (block_count_q > 1) ||
+    ((block_count_q == 1) && (head_parcel_offset_q <= FETCH_PARCELS-4));
+  assign first_is_word = (parcel0[1:0] == 2'b11);
+  assign second_at_one_is_word = (parcel1[1:0] == 2'b11);
+  assign second_at_two_is_word = (parcel2[1:0] == 2'b11);
+  assign first_complete = first_is_word ? have_two_parcels : have_one_parcel;
+  assign second_complete = first_is_word ?
+    (second_at_two_is_word ? have_four_parcels : have_three_parcels) :
+    (second_at_one_is_word ? have_three_parcels : have_two_parcels);
+
   always_comb begin
     // A redirect records its within-block offset before the replacement block
     // arrives.  With no resident blocks that offset is only metadata, not
@@ -126,9 +148,9 @@ module rv_fetch_queue #(
     out_inst_len_o[1] = INST_LEN_NONE;
     out_fault_o = '0;
 
-    if (available_parcels != 0) begin
+    if (have_one_parcel) begin
       length0_parcels = (parcel0[1:0] == 2'b11) ? 2 : 1;
-      if (available_parcels >= length0_parcels) begin
+      if (first_complete) begin
         out_valid_o[0] = 1'b1;
         out_pc_o[0] = head_pc_q;
         out_instruction_o[0][15:0] = parcel0;
@@ -143,11 +165,10 @@ module rv_fetch_queue #(
     end
 
     lane1_offset_parcels = length0_parcels;
-    if (out_valid_o[0] &&
-        (available_parcels >= (lane1_offset_parcels + 1))) begin
+    if (first_is_word ? have_three_parcels : have_two_parcels) begin
       lane1_first_parcel = (lane1_offset_parcels == 1) ? parcel1 : parcel2;
       length1_parcels = (lane1_first_parcel[1:0] == 2'b11) ? 2 : 1;
-      if (available_parcels >= (lane1_offset_parcels + length1_parcels)) begin
+      if (second_complete) begin
         out_valid_o[1] = 1'b1;
         out_pc_o[1] = head_pc_q + XLEN'(lane1_offset_parcels * 2);
         if (lane1_offset_parcels == 1) begin
@@ -294,6 +315,14 @@ module rv_fetch_queue #(
   assert property (@(posedge clk_i) disable iff (!rst_ni)
     (SEPARATE_NORMAL_FILL_ADDRESS && !redirect_valid_i) |->
       normal_fill_valid_i == fill_valid_i);
+  // Sample the independent count-minus-offset specification at the clock,
+  // not in an immediate cross-cone assertion (which can see delta glitches).
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    first_complete == (available_parcels >= (first_is_word ? 2 : 1)));
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    second_complete == (available_parcels >=
+      (first_is_word ? (second_at_two_is_word ? 4 : 3) :
+                       (second_at_one_is_word ? 3 : 2))));
   always_comb begin
     if (rst_ni === 1'b1) begin
       assert (!out_valid_o[1] || out_valid_o[0]);

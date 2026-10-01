@@ -1,7 +1,9 @@
 module rv_fetch_queue_equiv_tb #(
   parameter int XLEN = 32,
   parameter int FETCH_BYTES = 16,
-  parameter int QUEUE_BYTES = 64
+  parameter int QUEUE_BYTES = 64,
+  parameter bit UNGATED_PAYLOAD = 1'b1,
+  parameter bit SEPARATE_NORMAL_FILL_ADDRESS = 1'b1
 );
   import rv_ooo_pkg::*;
   localparam int CW = $clog2(QUEUE_BYTES+1);
@@ -24,7 +26,7 @@ module rv_fetch_queue_equiv_tb #(
     seed ^= seed<<13; seed ^= seed>>17; seed ^= seed<<5;
     return seed;
   endfunction
-  rv_fetch_queue #(.XLEN(XLEN), .FETCH_BYTES(FETCH_BYTES), .QUEUE_BYTES(QUEUE_BYTES), .UNGATED_PAYLOAD(1'b1), .SEPARATE_NORMAL_FILL_ADDRESS(1'b1)) dut (
+  rv_fetch_queue #(.XLEN(XLEN), .FETCH_BYTES(FETCH_BYTES), .QUEUE_BYTES(QUEUE_BYTES), .UNGATED_PAYLOAD(UNGATED_PAYLOAD), .SEPARATE_NORMAL_FILL_ADDRESS(SEPARATE_NORMAL_FILL_ADDRESS)) dut (
     .clk_i(clk), .rst_ni(rst_n), .fill_valid_i(fill_valid),
     .fill_ready_o(ready), .fill_addr_i(fill_addr), .normal_fill_addr_i(fill_addr), .normal_fill_valid_i(fill_valid), .fill_id_i(4'd0),
     .fill_epoch_i(4'd0), .fill_data_i(fill_data), .fill_resp_i(fill_resp),
@@ -34,9 +36,10 @@ module rv_fetch_queue_equiv_tb #(
     .out_instruction_o(instr), .out_inst_len_o(len), .out_fault_o(fault),
     .empty_o(empty), .byte_count_o(count)
   );
-  rv_fetch_queue_ref #(.XLEN(XLEN), .FETCH_BYTES(FETCH_BYTES), .QUEUE_BYTES(QUEUE_BYTES)) reference (
+  rv_fetch_queue_ref #(.XLEN(XLEN), .FETCH_BYTES(FETCH_BYTES), .QUEUE_BYTES(QUEUE_BYTES), .UNGATED_PAYLOAD(UNGATED_PAYLOAD), .SEPARATE_NORMAL_FILL_ADDRESS(SEPARATE_NORMAL_FILL_ADDRESS)) reference (
     .clk_i(clk), .rst_ni(rst_n), .fill_valid_i(fill_valid),
-    .fill_ready_o(ref_ready), .fill_addr_i(fill_addr), .fill_id_i(4'd0),
+    .fill_ready_o(ref_ready), .fill_addr_i(fill_addr), .normal_fill_addr_i(fill_addr),
+    .normal_fill_valid_i(fill_valid), .fill_id_i(4'd0),
     .fill_epoch_i(4'd0), .fill_data_i(fill_data), .fill_resp_i(fill_resp),
     .fill_pmp_allow_i(pmp_allow), .redirect_valid_i(redirect_valid),
     .redirect_pc_i(redirect_pc), .new_epoch_i(4'd0),
@@ -54,6 +57,7 @@ module rv_fetch_queue_equiv_tb #(
       rst_n=(cycle%733 != 732);
       redirect_valid=(random_word()%23 == 0) && rst_n;
       redirect_pc=XLEN'(32'h80000000 | (random_word()&32'hfffe));
+      if (XLEN==64) redirect_pc[XLEN-1:32]=32'(random_word());
       fill_addr=redirect_valid ? (32'(redirect_pc)&~32'(FETCH_BYTES-1)) : next_fill_addr;
       fill_valid=(random_word()%4 != 0);
       for(int word=0; word<FETCH_BYTES/4; word++)
@@ -65,7 +69,7 @@ module rv_fetch_queue_equiv_tb #(
       if ({ready,empty,count,valid} !== {ref_ready,ref_empty,ref_count,ref_valid})
         $fatal(1,"Queue control mismatch cycle=%0d",cycle);
       for(int lane=0; lane<2; lane++)
-        if(valid[lane] && {pc[lane],instr[lane],len[lane],fault[lane]} !==
+        if({pc[lane],instr[lane],len[lane],fault[lane]} !==
                           {ref_pc[lane],ref_instr[lane],ref_len[lane],ref_fault[lane]})
           $fatal(1,"Queue payload mismatch cycle=%0d lane=%0d",cycle,lane);
       if(!rst_n) next_fill_addr=32'h80000000;
@@ -73,7 +77,8 @@ module rv_fetch_queue_equiv_tb #(
       else if(fill_valid&&ready) next_fill_addr=fill_addr+FETCH_BYTES;
       @(negedge clk);
     end
-    $display("fetch queue cycle equality PASS XLEN=%0d FETCH=%0d QUEUE=%0d cycles=60000",XLEN,FETCH_BYTES,QUEUE_BYTES);
+    $display("fetch queue all-output cycle equality PASS XLEN=%0d FETCH=%0d QUEUE=%0d UNGATED=%0d SEPARATE=%0d cycles=60000",
+             XLEN,FETCH_BYTES,QUEUE_BYTES,UNGATED_PAYLOAD,SEPARATE_NORMAL_FILL_ADDRESS);
     $finish;
   end
 endmodule

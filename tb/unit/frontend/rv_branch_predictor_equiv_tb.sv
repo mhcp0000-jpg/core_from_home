@@ -5,7 +5,8 @@ module rv_branch_predictor_equiv_tb #(
   parameter int unsigned PHT_ENTRIES=2048,
   parameter int unsigned BTB_ENTRIES=256,
   parameter int unsigned BTB_WAYS=4,
-  parameter int unsigned CYCLES=100000
+  parameter int unsigned CYCLES=100000,
+  parameter bit SEQUENTIAL_QUERIES=1'b0
 );
   import rv_ooo_pkg::*;
   logic clk=0, rst_n=0;
@@ -39,7 +40,7 @@ module rv_branch_predictor_equiv_tb #(
     .commit_inst_len_i(commit_length), .commit_taken_i(commit_taken)
 
   rv_branch_predictor #(.XLEN(XLEN), .PHT_ENTRIES(PHT_ENTRIES),
-    .BTB_ENTRIES(BTB_ENTRIES), .BTB_WAYS(BTB_WAYS)) dut (
+    .BTB_ENTRIES(BTB_ENTRIES), .BTB_WAYS(BTB_WAYS), .SEQUENTIAL_QUERIES(SEQUENTIAL_QUERIES)) dut (
     `BP_EQ_INPUTS, .prediction_taken_o(taken_dut), .prediction_target_o(target_dut),
     .prediction_lookup_target_o(lookup_dut), .prediction_meta_o(meta_dut));
   rv_branch_predictor_ref #(.XLEN(XLEN), .PHT_ENTRIES(PHT_ENTRIES),
@@ -108,6 +109,13 @@ module rv_branch_predictor_equiv_tb #(
         commit_pc[lane]=XLEN'('h80000000 | (random32() & 'h3ffe));
         random_instruction(commit_instruction[lane],commit_length[lane]);
       end
+      if (SEQUENTIAL_QUERIES)
+        query_pc[1]=query_pc[0]+((query_length[0]==INST_LEN_16) ? XLEN'(2) : XLEN'(4));
+      if (SEQUENTIAL_QUERIES && cycle%257==0) begin
+        // Exercise full-XLEN wrap/tag carries, not only low address aliases.
+        query_pc[0]='1-XLEN'(1+2*(cycle%4));
+        query_pc[1]=query_pc[0]+((query_length[0]==INST_LEN_16) ? XLEN'(2) : XLEN'(4));
+      end
       commit_valid=2'(random32()); commit_taken=2'(random32());
       redirect_valid=(random32()%19==0);
       resolve_valid=(random32()%3==0);
@@ -141,8 +149,8 @@ module rv_branch_predictor_equiv_tb #(
     end
     if(!unshifted || !shifted_zero || !shifted_one || !resets || !recoveries || !redirects)
       $fatal(1,"Predictor equivalence test missed a required scenario");
-    $display("Predictor full-output equivalence PASS XLEN=%0d PHT=%0d compares=%0d history=%0d/%0d/%0d resets=%0d redirects=%0d recoveries=%0d",
-             XLEN,PHT_ENTRIES,comparisons,unshifted,shifted_zero,shifted_one,resets,redirects,recoveries);
+    $display("Predictor full-output equivalence PASS XLEN=%0d PHT=%0d sequential=%0d compares=%0d history=%0d/%0d/%0d resets=%0d redirects=%0d recoveries=%0d",
+             XLEN,PHT_ENTRIES,SEQUENTIAL_QUERIES,comparisons,unshifted,shifted_zero,shifted_one,resets,redirects,recoveries);
     $finish;
   end
 endmodule
