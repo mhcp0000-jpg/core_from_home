@@ -14,6 +14,8 @@
 
 ## 0. Executive Summary
 
+최신 성능 채택 기준(2026-10-02 사용자 결정): 동일 CoreMark 입력·설정에서 **IPC ≥ 1.25**를 유지하고 클럭 개선을 확인한 후보는 채택할 수 있다. 기존 IPC 1.3 유지 조건보다 timing pipeline의 선택 폭을 넓힌 결정이며, 실제 2nm 환경의 1.2GHz 목표는 그대로다. 로컬 Nangate45 delay는 후보 screening용이고 실제 서버 Fmax로 환산하지 않는다.
+
 이 문서는 코어와 초기 SoC를 구현할 때 우선하는 단일 설계 기준이다. 모듈 이름만 나열하지 않고 각 블록의 목적, 저장 상태, 상태 전이, 불변조건, 성능·복잡도 trade-off를 함께 설명한다. 현재 목표는 학습과 검증이 가능한 baseline을 만들되, 인터페이스와 recovery 구조는 향후 상용화·RV64·S-mode/MMU 확장을 막지 않도록 설계하는 것이다.
 
 | 영역 | 확정 baseline |
@@ -4840,7 +4842,11 @@ primary input으로 보므로 **variable-address async read의 주소→데이�
 실제 값을 보기 위한 analysis flow(`scripts/run_analysis_netlist.sh`)를 만들었다.
 reset을 비활성으로 묶고(entry별 reset loop가 수백 개 write port가 되어 `memory_map`이
 메모리를 소진한다. flop D의 reset mux 한 단이 빠진다), 해당 memory를 하나씩 flop+mux로
-바꾼다. 7 GB sandbox 한계로 whole-core를 한 번에는 못 돌려 frontend/backend를 나눴다.
+바꾼다. 당시 whole-core 실행이 메모리 문제로 완료되지 않아 frontend/backend를 나눴다.
+이를 고정된 `7 GB sandbox 한계`로 단정한 설명은 정정한다. 2026-10-02 실제
+Windows API 측정에서 physical RAM은 31.64 GiB, commit limit은 34.16 GiB였으며,
+프로세스에 고정된 7 GB 제한이 있다는 근거는 확인하지 못했다. 아래 결과는 당시의
+reset 제거/부분-array 모델이며 최신 full-array 재시도와 구분해야 한다.
 
 | 대상 | macro flow | analysis flow | 비고 |
 | --- | --- | --- | --- |
@@ -6160,6 +6166,51 @@ python scripts/check_target_add_equivalence.py --rtl rtl/backend/rv_branch_unit.
 따라 달라진다. `rv_ooo_core`의 동일early-load1/AGU1 설정으로 Startpoint/Endpoint,
 중간cell·net delay, arrival/required/slack, clock 제약을 함께 확인한다.
 사내Liberty 원본 업로드는 요구하지 않으며 path report만으로 우선 분석할 수 있다.
+
+###### 5-18. Reset 유지 / 전체-array top 합성 흐름 (2026-10-02)
+
+서버에서 보고된 `u_lsu_cluster.forward_valid_q → IQ select → int PRF read/bypass →
+branch_actual_target_q` 경로는 macro read 경계를 남긴 수치로 제대로 비교할 수 없다.
+새 `scripts/run_full_core_timing.ps1`는 `rv_ooo_core`의 전체 core filelist를 snapshot으로
+고정하고 `EARLY_LOAD_SELECT=1`, `AGU_LOAD_BYPASS=1`, `COMPATIBLE_PAIR_SELECT=0`,
+checkpoint 8 설정을 사용한다. Reset port를 제거하거나 inactive로 묶지 않는다.
+
+1. `Coarse`: Slang의 `--no-implicit-memories`로 unpacked array를 직접 FF/read mux로
+   변환한다. 이는 array의 삭제나 SRAM blackbox 처리가 아니다. 계층을 유지한다.
+2. `Map`: 남은 memory를 모두 mapping하고 `$mem*` cell 0개를 assertion으로 확인한다.
+3. `Fine`: 각 module의 `techmap → opt`를 순차 실행하고 `fine_hierarchy.il`에 저장한다.
+   아직 flatten하지 않고 process를 종료해 일시 heap를 해제한다.
+4. `Flatten`: 새 process에서 위 checkpoint를 읽어 flatten/opt/DFF mapping한다.
+   큰 일시 netlist를 한꺼번에 보관하지 않도록 하는 도구 흐름이며 RTL 변경은 없다.
+5. `Abc`: full gate network를 Nangate45에 mapping하고 delay/area/log/netlist를 남긴다.
+   이 단계까지 성공하기 전에는 full-top timing이 완료됐다고 말하지 않는다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_full_core_timing.ps1 `
+  -BuildRoot "$PWD/out/full_core_run"
+# 중간 checkpoint 이후 재개(이미 성공한 단계는 다시 돌리지 않는다)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_full_core_timing.ps1 `
+  -BuildRoot "$PWD/out/full_core_run" -StartStage Fine
+```
+
+각 단계의 `.memory.csv`와 `.result.json`에 2초 간격 parent Yosys 메모리/최대값과
+exit code를 기록한다. child ABC의 개별 peak는 포함하지 않고 system available commit으로
+안전 감시한다. 기본 private 10 GiB/available commit 1.5 GiB guard는 이 스크립트의
+명시적 안전 설정이지 Yosys/PC의 고정 한계가 아니다. 원본 source/library/tool hash는
+manifest에 기록하고 재개 시 검증한다. ignored `out/` 결과는 Git에 올리지 않는다.
+
+최초 direct-flop 시도는 Coarse/Map PASS(peak private 1.38/1.22 GiB), int PRF
+`data_q` 2560-bit FF/read mux와 branch target 8192-bit FF를 netlist에서 확인했다.
+한번에 flatten한 Fine은 10.05 GiB에서 안전 guard로 중단했고, 따라서 ABC delay는 없다.
+모듈별 Fine + 별도-process Flatten 재시도는 **Coarse/Map/Fine/Flatten PASS**다.
+Fine sampled peak private는 5.76 GiB, Flatten은 9.54 GiB였다. 최종 pre-ABC top은
+111817 `DFF_X1`, 총 2973290 cells이고 memory/미변환 word-level 연산은 0개다.
+35개 `$scopeinfo`는 Yosys가 남기는 계층/source-location metadata이며 실제 logic이나
+memory boundary가 아니므로 word-level 검사에서만 제외한다. 전체 netlist
+`out/full_core_checkpoint_flops_87165a7/pre_abc.il` 생성 뒤 ABC를 실행 중이며
+**아직 delay/area/Fmax 결과는 없다**. physical 2nm STA/clock setup/배선 부하는 이
+공개 library 결과로 대체하지 않으며 서버와 동일한 start/end가 실제로 포함되는지
+확인한 다음 후보를 비교한다. 최신 채택 IPC 하한은 1.25다.
 
 ###### 5. 도구
 

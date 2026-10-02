@@ -4,6 +4,11 @@
 
 ## 현재 기준
 
+- 최신 사용자 허용 기준(2026-10-02): 클럭 개선이 확인되고 동일 CoreMark의 IPC가 **1.25 이상**이면 채택 후보로 허용한다. 이전 IPC 1.3 고정 목표를 이번 판단에 강제하지 않는다. 실제 2nm 1.2GHz 목표는 유지하며 Nangate45 결과만으로 달성을 주장하지 않는다.
+- 전체-array top 재시도: `scripts/run_full_core_timing.ps1`. Reset 유지, Slang direct-flop → 모든 memory_map → 모듈별 techmap/opt → **별도 process flatten** → ABC. 기존 macro flow는 IQ/PRF 배열 read 경로를 생략하므로 서버 LSU→IQ→PRF→BRU 비교 근거로 부족하다. direct-flop Coarse/Map PASS, 먼저 flatten한 Fine은 10.05GiB 안전 guard로 중단(고정7GB 제한 아님). 모듈별 변환도 같은 process의 flatten 순간에 guard를 넘었으므로 flatten 전 체크포인트로 heap를 해제한다. 현재 실행 `out/full_core_checkpoint_flops_87165a7`, RTL/filelist 변경 없음. ABC까지 성공하기 전 full-top timing 완료를 주장하지 말 것. HDD§5-18.
+- IPC 하한 1.25 적용 시 현재 동일 CoreMark 576450 instret 기준 timed cycles ≤461160(현재431358 대비 최대+29802)이 허용 범위다. AGU bypass=0의 IPC1.226505는 하한 미달이며, AGU1 timing/AGU0 performance를 혼합하면 안 된다. 기능/CRC/precise flush·trap PASS 및 실제 clock 개선도 별도로 필요하다.
+- Full-array 재시도 결과: `out/full_core_checkpoint_flops_87165a7` Coarse/Map/Fine/Flatten PASS, Fine sampled peak private5.763GiB, Flatten9.54GiB. `pre_abc.il` 약1.27GB, top111817DFF_X1/2973290cells, array/word-level 연산 미변환0. `$scopeinfo`35개는 metadata만이고 FF/read path cut 아님. ABC 진행 중(실행 session80912), 아직delay/area/Fmax 없음. 다음은 ABC 완료/메모리 결과 및 **full preABC**의 `forward_valid_q → IQ → int PRF → branch_actual_target_q` named path 확인. 이전 macro결과나 partial FIFO run을 이 결과와 혼동하지 말 것. RTL/filelist는 이번 작업에서 불변.
+
 - Branch: `main`
 - 현재 설계 checkpoint: v1.18.20 queue availability + sequential BTB prelookup (2026-10-01). 이전 pushed 기준 `2b17093`(v1.18.19). 서버 STA 목표는 미확인.
 - 비교 기준 RTL commit: `8f1c6ba Store fetch responses in a circular block queue (v1.18.11)`
