@@ -3,7 +3,10 @@ param(
   [string]$BuildRoot = "",
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
-  [int]$BuildJobs = 2
+  [int]$BuildJobs = 2,
+  # The minimum two-block ring aliases block head+2 back to head. Include
+  # these cases when a head-lookahead implementation reads three blocks.
+  [switch]$IncludeMinimumQueue
 )
 # Cycle-by-cycle ALL-output comparison with identical parameter settings.
 # No benchmark-specific traffic: random C/32-bit bytes, faults, stalls,
@@ -28,18 +31,22 @@ try {
   $ref = ($ref -join "`n") -replace "module rv_fetch_queue\b", "module rv_fetch_queue_ref"
   $refPath = "$BuildRoot/reference.sv"
   [IO.File]::WriteAllText($refPath, $ref, [Text.UTF8Encoding]::new($false))
+  $configurations = @(@(32,16,64), @(64,16,64), @(32,8,32), @(64,32,128))
+  if ($IncludeMinimumQueue) {
+    $configurations += @(@(32,8,16), @(64,16,32))
+  }
   @{
     referenceCommit=(& git rev-parse $Baseline)
     candidateSha256=(Get-FileHash rtl/frontend/rv_fetch_queue.sv -Algorithm SHA256).Hash
     testbenchSha256=(Get-FileHash tb/unit/frontend/rv_fetch_queue_equiv_tb.sv -Algorithm SHA256).Hash
     cyclesPerConfiguration=60000
-    configurations=16
+    configurations=($configurations.Count * 4)
     scope="Stateful all-public-output comparison, including invalid payload; not ISA proof"
   } | ConvertTo-Json | Set-Content "$BuildRoot/run_manifest.json" -Encoding UTF8
   $env:PATH = "$W64DevkitRoot/bin;" + $oldPath
   $env:VERILATOR_ROOT = $VerilatorRoot
   $top = "rv_fetch_queue_equiv_tb"
-  foreach ($config in @(@(32,16,64), @(64,16,64), @(32,8,32), @(64,32,128))) {
+  foreach ($config in $configurations) {
     foreach($ungated in @(0,1)) { foreach($separate in @(0,1)) {
     $xlen, $fetch, $queue = $config
     $build = "$BuildRoot/x${xlen}_f${fetch}_q${queue}_u${ungated}_s${separate}"

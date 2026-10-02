@@ -38,7 +38,7 @@ architectural state는 commit에서만 바뀐다. 특히 store는 execute 시 SQ
 
 현재 구현 상태(2026-09-21)는 **RV32IMFC 1차 RTL 통합, directed verification, CoreMark IPC 1.2 목표 달성, IFU PMP parcel-boundary 수정, SoC bus corner audit 및 backend timing-boundary 1차 개선 완료**다. SoC address package, 1R1W SRAM, 2-bank ITIM/DTIM, CLINT, PLIC, Boot ROM, HostIF, I/D-Fabric, AXI bridge와 Main Xbar가 `rv_soc_top`에 연결된다. core는 2-wide C align/decode, INT/FP RAT·RRAT·free-list·PRF, ROB 48, 56-entry unified issue window/global 2-wide select, ALU2/BRU/MUL/DIV, dual LSU/LSQ/store buffer, CSR·M/U privilege·precise trap·PMP를 하나의 speculation/recovery 경계로 통합한다.
 
-합성에서 관측된 `LSQ→ROB/WB→IQ select→FPU` 장거리 조합 경로를 끊기 위해 LSQ load-candidate와 P4 FP issue/operand 경계에 register를 배치했고 rename free-list encoder와 PMP region decode를 계층/공유 구조로 바꿨다. IQ와 LQ의 oldest-two 선택은 균형 tournament tree이고, SQ forwarding도 16개 older store를 직렬로 훑지 않고 4-level youngest-match reduction tree를 사용한다. commit에서 반환된 physical tag와 issue된 IQ slot은 다음 cycle allocation부터 사용해 resource-return→dispatch→IQ-D 장경로를 차단한다. P0~P3 정수·분기·LSU 실행과 IQ same-cycle wakeup은 IPC를 보존한다. `rv_fpu`는 일반 RV32F operation을 기본 4-stage elastic fast pipe로 처리하고 FDIV.S/FSQRT.S는 각각 88-step/64-step iterative slow path에서 처리한다. 결과와 `fflags`는 ROB에 보관되고 commit 시에만 FCSR에 누적된다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다.
+합성에서 관측된 `LSQ→ROB/WB→IQ select→FPU` 장거리 조합 경로를 끊기 위해 LSQ load-candidate와 P4 FP issue/operand 경계에 register를 배치했고 rename free-list encoder와 PMP region decode를 계층/공유 구조로 바꿨다. IQ와 LQ의 oldest-two 선택은 균형 tournament tree이고, SQ forwarding도 16개 older store를 직렬로 훑지 않고 4-level youngest-match reduction tree를 사용한다. commit에서 반환된 physical tag와 issue된 IQ slot은 다음 cycle allocation부터 사용해 resource-return→dispatch→IQ-D 장경로를 차단한다. P0~P3 정수·분기·LSU 실행과 IQ same-cycle wakeup은 IPC를 보존한다. `rv_fpu`는 standalone 기본4-stage를 지원하며 현재 backend에서는5-stage elastic fast pipe로 일반 RV32F operation을 처리하고 FDIV.S/FSQRT.S는 전용 iterative slow path에서 처리한다. 결과와 `fflags`는 ROB에 보관되고 commit 시에만 FCSR에 누적된다. `rv_branch_predictor`는 256-entry 4-way BTB, PC-indexed bimodal과 GHR-indexed gshare 및 chooser가 각각 2048-entry인 tournament predictor, 16-entry speculative/committed RAS를 사용한다. predictor query와 resolve/commit은 모두 instruction length와 일치하는 raw instruction encoding을 사용하므로 compressed control-flow도 PHT/BTB/RAS 및 speculative-history recovery에서 누락되지 않는다.
 
 IFU와 I-Fabric은 response consume과 다음 request accept를 같은 cycle에 수행하고 target-buffer hit는 redirect와 queue fill을 원자 처리한다. 16-byte fetch transport의 PMP 권한은 8개의 2-byte parcel로 검사하고 실제 C/32-bit instruction이 소비하는 parcel만 fault에 반영한다. D-Fabric도 old response의 ID/data를 반환하는 cycle에 next request를 accept할 수 있으며, edge 이후에는 새 metadata를 유지하되 outstanding 깊이는 1을 보존한다. store는 base가 준비되면 data operand를 기다리지 않고 주소를 SQ에 먼저 확정한다. DPI는 ELF PT_LOAD를 Host AXI로 적재하고 full-byte readback PASS 뒤 CLINT MSIP로 실행을 시작한다. Main Xbar는 unmapped/unsupported/region-crossing/4-KiB-crossing burst를 target side effect 없이 error slave로 보내고, core outbound bridge는 무응답 target을 기본 4096-cycle watchdog으로 access fault 완료한다.
 
@@ -475,7 +475,7 @@ handshake하지 않는 backpressure 방식을 우선 사용하므로 replay 값�
 | R0 | Rename | RAT lookup, physical destination allocation, intra-pair dependency bypass |
 | D1 | Dispatch | ROB/IQ/LQ/SQ를 원자적으로 할당 |
 | I0 | Select | ready wakeup, age 기반 select, global 2-uop grant |
-| E0..n | Execute | ALU/BRU 1, MUL 2, DIV variable, FPU fast 4-stage, load 3+ cycles |
+| E0..n | Execute | ALU/BRU 1, MUL 2, DIV variable, FPU fast 5-stage(현재 LATENCY=5), load 3+ cycles |
 | W0 | Writeback | PRF write, dependent wakeup, ROB completion |
 | C0 | Commit | head부터 최대 2개 retire, RRAT/CSR/fflags 갱신 |
 
@@ -3088,7 +3088,7 @@ issue된 uop이 계산되고 결과가 PRF/ROB에 돌아오는 경로다.
 2. 다음 stage가 leading-bit 탐색, normalize와 sticky shift를 수행해 `fp_normalized_t`에 저장한다. 별도 round/pack stage가 overflow/underflow/subnormal 처리와 fflags를 만들고 결과는 elastic stage에서 stall 중에도 payload와 identity를 안정적으로 유지한다.
 3. WB가 결과를 ROB/PRF에 보내고 fflags는 retire 때만 FCSR에 누적한다. branch/exception flush는 pre register와 각 elastic stage의 younger sequence를 모두 제거한다.
 
-**타이밍.** 기본 fast path는 총 `LATENCY=4`이고 finite FDIV/FSQRT는 약 89/65 edge 뒤 result valid가 된다. 처리율은 stall이 없으면 한 FP operation/cycle이다. 마지막 stage stall은 result, round/pack, normalized, precalc, request-ready 순으로 역전파된다. 1 ns ABC target의 공개 preflight에서 4-stage 분리 전 기준 5.079 ns/34,531.1 µm²가 분리 후 4.829 ns/33,600.9 µm²로 바뀌었다. 이는 배치·배선 전 상대 비교 수치이며 서버 STA sign-off를 대체하지 않는다.
+**타이밍.** standalone fast path 기본은 `LATENCY=4`, 현재 backend 연결은 `LATENCY=5`다. finite FDIV/FSQRT는 별도 iterative 경로이며 현재 `DIV_NUMW=25+DIV_FRAC=53` 및 `SQRT_ITERS=29`에 따른53/29회 loop를 수행한다. 전후 normalize/pack/result transport와 backpressure 때문에 이를 instruction retire까지의 고정 cycle 수로 사용하면 안 된다. fast 처리율은 stall이 없으면 한 FP operation/cycle이다. 마지막 stage stall은 result, round/pack, normalized, precalc, request-ready 순으로 역전파된다. 과거4-stage 분리 checkpoint의1ns ABC target 공개 preflight는5.079→4.829ns/34,531.1→33,600.9µm²였다. 이 과거 수치를 현재5-stage/서버 STA sign-off로 혼동하지 않는다.
 
 **코너케이스.** NaN/sNaN, signed zero, subnormal, rounding, flush된 fflags를 다룬다.
 
@@ -5780,10 +5780,117 @@ entry count만으로 allocation generation span<128이 보장되는 것은 아�
 cohort 조건 아래 검사한다. 그 조건이 실제 ROB에서 성립한다는 증명은 아니며,
 해당 조건부 검사 결과를 무제약/full-core PASS로 표현하면 안 된다.
 
+###### 5-12. 미채택 후보: sequential PHT/chooser 사전 조회
+
+기능은 통과했으나 전체 개선이 입증되지 않아 원복했으며 GitHub3351c95의 RTL에 포함하지 않는다.
+`SEQUENTIAL_QUERIES=1` 계약(PC1=PC0+length0)을 이용해 lane1의 늦은 instruction
+length가 PHT/chooser 주소 계산과 전체 table mux 앞에 놓이지 않게 한다.
+PC0+2와PC0+4 각각에 대해 bimodal direction/chooser와 global direction을 먼저
+읽는다. global은 unshifted GH, shift-in0 GH, shift-in1 GH의3경우를 모두 조회한다.
+`sequential_table_lookup[0:1]`은 FF가 아니라 각5bit의 조합 결과다. length0로
+완료된 결과를 선택하고, lane0가 valid conditional일 때만 기존과 동일하게
+예측 방향으로 shifted GH의1bit를 선택한다. 이후 training/resolve/recovery/RAS/
+prediction metadata는 바꾸지 않는다. 일반 모드0은 서로 무관한 두 query PC를
+계속 지원한다. 추가 pipeline cycle, core top port, filelist 변경은 없다.
+
+| 검사 | 현재 증거/범위 |
+|---|---|
+| stateful reference equality | immutable081e714 대비 RV32/64×PHT32/2048×일반/순차8구성, 각각100000cycle/양edge200000회, 모든 public output 일치(총160만 회) |
+| native-table SVA | lane1 bimodal/chooser 및 선택된 GH global bit가 실제 PC1의 native table read와 같음을 reset 이후 valid query edge에서 검사 |
+| 최신 assertion SoC | 동일CoreMark431358cycles/576450instret/IPC1.336361, 전체profiler SHA2BE75F… 동일; C/FP009e00b9/Hostexit0 |
+| block/backend | assertion-enabled35block/backend integration PASS |
+| full frontend | 동일Liberty/constraint/ABC target1000:2443.47→2416.44ps(-1.11%),365101.758→375201.246µm²(+2.77%) |
+| whole core 및 서버 | macro2998.79→3183.29ps(+6.15%),352749.782→355973.968µm²(+0.91%); 실제2nm1.2GHz STA 미확인 |
+
+시험/manifest는 `out/predictor_sequential_tables_equiv`와
+`out/predictor_sequential_tables_*`, 합성은
+`out/timing_frontend_sequential_tables_1000`, `out/timing_core_sequential_tables_1000`이다.
+추가 read cone의 area/배선 비용을 숨기지 않는다. 현재 predictor table은 reset 가능한
+FF 배열이므로 이 방식은 조합 read mux를 늘린다. 향후 실제 SRAM predictor로
+바꿀 때에는 해당 read-port 수를 그대로 공짜라고 가정할 수 없고 banking/복제/
+조회 pipeline 계약을 다시 설계해야 한다. 이 상대 비교 수치를 actual1.2GHz
+달성의 증거로 표현하면 안 된다.
+whole macro는 array read 경로를 생략하여 위 PHT read-cone 최적화 평가에 한계가
+있지만, full frontend의1.11% 개선만으로 전체1.2GHz 목표가 더 가까워졌다고
+확정하지 않았다. 승인 RTL은 유지하고 실험본을
+`out/predictor_sequential_tables_candidate.sv`에 보관했다.
+
+###### 5-13. 미채택 실험: fetch queue head-window shadow
+
+이 절의 두 후보는 기능검사를 통과했지만 전체 개선이 입증되지 않아 원복했다.
+승인 RTL/filelist/TB는 `081e714`와 같고 이 기능을 포함하지 않는다.
+기존 블록 FIFO의 용량/포인터/PC/occupancy와 출력 계약은
+그대로 두고, predictor가 매 사이클 보는 첫 4개 parcel(64bit)과 fault(4bit)를
+reset 가능한 shadow FF로 유지한다. 추가 architectural pipeline stage가 아니다.
+
+```text
+기존: block FF → head block mux → parcel 정렬 → 명령 길이/decode → predictor
+시험: head-window FF ───────────────────────→ 명령 길이/decode → predictor
+                  ↑
+        같은 edge의 consume/refill/redirect를 반영한 정확한 다음 window
+```
+
+1. Reset은 원래 블록 배열과 shadow 모두 0으로 만든다. `head_pc_q`는 이미
+   존재하는 PC FF이며 별도의 중복 PC cache를 추가하지 않는다.
+2. 정상 소비는 현재 head를 기준으로 consume0..4 각각의 다음 4parcel window를
+   준비한다. late ready/예측 결정 뒤에 `next_head_offset`으로 barrel shift하지
+   않고, 미리 정렬된 5개 fixed slice 중 하나를 선택한다.
+3. 같은 edge에 fill을 수락하면 해당 물리 tail 블록의 새 데이터/fault를 bypass한다.
+   FETCH_BYTES=8에서는 다음 window가 세 번째 물리 블록까지 걸칠 수 있다.
+   최소 2블록 큐에서는 세 번째 index가 첫 번째로 wrap되는 것도 유지한다.
+4. empty refill은 head를 tail로 재배치하므로 별도로 그 head window를 만든다.
+   Redirect는 head=0과 target offset을 사용한다. atomic FTB fill은 block0만
+   덮어쓰고, fill 없는 redirect는 블록 배열에 남은 바이트를 보존한다.
+5. Invalid 상태도 shadow를 갱신한다. `UNGATED_PAYLOAD=1`은 invalid 바이트까지
+   predictor에 노출하므로, valid 데이터만 같다는 검증으로는 충분하지 않다.
+
+독립 SVA는 매 edge `head_window_data_q == aligned_data[63:0]` 및
+fault4bit equality를 native block read/정렬과 비교한다. immutable081e714와의
+24구성(RV32/64, fetch8/16/32, gated/ungated, 정상 주소분리0/1, 최소2block포함)
+각60000cycle all-public-output equality PASS. 동일 assertion-enabled SoC
+CoreMark431358cycles/576450instret/IPC1.336361, 전체perf SHA2BE75F… 동일,
+C/FP009e00b9/Hostexit0 PASS다. 이는 random 회귀이지 전체ISA/4-state formal 증명은 아니다.
+
+첫 후보 full frontend는 동일 Nangate45/constraint/ABC target1000에서
+2443.47→2456.02ps(+0.51%),365101.758→375883.536µm²(+2.95%)로 개선되지 않았다.
+기존 head-block→predictor 경로를 끊어도 redirect/FTB→shadow 입력으로 지연이
+옮겨갈 수 있다. 첫 whole macro도2998.79→3035.68ps(+1.23%),
+352749.782→359534.378µm²(+1.92%)로 악화해 그대로 채택하지 않았다.
+
+후속 후보는 실험용 `SEPARATE_NORMAL_FILL_PAYLOAD=1`에서 정상 메모리 응답의
+data/resp/PMP bundle을 FTB 선택과 분리했다. 실험용 추가 입력은
+`normal_fill_data_i[FETCH_BYTES*8-1:0]`, `normal_fill_resp_i[1:0]`,
+`normal_fill_pmp_allow_i[FETCH_BYTES/2-1:0]`다. 기존 standalone은 새parameter0으로
+기존fill bundle을 사용했고 시험frontend만1로 direct response bundle을 연결했다.
+ignored `out/`에서 별도 비교한 후 working-tree 경로에서도 검사했으나 최종 원복했다.
+정상 bundle은 memory response에서 직접 오고 redirect bundle은 기존 fill port로
+FTB 데이터/PMP mask를 전달한다. valid 정상 fill의 두 bundle equality를 SVA로 검사하며,
+redirect에서 normal data/address/valid가 달라도 결과가 변하지 않는 독립8cfg×60000cycle
+검사도 통과했다. 기본24cfg×60000cycle 및 최신SoC CoreMark/C-FP도 PASS이고,
+시험 working-tree 경로의 RTL SHA가 isolated 검사본과 byte-for-byte 같음을 확인했고
+그 경로에서도 independent-payload24cfg×60000cycle 및35block을 모두 통과했다.
+
+후속 full frontend는2443.47→2216.45ps(-9.29%),365101.758→372832.782µm²(+2.12%)다.
+`out/timing_frontend_head_window_v2_1000`에 동일Liberty/constraint/target1000 manifest가
+있다. 그러나 전체 core macro는2998.79→3138.14ps(+4.65%),
+352749.782→357783.566µm²(+1.43%)였다. critical start는
+`u_backend.u_lsu_cluster.u_lsq.candidate_index[0]`로 보고됐다.
+macro는 array read 경로를 생략하므로 이 수치만으로 실제2nm STA 악화를 증명하지
+않지만, frontend9.29% 개선만으로 전체 목표에 유리하다고 확정하지 않았다.
+두 후보를 미채택으로 분류하고 production RTL/두TB/주 인터페이스 표를 원복했다.
+새normalpayload port/parameter 및shadow FF는 현재 승인module에 없다.
+후속 source는 `out/queue_head_window_v2.sv`(SHA3D24D8…)와
+`out/frontend_head_window_v2.sv`(SHA3A1F20…)에 보존했다.
+`out/separate_fill_soc` 실행파일도 이 미채택 후보로 빌드됐으므로 현재RTL로
+사용하려면 재build해야 한다. 서버2nm1.2GHz는 여전히 미확인이다.
+frontend 상대 개선이나 기능 PASS를 전체 core/actual1.2GHz 달성으로 표현하지 않는다.
+
 ###### 5. 도구
 
 - `scripts/trace_named_path.py`: pre-ABC RTLIL에서 named 신호를 따라 최장 구조 경로를
-  출력한다(`--src/--srcbit` 시작, `--to/--tobit/--tonode` 끝). 단위 delay 모델이라
+  출력한다(`--src/--frm/--srcbit` 시작, `--to/--tobit/--tonode` 끝).
+  `--frm`은 `--src`와 동일한 실제 source filter다(종전 무시되던 옵션을 수정).
+  단위 delay 모델이라
   ABC가 재균형하는 직렬 loop(FPU LZC, one-hot OR 사슬)는 과대평가한다. ABC가 보고한
   경로의 **단계 이름을 붙이는 용도**다.
 - `scripts/run_analysis_netlist.sh <top> <out_dir> [EXCLUDE] [INCLUDE]`: 위 4항 flow.
