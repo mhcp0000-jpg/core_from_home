@@ -31,14 +31,24 @@ try {
   $ref = ($ref -join "`n") -replace "module rv_fetch_queue\b", "module rv_fetch_queue_ref"
   $refPath = "$BuildRoot/reference.sv"
   [IO.File]::WriteAllText($refPath, $ref, [Text.UTF8Encoding]::new($false))
+  # Every geometry must test exactly the same bytes, even if the worktree
+  # changes while a long matrix is running. Use immutable per-run snapshots.
+  $candidatePath = "$BuildRoot/candidate.sv"
+  $testbenchPath = "$BuildRoot/testbench.sv"
+  $packagePath = "$BuildRoot/rv_ooo_pkg.sv"
+  Copy-Item -LiteralPath rtl/frontend/rv_fetch_queue.sv -Destination $candidatePath -Force
+  Copy-Item -LiteralPath tb/unit/frontend/rv_fetch_queue_equiv_tb.sv -Destination $testbenchPath -Force
+  Copy-Item -LiteralPath rtl/rv_ooo_pkg.sv -Destination $packagePath -Force
   $configurations = @(@(32,16,64), @(64,16,64), @(32,8,32), @(64,32,128))
   if ($IncludeMinimumQueue) {
     $configurations += @(@(32,8,16), @(64,16,32))
   }
   @{
     referenceCommit=(& git rev-parse $Baseline)
-    candidateSha256=(Get-FileHash rtl/frontend/rv_fetch_queue.sv -Algorithm SHA256).Hash
-    testbenchSha256=(Get-FileHash tb/unit/frontend/rv_fetch_queue_equiv_tb.sv -Algorithm SHA256).Hash
+    candidateSha256=(Get-FileHash $candidatePath -Algorithm SHA256).Hash
+    testbenchSha256=(Get-FileHash $testbenchPath -Algorithm SHA256).Hash
+    packageSha256=(Get-FileHash $packagePath -Algorithm SHA256).Hash
+    inputPolicy="Immutable candidate/testbench/package snapshots in BuildRoot"
     cyclesPerConfiguration=60000
     configurations=($configurations.Count * 4)
     scope="Stateful all-public-output comparison, including invalid payload; not ISA proof"
@@ -52,7 +62,7 @@ try {
     $build = "$BuildRoot/x${xlen}_f${fetch}_q${queue}_u${ungated}_s${separate}"
     New-Item -ItemType Directory -Force $build | Out-Null
     $ErrorActionPreference = "Continue"
-    & "$VerilatorRoot/bin/verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal -Werror-UNOPTFLAT --top-module $top --Mdir $build "-GXLEN=$xlen" "-GFETCH_BYTES=$fetch" "-GQUEUE_BYTES=$queue" "-GUNGATED_PAYLOAD=$ungated" "-GSEPARATE_NORMAL_FILL_ADDRESS=$separate" rtl/rv_ooo_pkg.sv $refPath rtl/frontend/rv_fetch_queue.sv tb/unit/frontend/rv_fetch_queue_equiv_tb.sv *> "$build/compile.log"
+    & "$VerilatorRoot/bin/verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal -Werror-UNOPTFLAT --top-module $top --Mdir $build "-GXLEN=$xlen" "-GFETCH_BYTES=$fetch" "-GQUEUE_BYTES=$queue" "-GUNGATED_PAYLOAD=$ungated" "-GSEPARATE_NORMAL_FILL_ADDRESS=$separate" $packagePath $refPath $candidatePath $testbenchPath *> "$build/compile.log"
     $generateCode = $LASTEXITCODE
     $ErrorActionPreference = "Stop"
     if ($generateCode) { throw "Generation failed: $build/compile.log" }

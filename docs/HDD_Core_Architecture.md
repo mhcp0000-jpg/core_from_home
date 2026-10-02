@@ -5901,10 +5901,13 @@ frontend 상대 개선이나 기능 PASS를 전체 core/actual1.2GHz 달성으�
 
 기존 v20 타이밍 run은 최종 커밋 이전 측정이며 일부 source SHA가 최종081e714와
 다르다. source hash가 다르다는 이유만으로 논리 차이/타이밍 차이/동등성을
-단정하지 않는다. 같은 tool/Liberty/constraint에서 최종081e714 소스 그대로의
+단정하지 않았다. 같은 tool/Liberty/constraint에서 최종081e714 소스 그대로의
 fresh baseline을 `out/timing_frontend_081_exact_1000` 및
-`out/timing_core_081_exact_1000`에서 재측정 중이다. 이 재측정이 끝나기 전에는
-위 상대 수치를 최종081e714 byte-for-byte 동일 run과의 확정 비교로 인용하지 않는다.
+`out/timing_core_081_exact_1000`에서 재측정 완료했다(2026-10-02).
+fetch queue SHA2843BA…/predictor SHA6AA60C…를 기록한 정확한 승인 RTL에서
+frontend2443.47ps/365101.758µm², whole2998.79ps/352749.782µm²로 위 기준과
+동일한 결과를 확인했다. 이 결과도 actual2nm STA 또는 inferred SRAM read-path
+signoff는 아니다.
 
 BTB 후보는 각 way의 valid/tag match를 병렬 계산하고, multiple matching way가
 있어도 원래 priority loop와 동일한 **가장 높은 way**만 선택하도록 mask했다.
@@ -5967,6 +5970,80 @@ Whole macro는 inferred array read를 생략하므로 실제 2nm STA 악화를 �
 증명하지는 못한다. 그러나 frontend의 1.05% 개선만으로 전체 1.2GHz 목표 달성이
 가까워졌다고 확정하지 않아 세 후보 모두 채택하지 않았다. 새 검증 도구/TB를
 추가해도 RTL filelist에는 검증 전용 파일을 넣지 않는다.
+
+###### 5-15. 미채택 실험: consume 이후 pointer 산술의 선행 계산
+
+이 절은 구현한 뒤 원복한 설계 실험이다. 승인 RTL에는 `advance_sum`/직접 선택
+로직이 없으며 기존 `head_parcel_offset_q + consume_parcels` 계산을 사용한다.
+비교 기준은 §5-14의 **정확한081e714 fresh baseline**이다.
+
+Dual issue의 각 명령은 1 또는 2 parcel이므로 실제 소비 개수는0..4다.
+FETCH_BYTES≥8은 한 블록에 최소4parcel을 제공하므로 정상 한 사이클 소비가
+넘는 블록은 최대1개다. 시험본은 head offset+0/+1/+2/+3/+4를 먼저 계산하고
+late ready/branch 결과로 소비 개수가 확정되면 wrapped offset와 block carry만
+선택했다. Packed combinational wires를 사용했으며 추가 FF/stage/인터페이스/
+FIFO 용량/issue 정책 변경은 없다.
+
+```text
+승인: instr/ready/branch → consume → offset add → wrap/compare → head FF
+시험: head offset FF → +0/+1/+2/+3/+4 ──────────────────┐
+      instr/ready/branch → consume ────────────────→ 선택 → head FF
+```
+
+예를 들어 FETCH_BYTES=16(8parcel), head offset=6에서 C 명령1parcel과 32bit
+명령2parcel이 모두 소비되면 advance3의 sum=9를 선택한다. carry=1, 새offset=1로
+다음 블록을 가리킨다. 첫 C 명령만 소비되면 advance1의 sum=7을 선택하여
+carry=0/offset=7이다. Redirect/exception은 기존 sequential priority가 이 normal
+update보다 우선하며, reset/empty refill/atomic FTB fill 동작은 바꾸지 않았다.
+
+| 후보 | Full frontend delay / area | Whole core macro delay / area | 판단 |
+|---|---|---|---|
+| 정확한081e714 | 2443.47ps / 365101.758µm² | 2998.79ps / 352749.782µm² | 기준 |
+| V4: 기존 식 fallback + known advance 선행 선택 | 2404.85ps / 366022.118µm² | 3044.02ps / 354058.502µm² | FE −1.58%, whole +1.51%, 원복 |
+| V5: 실제0..4 범위의 직접 선택 | 2575.90ps / 366788.198µm² | 3178.83ps / 356350.624µm² | FE +5.42%, whole +6.00%, 원복 |
+
+V4의 source SHA는 DDEC77…이며 `out/queue_constant_advance_v4_equiv/candidate.sv`에
+고정 보존했다. V4는 정상 범위 밖/unknown count를 기존32bit 식으로 처리하는
+fallback을 남겼지만, 구조 추적에서 그 늦은 adder/compare cone도 여전히 남는
+것을 확인했다. V5(SHA7FD226…)는 실제 소비 범위의 직접 선택으로 fallback을
+제거하고 sampled `consume_parcels<=4` assertion을 추가했다. 현재 승인 RTL에는
+이 시험 assertion/선행 계산 로직을 추가하지 않았다.
+
+범위는 테스트 가정만으로 제한하지 않았다. Actual V5 module에 관측용 output만
+추가한 fixture에서 모든 임의 two-state 초기 FF 상태/입력을 둔1-step SAT로
+consume≤4를 증명했다. FETCH8/16/32 × XLEN32/64 × UNGATED0/1, normal address
+분리1의12구성 PASS다. Full queue 상태 동등성/ISA/4-state 증명은 아니며 **범위
+불변조건** 증명이다. V5 actual 계산 fragment의 SAT equality는 이 증명된0..4
+범위에서만 비교했고, V4 fragment는 임의 two-state length/count에서도 비교했다.
+두 후보 모두 FETCH8/16/32의 helper SAT PASS다.
+
+Icarus helper 검사는 각geometry4096조합에서 unknown head/valid/ready/length를
+포함했다. 비교 계약은 전체 consume count/block carry와 실제 head FF에 저장되는
+offset lowbits다. X 입력에서 사용하지 않는32bit integer padding은 다를 수 있으므로
+그 차이를 public output/FF 변화라고 표현하지 않는다. V4는 Icarus의 packed
+dynamic index+part-select 제약 때문에 고정5회 loop를 unroll하여 검사했고, V5
+direct selector fragment는 그대로 검사했다. 둘 다 PASS다. 중간 V2에서는 carry
+comparison=X를 procedural `if`로0 처리하는 차이를 trial5에서 잡고 수정했다.
+이를 original ternary의 X 전파와 같다고 잘못 가정하면 안 된다.
+
+각 최종 후보는 immutable081e714 대비24구성×60000cycle의 **모든 public output**
+비교(최소2블록 큐/invalid raw payload/normal 주소분리 포함), native SVA, 같은
+assertion-enabled SoC CoreMark perf SHA2BE75F…/IPC1.336361,
+C/FP009e00b9/Hostexit0 및35개 assertion-enabled block 회귀를 통과했다.
+V4/V5 결과는 각각 `out/*constant_advance_v4*`, `out/*direct_advance_v5*` 및
+`out/fq_*v4*`/`out/fq_*v5*`에 보존했다. Actual2nm STA 또는 전체ISA signoff가 아니다.
+
+최초7F105… run은 실행 중 source가 바뀌어 geometry별로 다른 버전을 컴파일했으므로
+전체 PASS 증거로 사용하지 않는다. 이를 방지하기 위해 queue 회귀 runner는
+candidate/TB/package를 BuildRoot에 실행 시작 시 복사하여 고정하고, **그 snapshot의
+SHA**를 manifest에 기록하도록 개선했다. 이후 V3/V4/V5 행렬은 고정 소스로 검사했다.
+겉보기 RTL depth 감소가 실제 mapped clock 개선을 보장하지 않는 사례이며, 두
+최종 후보 모두 전체 목표 개선을 입증하지 못해 원복했다.
+
+구조 tracer의 `--to` regex는 canonical signal 이름만 찾을 수 있다. Alias가
+`advance_sum`으로 바뀌면 head-offset path가 출력되지 않아도 FF cut의 증거가 아니다.
+V4에서 exact `--tobit u_fetch_queue.head_parcel_offset_q[1]`로 지정했을 때 실제
+경로가 다시 출력됐다. Alias-sensitive 검사에는 exact bit selector를 사용한다.
 
 ###### 5. 도구
 
