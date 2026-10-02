@@ -6116,6 +6116,51 @@ powershell -ExecutionPolicy Bypass -File scripts/run_fetch_queue_formal.ps1 `
   -Baseline 081e714 -IncludeMinimumQueue -BuildRoot out/fetch_queue_formal
 ```
 
+###### 5-17. 미채택 실험: target-add balanced prefix
+
+Target-add의 nibble carry 계산을 펼친 항들의 OR에서 balanced prefix merge로
+바꿔 비교했다. `(G_hi,P_hi) ∘ (G_lo,P_lo)`는
+`G=G_hi|(P_hi&G_lo)`, `P=P_hi&P_lo`이며 길이1/2/4/... group을 병합한다.
+RV32는8nibble/3level, RV64는16nibble/4level이다. Nibble0의 incoming carry는0,
+nibble i의 carry는 merged G[i-1]이며 기존 sum0/sum1 중 선택한다.
+추가FF/파이프라인/분기 알고리즘/인터페이스 변경 없이 계산 구조만 시험했다.
+
+| 실제 측정 범위 | 정확한 승인 baseline delay / area | 후보 delay / area | 결과 |
+|---|---|---|---|
+| BRU leaf | 993.64ps / 955.472µm² | 1025.52ps / 979.412µm² | +3.21%delay, 원복 |
+| Full frontend, predictor만 변경 | 2443.47ps / 365101.758µm² | 2477.69ps / 362373.928µm² | +1.40%delay, 원복 |
+
+두 변경을 함께 적용한 whole core 결과로 표현하지 않는다. BRU를 먼저 원복한
+뒤 predictor-only frontend를 측정했다. Whole macro/SoC/35block 회귀는 이번 후보에
+별도로 수행하지 않았다. 공개45nm 숫자로 실제2nm Fmax를 확정하지 않는다.
+BRU sourceSHA E06D2A…/predictor B469F0…는 각각
+`out/bru_balanced_prefix_candidate.sv`/`out/predictor_balanced_prefix_candidate.sv`에
+고정 보존했다. 현재 production RTL/filelist는081e714와 동일하다.
+
+새 `scripts/check_target_add_equivalence.py`는 실제 source에서 target_add function을
+추출해 기준 function 및 native modulo-XLEN 덧셈과 **임의 two-state lhs/rhs의 SAT**로
+비교한다. 별도 Icarus 검사에서는8192개 carry-chain/overflow/X/Z 조합을 기준
+function과 case equality로 비교한다. Native `+`의 X전파 granularity와 기존 helper는
+다를 수 있어 X/Z 검사에서는 native 결과를 oracle로 쓰지 않는다.
+Predictor/BRU 각각 RV32/RV64 PASS, nibble 결과를 XOR1로 변조한 negative fixture는
+SAT 실패 및 failed report로 검출했다. 승인 predictor의 RV32/RV64도 다시 PASS했다.
+이 검사는 target-add helper 범위이며 decode/분기 상태/전체 ISA 증명이 아니다.
+Artifacts는 `out/*target_add*balanced_prefix*`/`out/target_add_081_exact_*`에 있다.
+
+```powershell
+# 실행 경로에 한글이 있으면 ASCII subst alias로 out 경로를 넘긴다.
+python scripts/check_target_add_equivalence.py --xlen 32 --out R:/out/target_add_check
+# BRU의 기준 함수는 파일명 추측이 아닌 명시적 baseline module로 지정한다.
+python scripts/check_target_add_equivalence.py --rtl rtl/backend/rv_branch_unit.sv `
+  --reference-module rtl/backend/rv_branch_unit.sv --xlen 64 --out R:/out/bru_add_check
+```
+
+다음 실제1.2GHz 판단에는 승인RTL 기준 서버 report가 필요하다. 1.2GHz의 주기는
+0.833333ns지만 usable data-arrival budget은 library setup/uncertainty/latency에
+따라 달라진다. `rv_ooo_core`의 동일early-load1/AGU1 설정으로 Startpoint/Endpoint,
+중간cell·net delay, arrival/required/slack, clock 제약을 함께 확인한다.
+사내Liberty 원본 업로드는 요구하지 않으며 path report만으로 우선 분석할 수 있다.
+
 ###### 5. 도구
 
 - `scripts/trace_named_path.py`: pre-ABC RTLIL에서 named 신호를 따라 최장 구조 경로를
