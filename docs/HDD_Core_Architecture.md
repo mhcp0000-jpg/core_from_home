@@ -6045,6 +6045,77 @@ SHA**를 manifest에 기록하도록 개선했다. 이후 V3/V4/V5 행렬은 고
 V4에서 exact `--tobit u_fetch_queue.head_parcel_offset_q[1]`로 지정했을 때 실제
 경로가 다시 출력됐다. Alias-sensitive 검사에는 exact bit selector를 사용한다.
 
+###### 5-16. 미채택 실험: 좁은 pointer 산술과 empty-refill 조건 분리
+
+두 후보는 각각 정확한081e714를 기준으로 시험했으며 서로 합친 설계가 아니다.
+승인 RTL/기존 TB/filelist는 모두081e714 그대로다. 실제2nm STA가 없으므로 아래
+Nangate45 수치를 실제 서버 주파수로 변환하거나1.2GHz 달성으로 표현하지 않는다.
+
+V6은 선행계산/선택 없이 기존 늦은 offset 덧셈을 필요한 폭으로 제한했다.
+Dual issue 소비≤4, FETCH_PARCELS≥4이고2의 거듭제곱이므로
+`{carry,offset}=head_offset+consume`의 한 carry가 block wrap을 나타낸다.
+Actual module의 임의 two-state 상태/입력1-step SAT12구성에서 소비≤4를 확인하고,
+실제 계산 fragment의 조건부 SAT3geometry 및 Icarus X입력4096회/geometry를
+통과했다. Fragment 본문은 실제 RTL과 whitespace를 제외한 text equality도 확인했다.
+고정 소스24구성×60000cycle 모든 public output/native SVA 비교 PASS지만
+frontend2417.85ps/367175.228µm², whole macro3021.35ps/356366.850µm²로
+기준2443.47/2998.79ps 대비 FE−1.05%/whole+0.75%라 원복했다.
+SourceSHA6EC5E1…, `out/queue_narrow_advance_v6_equiv/candidate.sv` 및
+`out/*narrow_advance_v6*`에 보존했다. V6의 SoC/35block 회귀는 별도로 수행하지
+않았으므로 이전 후보의 회귀 결과를 V6 결과로 재사용하지 않는다.
+
+V7은 empty queue의 head metadata 갱신 enable을 분리했다. 기존 normal branch는
+`fill_valid && fill_ready` 내부에서 count=0을 다시 확인하여 head/offset을 초기화했다.
+그러나 count=0이면 `fill_ready=redirect || count<QUEUE_BLOCKS || consume_block`가
+항상1이다. 따라서 아래처럼 head metadata만 독립 enable로 갱신해도 같다.
+
+```text
+기존 normal: fill_valid AND fill_ready → count=0 → head/offset 갱신
+시험 normal: fill_valid AND count=0              → head/offset 갱신
+공통: SRAM data/fault/tail/count 쓰기는 원래 fill handshake 유지
+공통: reset > redirect > normal 우선순위, empty refill은 normal consume보다 우선
+```
+
+예를 들어 count=0, tail=2, 정상 응답 valid=1이면 ready는 predictor 결과와 무관하게1이다.
+두 구현 모두 해당 edge에서 head=2/offset=fill_head_offset을 저장한다.
+valid=0이면 저장하지 않는다. Redirect가 동시에 있으면 상위 redirect branch만
+실행하므로 normal 조건 분리는 redirect/atomic FTB fill 우선순위를 바꾸지 않는다.
+
+V7 sourceSHA3FE305…의 frozen24구성×60000cycle 모든 public output/native SVA PASS.
+Head metadata guard의 임의 입력 SAT(2/4/8block)와 X입력8192회/geometry도 PASS.
+추가로 Yosys `equiv_make`/`equiv_simple -seq 1`/`equiv_status -assert`로 **모든
+matched output 및 공통 state bit**의 two-state equivalence를24구성에서 확인했다.
+기본 구성1772개 `$equiv` 전부 PASS; offset에+1을 삽입한 negative fixture는
+head-offset3bit를 미증명으로 남기고 실패했다. 이것은 ISA/4-state whole-module
+증명이 아니며 단순히 random public output 비교만 한 결과와도 구분한다.
+검증 runner `scripts/run_fetch_queue_formal.ps1`는 source/package를 freeze하고 SHA를
+기록한다. Native assertions를 생략하는 formal 검사와 assertion-enabled simulation은
+별개의 보완적 검사다.
+
+V7 SoC를 새로build해 같은2iteration ELF/CP8/early-load1/AGU1/pair0/`--assert`에서
+431358cycles/576450instructions/IPC1.336361, profilerSHA2BE75F…,
+C/FP009e00b9/Hostexit0을 확인했다. Status9는known2K+short-run이며공식인증점수가 아니다.
+그러나 FE2542.32ps/361810.008µm²(+4.05%delay)로 악화해 원복했다.
+Whole macro/35block 회귀는 V7에 대해 별도로 측정하지 않았다.
+`out/queue_empty_refill_v7_equiv`/`out/fq_empty_refill_v7_*`/`out/empty_refill_v7_*`에
+시험본/증거를 보존했다. `out/empty_refill_v7_soc` executable은 미채택V7이며
+승인 버전 executable은 fresh build한 `out/separate_fill_soc`와 혼동하지 않는다.
+
+Named tracer의 head-block[0]→head-offset[1]는 기준55.8units에서V7의51.1units로
+바뀌어 `prediction → fill_ready` 우회 연결이 제거됐지만, 남은 경로는 predicted
+target→redirect offset이었다. Unit 구조 감소가 mapped critical delay 감소를
+보장하지 않았으므로 연결이 짧아졌다는 이유만으로 승인하지 않는다.
+실제 목표의 남은 gate는 최신 승인 RTL/동일AGU1 설정의 서버 STA≥1.2GHz다.
+최신 Startpoint/Endpoint/cell·net delay/arrival/required/clock 조건 없이 특정
+2nm 경로가 해결됐다고 확정하지 않는다.
+
+재현(immutable 비교 기준을 명시한다):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_fetch_queue_formal.ps1 `
+  -Baseline 081e714 -IncludeMinimumQueue -BuildRoot out/fetch_queue_formal
+```
+
 ###### 5. 도구
 
 - `scripts/trace_named_path.py`: pre-ABC RTLIL에서 named 신호를 따라 최장 구조 경로를
