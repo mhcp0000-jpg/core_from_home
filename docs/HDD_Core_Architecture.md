@@ -5881,9 +5881,92 @@ macro는 array read 경로를 생략하므로 이 수치만으로 실제2nm STA 
 새normalpayload port/parameter 및shadow FF는 현재 승인module에 없다.
 후속 source는 `out/queue_head_window_v2.sv`(SHA3D24D8…)와
 `out/frontend_head_window_v2.sv`(SHA3A1F20…)에 보존했다.
-`out/separate_fill_soc` 실행파일도 이 미채택 후보로 빌드됐으므로 현재RTL로
-사용하려면 재build해야 한다. 서버2nm1.2GHz는 여전히 미확인이다.
+`out/separate_fill_soc`는 여러 후보가 재사용하는 build directory다. 그 이름만으로
+승인 RTL 실행파일이라고 판단하면 안 되며 해당 run의 source hash를 확인하고
+현재 RTL을 검사할 때 재build한다. 서버2nm1.2GHz는 여전히 미확인이다.
 frontend 상대 개선이나 기능 PASS를 전체 core/actual1.2GHz 달성으로 표현하지 않는다.
+
+###### 5-14. 미채택 실험: BTB/target one-hot 및 FTB 선행 hit 비교
+
+세 실험은 `081e714`에서 각각 독립적으로 수행했고 최종 production RTL에는
+포함하지 않는다. FF/state/인터페이스/파이프라인 단계/예측 정책은 바꾸지 않았다.
+비교는 동일 Nangate45/constraint/ABC target1000 및 `AGU_LOAD_BYPASS=1` 조건이다.
+
+| 후보 | Full frontend delay / area | Whole core macro delay / area | 판단 |
+|---|---|---|---|
+| 기존 v1.18.20 측정 | 2443.47ps / 365101.758µm² | 2998.79ps / 352749.782µm² | 비교 기준 |
+| BTB one-hot | 2452.39ps / 363769.896µm² | 3058.34ps / 356341.846µm² | whole +1.99%, 원복 |
+| FTB 선행 hit | 2417.85ps / 364859.964µm² | 3157.67ps / 354215.974µm² | frontend −1.05%, whole +5.30%, 원복 |
+| Predictor target one-hot | 2471.09ps / 366569.812µm² | 3065.81ps / 358167.138µm² | frontend +1.13%, whole +2.23%, 원복 |
+
+기존 v20 타이밍 run은 최종 커밋 이전 측정이며 일부 source SHA가 최종081e714와
+다르다. source hash가 다르다는 이유만으로 논리 차이/타이밍 차이/동등성을
+단정하지 않는다. 같은 tool/Liberty/constraint에서 최종081e714 소스 그대로의
+fresh baseline을 `out/timing_frontend_081_exact_1000` 및
+`out/timing_core_081_exact_1000`에서 재측정 중이다. 이 재측정이 끝나기 전에는
+위 상대 수치를 최종081e714 byte-for-byte 동일 run과의 확정 비교로 인용하지 않는다.
+
+BTB 후보는 각 way의 valid/tag match를 병렬 계산하고, multiple matching way가
+있어도 원래 priority loop와 동일한 **가장 높은 way**만 선택하도록 mask했다.
+선택한 target/way를 masked OR로 합친다. invalid way의 arbitrary target은 출력에
+노출하지 않는다. Procedural `if`로 match를 만들었으므로 X 조건을 true로 취급하지
+않는 기존 동작도 유지한다. RV32/64 × 작은/큰 PHT × general/sequential query
+8구성 각100000cycle/200000 all-public-output 비교 및 native SVA PASS다.
+`scripts/check_btb_lookup_equivalence.py`는 actual `lookup_btb` helper와 Git reference를
+추출해 모든 two-state PC/BTB contents를 unconstrained SAT 비교한다.
+6구성(XLEN32/64, sets2/8/64, ways2/4/8) PASS이며 duplicate-tag multi-hit도 범위에
+포함한다. 이는 helper 증명이지 predictor 학습/복구/whole core formal 증명은 아니다.
+assertion-enabled SoC CoreMark perf SHA2BE75F… 및 C/FP009e00b9/exit0도 PASS다.
+실험본 `out/btb_onehot_candidate.sv`(SHA54A9BF…)와 `out/timing_*_onehot_btb_1000`
+결과를 보존하고 기능 통과를 타이밍 개선으로 오인하지 않았다.
+
+FTB 후보는 target port 선택이 늦게 도착해도 각 port의 **좁은 hit bit**를 먼저
+계산하고, 마지막에 1bit mux를 사용한다. 128bit data/PMP raw payload는 기존
+선택 index의 단일 wide read mux를 그대로 쓴다.
+
+```text
+기존 hit:  port select → index/tag mux → resident tag read → compare → hit
+시험 hit:  port0 index/tag → resident tag read → compare ─┐
+           port1 index/tag → resident tag read → compare ─┴→ 1bit select → hit
+data/PMP:  port select → index mux → 기존 단일 wide read (두 후보 모두 동일)
+```
+
+miss/invalid 상태의 raw data/PMP도 출력 계약이므로 그대로 비교했다.
+`scripts/run_ftb_equivalence.ps1` + `rv_fetch_target_buffer_equiv_tb`는 immutable081e714
+대비 RV32/64, fetch8/16/32, entries2/16/32, lookup ports1/2/4의 8구성을 각각
+100000cycle/200000회 비교한다. 모든 public outputs와 valid/tag/data/PMP FF state,
+same-index overwrite, fill+lookup, reset, invalidate 우선순위 모두 PASS다.
+Icarus four-state 검사도 XLEN32/64 × ports1/2/4의 6구성 PASS다.
+unknown selector/valid/tag/index 및 ports1의 reserved select1을 case equality로
+비교했으며 Icarus에서는 SVA 미지원 때문에 `SYNTHESIS`를 정의하되 TB 비교는 켰다.
+Verilator 8구성 및 SoC 검사는 native assertions를 켜고 `SYNTHESIS` 없이 수행했다.
+동일 SoC CoreMark perf SHA2BE75F…/IPC1.336361 및 C/FP009e00b9/exit0 PASS다.
+별도의 FTB SAT/전체 ISA/전체 코어 four-state 증명이라고 주장하지 않는다.
+실험본 `out/ftb_parallel_hit.sv`(SHA44D8C4…)를 보존했다.
+
+Target one-hot 후보는 순차PC/direct target/RAS/BTB의 우선순위를 XLEN-wide
+연속 mux가 아닌 네 개의 narrow enable로 판정하고 masked OR로 target을 만든다.
+Procedural `if`를 유지해 unknown condition을 true로 취급하지 않으며, conditional
+direction이 X이면 taken=X이되 target은 기존처럼 sequential PC를 유지한다.
+`scripts/check_predictor_target_equivalence.py`는 actual candidate/reference의
+target-selection fragment를 추출한다. decode 결과/target data/RAS data를
+unconstrained two-state 입력으로 놓고 모든 조합의 taken/target equality를 증명한다.
+XLEN32/64 × helper RAS geometry2/16의 4구성 SAT PASS다. Production predictor가
+지원하는 RAS는16뿐이며 helper geometry2를 production support로 표현하면 안 된다.
+generated fragment의 Icarus4-state 4구성×4096조합 및 실제 full predictor의
+8구성×100000cycle/200000 all-public-output/native SVA 검사도 PASS다.
+BTB enable을 의도적으로0으로 잘못 바꾼 negative control은 실제 SAT counterexample로
+실패했다. helper 검증과 full predictor의 decode/training/recovery 증명은 구분한다.
+같은 assertion-enabled SoC CoreMark perf SHA2BE75F…/IPC1.336361,
+C/FP009e00b9/Hostexit0, 35개 assertion-enabled block 회귀 PASS다.
+실험본 `out/predictor_onehot_target_candidate.sv`(SHA8FB142…)와
+`out/timing_*_onehot_target_1000`, `out/predictor_onehot_target_*`,
+`out/target_fourstate_*`, `out/predictor_target_negative_control`을 보존했고 원복했다.
+
+Whole macro는 inferred array read를 생략하므로 실제 2nm STA 악화를 이 수치만으로
+증명하지는 못한다. 그러나 frontend의 1.05% 개선만으로 전체 1.2GHz 목표 달성이
+가까워졌다고 확정하지 않아 세 후보 모두 채택하지 않았다. 새 검증 도구/TB를
+추가해도 RTL filelist에는 검증 전용 파일을 넣지 않는다.
 
 ###### 5. 도구
 
