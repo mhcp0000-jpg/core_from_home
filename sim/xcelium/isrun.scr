@@ -29,14 +29,17 @@ else
 endif
 
 set rtl_assertions = "0"
-set agu_load_bypass = "0"
 set fsdb_enable = "1"
 set fsdb_pli = "auto"
 foreach arg ($argv)
   if ("$arg" =~ "-RTL_ASSERTIONS=*") then
     set rtl_assertions = `echo "$arg" | sed 's/-RTL_ASSERTIONS=//'`
   else if ("$arg" =~ "-AGU_LOAD_BYPASS=*") then
-    set agu_load_bypass = `echo "$arg" | sed 's/-AGU_LOAD_BYPASS=//'`
+    echo "ERROR: Core parameter overrides are no longer supported. Edit rtl/rv_ooo_pkg.sv and rebuild."
+    exit 2
+  else if ("$arg" =~ "-BRANCH_TAG_PIPELINE=*" || "$arg" =~ "-DIV_TAG_PIPELINE=*" || "$arg" =~ "-EARLY_LOAD_SELECT=*" || "$arg" =~ "-COMPATIBLE_PAIR_SELECT=*" || "$arg" =~ "-BR_CHECKPOINTS=*") then
+    echo "ERROR: Core parameter overrides are no longer supported. Edit rtl/rv_ooo_pkg.sv and rebuild."
+    exit 2
   else if ("$arg" =~ "-FSDB_ENABLE=*") then
     set fsdb_enable = `echo "$arg" | sed 's/-FSDB_ENABLE=//'`
   else if ("$arg" =~ "-FSDB_PLI=*") then
@@ -67,13 +70,7 @@ set loadpli_opts = ()
 if ("$rtl_assertions" != "1") then
   set define_opts = (-define SYNTHESIS)
 endif
-if ("$agu_load_bypass" == "1") then
-  set define_opts = ($define_opts -define RV_AGU_LOAD_BYPASS)
-else if ("$agu_load_bypass" != "0") then
-  echo "ERROR: AGU_LOAD_BYPASS must be 0 or 1: $agu_load_bypass"
-  exit 2
-endif
-echo "Core configuration: AGU_LOAD_BYPASS=$agu_load_bypass (elaboration-time)"
+echo "Core configuration: RTL Top/PKG defaults only; simulation prints [CORE_CONFIG]."
 if ("$fsdb_enable" == "1") then
   set define_opts = ($define_opts -define RV_FSDB)
   if ("$fsdb_pli" == "builtin") then

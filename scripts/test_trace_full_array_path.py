@@ -188,6 +188,26 @@ class TracerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Wire not found"):
             graph.exact("absent")
 
+    def test_details_are_opt_in_and_show_mux_data_pin(self):
+        graph = self.graph(netlist())
+        plain = self.trace(graph)[0]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            detailed = graph.trace("^src$", "^dst$", 1, details=True)[0]
+        self.assertNotIn("primitive_nodes", plain)
+        self.assertEqual(plain["units"], detailed["units"])
+        nodes = detailed["primitive_nodes"]
+        self.assertEqual(len(nodes), detailed["gates"]+1)
+        self.assertEqual([n["kind"] for n in nodes], ["FF", "$_MUX_", "$_AND_"])
+        self.assertEqual(nodes[1]["via_pins"], ["A"])
+        self.assertEqual(nodes[2]["via_pins"], ["A"])
+        self.assertTrue(all(n["fanout"] >= 0 for n in nodes))
+
+    def test_details_show_mux_selector_pin(self):
+        graph = self.graph(netlist())
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            detailed = graph.trace("^other$", "^dst$", 1, details=True)[0]
+        self.assertEqual(detailed["primitive_nodes"][1]["via_pins"], ["S"])
+
 
 if __name__ == "__main__":
     unittest.main()

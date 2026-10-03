@@ -2,13 +2,11 @@ param(
   [string]$ToolRoot = "C:\rv_toolchains\oss-cad-suite",
   [string]$Liberty = "C:\rv_toolchains\libs\nangate45\NangateOpenCellLibrary_typical.lib",
   [string]$BuildRoot = "",
-  [ValidateSet("rv_ooo_core", "rv_issue_queue", "rv_rob", "rv_writeback_arbiter", "rv_exec_result_buffer", "rv_lsq")]
+  [ValidateSet("rv_ooo_core", "rv_issue_queue", "rv_rob", "rv_writeback_arbiter", "rv_exec_result_buffer", "rv_lsq", "rv_csr_file", "rv_lsu_cluster")]
   [string]$TopModule = "rv_ooo_core",
   # Optional immutable source snapshot for a matched A/B leaf run.
   # Input identities are still hashed; gitCommit alone is not source identity.
   [string]$SourceRoot = "",
-  [switch]$BranchTagPipeline,
-  [switch]$DivTagPipeline,
   [ValidateSet("DirectFlops", "Inferred")]
   [string]$ArrayLowering = "DirectFlops",
   [ValidateSet("Coarse", "Map", "Fine", "Flatten", "Abc")]
@@ -27,20 +25,16 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (!$SourceRoot) { $SourceRoot = $repoRoot }
 $sourceFull = (Resolve-Path -LiteralPath $SourceRoot).Path
-$parameterArgs = if ($TopModule -eq "rv_ooo_core") {
-  "-G EARLY_LOAD_SELECT=1 -G AGU_LOAD_BYPASS=1 -G COMPATIBLE_PAIR_SELECT=0 -G BR_CHECKPOINTS=8 -G BRANCH_TAG_PIPELINE=$(if ($BranchTagPipeline) { 1 } else { 0 })" + $(if ($DivTagPipeline) { " -G DIV_TAG_PIPELINE=1" } else { "" })
-} elseif ($TopModule -eq "rv_lsq") {
-  "-G EARLY_LOAD_SELECT=1 -G AGU_LOAD_BYPASS=1"
-} elseif ($TopModule -eq "rv_issue_queue") {
-  "-G ENTRIES=56 -G WRITEBACK_PORTS=8 -G COMPATIBLE_PAIR_SELECT=0"
-} elseif ($TopModule -eq "rv_rob") {
-  "-G ROB_ENTRIES=48 -G LIVE_QUERY_PORTS=11 -G COMPLETE_PORTS=4"
-} elseif ($TopModule -eq "rv_writeback_arbiter") {
-  "-G SOURCE_COUNT=11 -G INT_WRITE_PORTS=2 -G FP_WRITE_PORTS=2 -G ROB_COMPLETE_PORTS=4"
-} else {
-  "-G DEPTH=2 -G XLEN=32 -G ROB_SEQ_WIDTH=8 -G PHYS_TAG_WIDTH=7"
-}
+$coreConfig = if ($TopModule -eq 'rv_ooo_core' -and $StartStage -eq 'Coarse') {
+  & (Join-Path $PSScriptRoot 'read_core_config.ps1') -PackagePath (Join-Path $sourceFull 'rtl/rv_ooo_pkg.sv')
+} else { $null }
+# Every top, including standalone leaves, uses its RTL defaults. A leaf's own
+# default geometry is not necessarily the geometry of its core instance.
+# A checkpoint resume does not re-elaborate or change its historical config.
+$parameterArgs = ''
 if (!$BuildRoot) { $BuildRoot = Join-Path $repoRoot "out/full_core_timing" }
+Write-Host "ELABORATION_CONFIG top=$TopModule source=$sourceFull (RTL defaults only; no tool overrides)"
+if ($coreConfig) { Write-Host "CORE_CONFIG $($coreConfig | ConvertTo-Json -Compress)" }
 $buildFull = [IO.Path]::GetFullPath($BuildRoot)
 $yosys = Join-Path $ToolRoot "bin/yosys.exe"
 $abc = Join-Path $ToolRoot "bin/yosys-abc.exe"
@@ -126,6 +120,8 @@ try {
       runnerSha256 = (Get-FileHash $PSCommandPath).Hash
       topModule = $TopModule; sourceRoot = $sourceFull
       parameters = $parameterArgs
+      configurationMode = 'RTL defaults only; no tool parameter overrides'
+      coreDefaults = $coreConfig
       resetModel = "retained"; arrayModel = "all mapped to flops and muxes"
       arrayLowering = $ArrayLowering
       physicalRamGiB = $memory.totalPhysical / 1GB; commitLimitGiB = $memory.totalPageFile / 1GB

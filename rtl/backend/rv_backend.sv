@@ -1,12 +1,11 @@
 module rv_backend #(
-  parameter bit AGU_LOAD_BYPASS = 1'b0,
-  parameter bit EARLY_LOAD_SELECT = 1'b1,
-  parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
-  // Experimental branch-only raw-tag issue/execute boundary. Default stays
-  // unchanged until full-core timing and IPC/correctness gates are passed.
-  parameter bit BRANCH_TAG_PIPELINE = 1'b0,
+  parameter bit AGU_LOAD_BYPASS = rv_ooo_pkg::CORE_CFG_AGU_LOAD_BYPASS,
+  parameter bit EARLY_LOAD_SELECT = rv_ooo_pkg::CORE_CFG_EARLY_LOAD_SELECT,
+  parameter bit COMPATIBLE_PAIR_SELECT = rv_ooo_pkg::CORE_CFG_COMPATIBLE_PAIR_SELECT,
+  // Central default profile; explicit top/instance overrides still win.
+  parameter bit BRANCH_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_BRANCH_TAG_PIPELINE,
   // Optional DIV-only raw-tag boundary; leaves normal ALU/load latency alone.
-  parameter bit DIV_TAG_PIPELINE = 1'b0,
+  parameter bit DIV_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
@@ -23,7 +22,7 @@ module rv_backend #(
   parameter int unsigned LQ_ENTRIES = 24,
   parameter int unsigned SQ_ENTRIES = 16,
   parameter int unsigned STORE_BUFFER_ENTRIES = 16,
-  parameter int unsigned BR_CHECKPOINTS = 8,
+  parameter int unsigned BR_CHECKPOINTS = rv_ooo_pkg::CORE_CFG_BR_CHECKPOINTS,
   parameter logic [PADDR_WIDTH-1:0] ITIM_BASE_ADDR = 'h8000_0000,
   parameter int unsigned ITIM_SIZE_KB = 128,
   parameter logic [PADDR_WIDTH-1:0] DTIM_BASE_ADDR = 'h8002_0000,

@@ -2,19 +2,20 @@
 // Runtime communication uses the 64-bit TOHOST/FROMHOST words in DTIM while
 // the existing HostIF is used only as the Boot ROM entry mailbox.
 module rv_soc_htif_dpi_tb #(
-  parameter int unsigned CoreBranchCheckpoints = 8,
-`ifdef RV_AGU_LOAD_BYPASS
-  // Server compile option; explicit parameter overrides still take priority.
-  parameter bit CoreAguLoadBypass = 1'b1,
-`else
-  parameter bit CoreAguLoadBypass = 1'b0,
-`endif
-  parameter bit CoreEarlyLoadSelect = 1'b1,
-  parameter bit CoreCompatiblePairSelect = 1'b0,
-  parameter bit CoreBranchTagPipeline = 1'b0,
-  parameter bit CoreDivTagPipeline = 1'b0
+  parameter int unsigned CoreBranchCheckpoints = rv_ooo_pkg::CORE_CFG_BR_CHECKPOINTS,
+  parameter bit CoreAguLoadBypass = rv_ooo_pkg::CORE_CFG_AGU_LOAD_BYPASS,
+  parameter bit CoreEarlyLoadSelect = rv_ooo_pkg::CORE_CFG_EARLY_LOAD_SELECT,
+  parameter bit CoreCompatiblePairSelect = rv_ooo_pkg::CORE_CFG_COMPATIBLE_PAIR_SELECT,
+  parameter bit CoreBranchTagPipeline = rv_ooo_pkg::CORE_CFG_BRANCH_TAG_PIPELINE,
+  parameter bit CoreDivTagPipeline = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE
 );
   import rv_soc_pkg::*;
+
+  initial begin : p_core_config_banner
+    $display("[CORE_CONFIG] AGU_LOAD_BYPASS=%0d EARLY_LOAD_SELECT=%0d BRANCH_TAG_PIPELINE=%0d DIV_TAG_PIPELINE=%0d COMPATIBLE_PAIR_SELECT=%0d BR_CHECKPOINTS=%0d",
+      CoreAguLoadBypass, CoreEarlyLoadSelect, CoreBranchTagPipeline,
+      CoreDivTagPipeline, CoreCompatiblePairSelect, CoreBranchCheckpoints);
+  end
 
   localparam int unsigned IFU_PMP_PORTS = 8;
   localparam int unsigned CORE_IQ_ENTRIES = 24 + 16 + 16;

@@ -7,9 +7,6 @@
   [string]$BlockFilter = "",
   [ValidateRange(1, 1000000)]
   [int]$TargetDelayPs = 1000,
-  [switch]$EarlyLoadSelect = $true,
-  [switch]$AguLoadBypass,
-  [switch]$CompatiblePairSelect,
   [switch]$IncludeWholeTop
 )
 
@@ -131,9 +128,7 @@ if (($Mode -eq "Check") -or ($Mode -eq "All")) {
   $checkCommand =
     "read_slang --std 1800-2017 --single-unit --ignore-assertions " +
     "--ignore-initial --top rv_ooo_core " +
-    "-G EARLY_LOAD_SELECT=$(if ($EarlyLoadSelect) { 1 } else { 0 }) " +
-    "-G AGU_LOAD_BYPASS=$(if ($AguLoadBypass) { 1 } else { 0 }) " +
-    "-G COMPATIBLE_PAIR_SELECT=$(if ($CompatiblePairSelect) { 1 } else { 0 }) -f $sourceList; " +
+    "-f $sourceList; " +
     "hierarchy -check -top rv_ooo_core; proc; check; stat"
   $checkLog = Invoke-YosysRun "rv_ooo_core_check" $checkCommand
   Write-Host "PASS rv_ooo_core structural check: $checkLog"
@@ -142,22 +137,21 @@ if (($Mode -eq "Check") -or ($Mode -eq "All")) {
 if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
   $blocks = @(
     @{ Name = "rv_writeback_arbiter"; Top = "rv_writeback_arbiter";
-       Args = "-G SOURCE_COUNT=11"; Flow = "full" },
+       Args = ""; Flow = "full" },
     @{ Name = "rv_lsq"; Top = "rv_lsq"; Args = ""; Flow = "macro" },
-    @{ Name = "rv_fpu"; Top = "rv_fpu"; Args = "-G LATENCY=5"; Flow = "full" },
-    @{ Name = "rv_fpu6"; Top = "rv_fpu"; Args = "-G LATENCY=6"; Flow = "full" },
+    @{ Name = "rv_fpu"; Top = "rv_fpu"; Args = ""; Flow = "full" },
     @{ Name = "rv_issue_queue"; Top = "rv_issue_queue";
-       Args = "-G ENTRIES=56 -G WRITEBACK_PORTS=8"; Flow = "macro" },
-    @{ Name = "rv_rob"; Top = "rv_rob"; Args = "-G LIVE_QUERY_PORTS=11"; Flow = "macro" },
+       Args = ""; Flow = "macro" },
+    @{ Name = "rv_rob"; Top = "rv_rob"; Args = ""; Flow = "macro" },
     @{ Name = "rv_rename2"; Top = "rv_rename2"; Args = ""; Flow = "full" },
-    @{ Name = "rv_pmp"; Top = "rv_pmp"; Args = "-G CHECK_PORTS=8"; Flow = "full" },
+    @{ Name = "rv_pmp"; Top = "rv_pmp"; Args = ""; Flow = "full" },
     @{ Name = "rv_issue_arbiter"; Top = "rv_issue_arbiter";
-       Args = "-G CANDIDATE_COUNT=2 -G AGE_ORDERED=1"; Flow = "full" },
+       Args = ""; Flow = "full" },
     # These leaves were missing from the screening list, which is how
     # rv_store_buffer (6,014 ps) and rv_lsu_cluster (6,198 ps) stayed
     # invisible while shorter blocks were being optimized.
     @{ Name = "rv_store_buffer"; Top = "rv_store_buffer"; Args = ""; Flow = "full" },
-    @{ Name = "rv_lsu_cluster"; Top = "rv_lsu_cluster"; Args = "-G AGU_DEPTH=2"; Flow = "macro" },
+    @{ Name = "rv_lsu_cluster"; Top = "rv_lsu_cluster"; Args = ""; Flow = "macro" },
     @{ Name = "rv_multiplier"; Top = "rv_multiplier"; Args = ""; Flow = "full" },
     @{ Name = "rv_divider"; Top = "rv_divider"; Args = ""; Flow = "full" },
     @{ Name = "rv_fetch_queue"; Top = "rv_fetch_queue"; Args = ""; Flow = "full" },
@@ -169,19 +163,18 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
     # Cover the execution/control/read-array logic in addition to queues.
     # PRF is fully mapped: macro flow would hide its asynchronous read mux.
     @{ Name = "rv_int_alu"; Top = "rv_int_alu"; Args = ""; Flow = "full" },
-    @{ Name = "rv_int_alu64"; Top = "rv_int_alu"; Args = "-G XLEN=64"; Flow = "full" },
     @{ Name = "rv_branch_unit"; Top = "rv_branch_unit"; Args = ""; Flow = "full" },
     @{ Name = "rv_decode2"; Top = "rv_decode2"; Args = ""; Flow = "full" },
     @{ Name = "rv_trap_controller"; Top = "rv_trap_controller"; Args = ""; Flow = "full" },
     @{ Name = "rv_branch_recovery"; Top = "rv_branch_recovery"; Args = ""; Flow = "full" },
     @{ Name = "rv_int_prf"; Top = "rv_phys_regfile";
-       Args = "-G PHYS_REGS=80 -G READ_PORTS=8 -G ZERO_REGISTER=1 -G WRITE_BYPASS=0";
+       Args = "";
        Flow = "full" },
     @{ Name = "rv_fp_prf"; Top = "rv_phys_regfile";
-       Args = "-G PHYS_REGS=80 -G READ_PORTS=8 -G WRITE_BYPASS=0"; Flow = "full" },
-    @{ Name = "rv_lsu_pipe"; Top = "rv_lsu_pipe"; Args = "-G DEPTH=2"; Flow = "full" },
+       Args = ""; Flow = "full" },
+    @{ Name = "rv_lsu_pipe"; Top = "rv_lsu_pipe"; Args = ""; Flow = "full" },
     @{ Name = "rv_exec_result_buffer"; Top = "rv_exec_result_buffer";
-       Args = "-G DEPTH=2"; Flow = "full" },
+       Args = ""; Flow = "full" },
     @{ Name = "rv_fence_controller"; Top = "rv_fence_controller"; Args = ""; Flow = "full" }
   )
   if ($IncludeWholeTop) {
@@ -214,13 +207,6 @@ if (($Mode -eq "Blocks") -or ($Mode -eq "All")) {
   }
 
   foreach ($block in $blocks) {
-    if ($CompatiblePairSelect -and $block.Top -in @("rv_issue_queue", "rv_backend", "rv_ooo_core")) {
-      $block.Args += " -G COMPATIBLE_PAIR_SELECT=1"
-    }
-    if ($block.Top -in @("rv_lsq", "rv_lsu_cluster", "rv_backend", "rv_ooo_core")) {
-      $block.Args += " -G EARLY_LOAD_SELECT=$(if ($EarlyLoadSelect) { 1 } else { 0 })"
-      $block.Args += " -G AGU_LOAD_BYPASS=$(if ($AguLoadBypass) { 1 } else { 0 })"
-    }
     $mappedNetlist = To-YosysOutputPath (
       (Join-Path (Join-Path $BuildRoot $block.Name) "mapped.v"))
     $preAbcRtlil = To-YosysOutputPath (

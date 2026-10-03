@@ -44,39 +44,37 @@ run_yosys() {
 
 if [[ "$mode" == "check" || "$mode" == "all" ]]; then
   run_yosys rv_ooo_core_check \
-    "read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top rv_ooo_core -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1} -G AGU_LOAD_BYPASS=${AGU_LOAD_BYPASS:-0} -G COMPATIBLE_PAIR_SELECT=${COMPATIBLE_PAIR_SELECT:-0} -f $sources; hierarchy -check -top rv_ooo_core; proc; check; stat"
+    "read_slang --std 1800-2017 --single-unit --ignore-assertions --ignore-initial --top rv_ooo_core -f $sources; hierarchy -check -top rv_ooo_core; proc; check; stat"
 fi
 
 if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
   blocks=(
-    "rv_writeback_arbiter|rv_writeback_arbiter|-G SOURCE_COUNT=11|full"
+    "rv_writeback_arbiter|rv_writeback_arbiter||full"
     "rv_lsq|rv_lsq||macro"
-    "rv_fpu|rv_fpu|-G LATENCY=5|full"
-    "rv_fpu6|rv_fpu|-G LATENCY=6|full"
-    "rv_issue_queue|rv_issue_queue|-G ENTRIES=56 -G WRITEBACK_PORTS=8|macro"
-    "rv_rob|rv_rob|-G LIVE_QUERY_PORTS=11|macro"
+    "rv_fpu|rv_fpu||full"
+    "rv_issue_queue|rv_issue_queue||macro"
+    "rv_rob|rv_rob||macro"
     "rv_rename2|rv_rename2||full"
-    "rv_pmp|rv_pmp|-G CHECK_PORTS=8|full"
-    "rv_issue_arbiter|rv_issue_arbiter|-G CANDIDATE_COUNT=2 -G AGE_ORDERED=1|full"
+    "rv_pmp|rv_pmp||full"
+    "rv_issue_arbiter|rv_issue_arbiter||full"
     # 아래 6개는 원래 screening list에 없었다.  실제 최장 block이었던
     # rv_store_buffer / rv_lsu_cluster가 그 때문에 보이지 않았다.
     "rv_store_buffer|rv_store_buffer||full"
-    "rv_lsu_cluster|rv_lsu_cluster|-G AGU_DEPTH=2|macro"
+    "rv_lsu_cluster|rv_lsu_cluster||macro"
     "rv_multiplier|rv_multiplier||full"
     "rv_divider|rv_divider||full"
     "rv_fetch_queue|rv_fetch_queue||full"
     "rv_frontend|rv_frontend||full|trim"
     "rv_csr_file|rv_csr_file||full"
     "rv_int_alu|rv_int_alu||full"
-    "rv_int_alu64|rv_int_alu|-G XLEN=64|full"
     "rv_branch_unit|rv_branch_unit||full"
     "rv_decode2|rv_decode2||full"
     "rv_trap_controller|rv_trap_controller||full"
     "rv_branch_recovery|rv_branch_recovery||full"
-    "rv_int_prf|rv_phys_regfile|-G PHYS_REGS=80 -G READ_PORTS=8 -G ZERO_REGISTER=1 -G WRITE_BYPASS=0|full"
-    "rv_fp_prf|rv_phys_regfile|-G PHYS_REGS=80 -G READ_PORTS=8 -G WRITE_BYPASS=0|full"
-    "rv_lsu_pipe|rv_lsu_pipe|-G DEPTH=2|full"
-    "rv_exec_result_buffer|rv_exec_result_buffer|-G DEPTH=2|full"
+    "rv_int_prf|rv_phys_regfile||full"
+    "rv_fp_prf|rv_phys_regfile||full"
+    "rv_lsu_pipe|rv_lsu_pipe||full"
+    "rv_exec_result_buffer|rv_exec_result_buffer||full"
     "rv_fence_controller|rv_fence_controller||full"
   )
   # Whole-backend / whole-core는 block 단위 측정이 볼 수 없는 cross-module
@@ -108,14 +106,6 @@ if [[ "$mode" == "blocks" || "$mode" == "all" ]]; then
     >"$build_root/timing_summary.csv"
   for spec in "${blocks[@]}"; do
     IFS='|' read -r name top args flow abc_mode <<<"$spec"
-    case "$top" in
-      rv_lsq|rv_lsu_cluster|rv_backend|rv_ooo_core) args+=" -G EARLY_LOAD_SELECT=${EARLY_LOAD_SELECT:-1} -G AGU_LOAD_BYPASS=${AGU_LOAD_BYPASS:-0}" ;;
-    esac
-    if [[ "${COMPATIBLE_PAIR_SELECT:-0}" == "1" ]]; then
-      case "$top" in
-        rv_issue_queue|rv_backend|rv_ooo_core) args+=" -G COMPATIBLE_PAIR_SELECT=1" ;;
-      esac
-    fi
     if [[ "${#requested_blocks[@]}" != "0" ]]; then
       selected=0
       for requested in "${requested_blocks[@]}"; do

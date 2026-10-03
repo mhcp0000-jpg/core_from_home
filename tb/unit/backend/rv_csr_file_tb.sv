@@ -130,6 +130,28 @@ module rv_csr_file_tb;
     csr_cmd = CSR_CMD_NONE;
   endtask
 
+  // Capture a transaction without committing it so edge-priority corners can
+  // overlap its commit with FP flag accrual and trap/MRET delivery.
+  task automatic stage_csr_write(input logic [11:0] address,
+                                 input logic [31:0] operand);
+    @(negedge clk);
+    csr_valid = 1;
+    csr_execute = 1;
+    csr_commit = 0;
+    csr_addr = address;
+    csr_cmd = CSR_CMD_WRITE;
+    csr_operand = operand;
+    csr_rs1_zero = 0;
+    #1;
+    if (csr_illegal || !csr_write_effect)
+      $fatal(1, "Priority test could not stage CSR %h", address);
+    @(posedge clk);
+    @(negedge clk);
+    csr_valid = 0;
+    csr_execute = 0;
+    csr_cmd = CSR_CMD_NONE;
+  endtask
+
   task automatic expect_csr(input logic [11:0] address,
                             input logic [31:0] expected);
     logic [31:0] actual;
@@ -500,6 +522,51 @@ module rv_csr_file_tb;
       $fatal(1, "U-mode TW or machine interrupt global eligibility failed");
     wfi_valid = 0; irq_software = 0;
     $display("CSR corners: WFI/TW and U-mode interrupt eligibility PASS");
+
+    // Return to M before checking simultaneous architectural events. Trap
+    // and MRET suppress CSR writes, but do NOT suppress commit flag accrual.
+    trap_valid = 1;
+    trap_is_interrupt = 0;
+    trap_pc = 32'h8000_0440;
+    trap_cause = 8;
+    @(posedge clk);
+    @(negedge clk);
+    trap_valid = 0;
+    for (int priority_case = 0; priority_case < 4; priority_case++) begin
+      logic [4:0] expected_flags;
+      logic [2:0] expected_frm;
+      write_csr(12'h300, 32'h0000_7800); // FS=Dirty, MPP=M for legal MRET.
+      write_csr(12'h003, 32'h61);       // frm=3, old fflags=1.
+      stage_csr_write(priority_case == 3 ? 12'h002 : 12'h003,
+                      priority_case == 3 ? 32'h4 : 32'h42);
+      csr_commit = 1;
+      fflags_accrue_valid = 1;
+      fflags_accrue = 5'h10;
+      trap_valid = (priority_case == 0);
+      mret_valid = (priority_case == 1);
+      mret_commit = (priority_case == 1);
+      #1;
+      if (mret_valid && mret_illegal)
+        $fatal(1, "Priority corner unexpectedly rejected MRET");
+      @(posedge clk);
+      @(negedge clk);
+      expected_flags = priority_case == 2 ? 5'h02 : 5'h11;
+      expected_frm = priority_case < 2 ? 3'd3 :
+                     priority_case == 2 ? 3'd2 : 3'd4;
+      if (fflags !== expected_flags || frm !== expected_frm)
+        $fatal(1, "FP CSR priority case%0d flags=%h/%h frm=%h/%h",
+               priority_case, fflags, expected_flags, frm, expected_frm);
+      csr_commit = 0;
+      fflags_accrue_valid = 0;
+      trap_valid = 0;
+      mret_valid = 0;
+      mret_commit = 0;
+      flush_all = 1; // Discard a CSR transaction held by trap/MRET priority.
+      @(posedge clk);
+      @(negedge clk);
+      flush_all = 0;
+    end
+    $display("CSR corners: trap/MRET/CSR-write/FP-accrual edge priority PASS");
 
     $display("rv_csr_file_tb PASS");
     $finish;

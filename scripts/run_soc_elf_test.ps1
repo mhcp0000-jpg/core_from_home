@@ -9,13 +9,6 @@ param(
   [string]$PerfPath = "",
   [switch]$Htif,
   [switch]$RtlAssertions,
-  [ValidateRange(2, 32)]
-  [int]$CoreBranchCheckpoints = 8,
-  [switch]$CoreAguLoadBypass,
-  [switch]$CoreEarlyLoadSelect = $true,
-  [switch]$CoreCompatiblePairSelect,
-  [switch]$CoreBranchTagPipeline,
-  [switch]$CoreDivTagPipeline,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -36,6 +29,10 @@ if (!(Test-Path -LiteralPath $make) -or !(Test-Path -LiteralPath $gxx)) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+# Inspect for logging only. The compiler receives NO core parameter overrides.
+# Edit rv_ooo_pkg.sv/RTL top and rebuild to change the hardware configuration.
+$coreConfig = & (Join-Path $PSScriptRoot 'read_core_config.ps1') -PackagePath (Join-Path $repoRoot 'rtl/rv_ooo_pkg.sv')
+Write-Host "CORE_CONFIG $($coreConfig | ConvertTo-Json -Compress) (RTL defaults only; no tool overrides)"
 $drive = $null
 foreach ($letter in @("Z", "Y", "X", "W", "U", "T", "S", "R")) {
   if (!(Test-Path "$letter`:\")) {
@@ -64,13 +61,8 @@ Copy-Item -LiteralPath $resolvedElf -Destination $stagedElf -Force
   elfSha256 = (Get-FileHash -LiteralPath $stagedElf).Hash
   verilatorSha256 = (Get-FileHash -LiteralPath $verilator).Hash
   assertions = [bool]$RtlAssertions
-  parameters = @{
-    BR_CHECKPOINTS = $CoreBranchCheckpoints; AGU_LOAD_BYPASS = [bool]$CoreAguLoadBypass
-    EARLY_LOAD_SELECT = [bool]$CoreEarlyLoadSelect
-    COMPATIBLE_PAIR_SELECT = [bool]$CoreCompatiblePairSelect
-    BRANCH_TAG_PIPELINE = [bool]$CoreBranchTagPipeline
-    DIV_TAG_PIPELINE = [bool]$CoreDivTagPipeline
-  }
+  configurationMode = 'RTL defaults only; no tool parameter overrides'
+  parameters = $coreConfig
   sources = @($sources | ForEach-Object {
     # Get-Content strings carry PowerShell provider metadata. Use a NEW plain
     # string or ConvertTo-Json serializes an ETS object rather than the path.
@@ -95,12 +87,6 @@ try {
     $verilatorArgs += @("-Wno-fatal", "-Werror-UNOPTFLAT",
                         "-Wno-WIDTHEXPAND", "-Wno-WIDTHTRUNC",
                         "--top-module", $topModule, "--Mdir", $BuildRoot)
-    $verilatorArgs += "-GCoreBranchCheckpoints=$CoreBranchCheckpoints"
-    $verilatorArgs += "-GCoreEarlyLoadSelect=$(if ($CoreEarlyLoadSelect) { 1 } else { 0 })"
-    $verilatorArgs += "-GCoreAguLoadBypass=$(if ($CoreAguLoadBypass) { 1 } else { 0 })"
-    $verilatorArgs += "-GCoreCompatiblePairSelect=$(if ($CoreCompatiblePairSelect) { 1 } else { 0 })"
-    $verilatorArgs += "-GCoreBranchTagPipeline=$(if ($CoreBranchTagPipeline) { 1 } else { 0 })"
-    $verilatorArgs += "-GCoreDivTagPipeline=$(if ($CoreDivTagPipeline) { 1 } else { 0 })"
     $verilatorArgs += $mappedSources
     & $verilator @verilatorArgs
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }

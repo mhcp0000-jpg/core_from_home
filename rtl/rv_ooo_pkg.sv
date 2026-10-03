@@ -1,5 +1,31 @@
 package rv_ooo_pkg;
 
+  // Core configuration: the single source for default core/SoC elaboration.
+  // These values select the timing configuration measured with CoreMark:
+  // 439557 cycles / 576450 instructions, IPC 1.311434 (iter2, HDD section 0-A).
+  // They are compile/elaboration-time choices, NOT runtime CSR switches or
+  // `ifdef macros. Explicit instance/tool parameter overrides take precedence.
+  // Re-elaborate from RTL after editing; a cached netlist keeps its old choice.
+  //
+  // AGU: 1 enables the measured AGU-to-LSQ load bypass mode.
+  // EARLY: 1 performs early LSQ load selection (unknown older stores still stall).
+  // PAIR: 0 retains the measured issue-pair policy; 1 is a different policy.
+  // BRANCH: 0 = IQ -> PRF -> BRU in one cycle (g_branch_fallthrough).
+  //         1 = registered branch tags -> PRF -> BRU next cycle
+  //             (g_branch_tag_pipeline); adds a branch issue/execute boundary.
+  // DIV: 1 similarly registers DIV tags before reading operands; it does not
+  //      change the divider's iteration algorithm or normal ALU latency.
+  // CHECKPOINTS: number of branch rename recovery checkpoints.
+  // fbc67e1 used literal top defaults AGU/BRANCH/DIV=0, but its published timing
+  // and IPC run explicitly overrode them to 1. The defaults below remove that
+  // ambiguity; old default-only synthesis results are NOT the same profile.
+  localparam bit CORE_CFG_AGU_LOAD_BYPASS        = 1'b1;
+  localparam bit CORE_CFG_EARLY_LOAD_SELECT      = 1'b1;
+  localparam bit CORE_CFG_COMPATIBLE_PAIR_SELECT = 1'b0;
+  localparam bit CORE_CFG_BRANCH_TAG_PIPELINE    = 1'b1;
+  localparam bit CORE_CFG_DIV_TAG_PIPELINE       = 1'b1;
+  localparam int unsigned CORE_CFG_BR_CHECKPOINTS = 8;
+
   localparam int unsigned ARCH_INT_REGS = 32;
   localparam int unsigned ARCH_FP_REGS  = 32;
   localparam int unsigned FLEN          = 32;

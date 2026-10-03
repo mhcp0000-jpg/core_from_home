@@ -1,8 +1,8 @@
-module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
-                          parameter bit EarlyLoadSelect = 1'b1,
-                          parameter bit CompatiblePairSelect = 1'b0,
-                          parameter bit BranchTagPipeline = 1'b0,
-                          parameter bit DivTagPipeline = 1'b0,
+module rv_backend_int_tb #(parameter bit AguLoadBypass = rv_ooo_pkg::CORE_CFG_AGU_LOAD_BYPASS,
+                          parameter bit EarlyLoadSelect = rv_ooo_pkg::CORE_CFG_EARLY_LOAD_SELECT,
+                          parameter bit CompatiblePairSelect = rv_ooo_pkg::CORE_CFG_COMPATIBLE_PAIR_SELECT,
+                          parameter bit BranchTagPipeline = rv_ooo_pkg::CORE_CFG_BRANCH_TAG_PIPELINE,
+                          parameter bit DivTagPipeline = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
                           parameter bit DivStressOnly = 1'b0);
   import rv_ooo_pkg::*;
 

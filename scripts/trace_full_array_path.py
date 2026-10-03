@@ -224,7 +224,7 @@ class Graph:
         return self.root(base+index)
 
     def trace(self, source_pattern, end_pattern, top, source_bit=None,
-              target_node=None, source_kind="ff", target_bit=None):
+              target_node=None, source_kind="ff", target_bit=None, details=False):
         qualified = {self.exact(source_bit)} if source_bit else self.matched(source_pattern)
         inputs = {self.root(base+i) for base, width in self.input_ranges for i in range(width)}
         qualified = {n for n in qualified if
@@ -306,6 +306,18 @@ class Graph:
                         names[root] = label
         if target_node:
             names.setdefault(self.exact(target_node), target_node)
+        detail_names = dict(names)
+        if details:
+            # Resolve only selected path nodes: no per-cell string table for
+            # the millions of primitives in the full core.
+            for name, (base, width) in self.wires.items():
+                for i in range(width):
+                    root = self.root(base+i)
+                    if root in needed and root not in names:
+                        label = name.lstrip("\\") + (f"[{i}]" if width > 1 else "")
+                        if root not in detail_names or len(label) < len(detail_names[root]):
+                            detail_names[root] = label
+        kind_names = {value: key for key, value in self.kinds.items()}
         result = []
         for value, path, q in paths:
             item = {"units": value, "gates": len(path)-1,
@@ -316,6 +328,19 @@ class Graph:
             print(f"=== {value:.2f} STRUCTURAL units: {item['source']} -> {item['endpoint']} ({item['gates']} gates)")
             for step in item["named_steps"]:
                 print(f"  {step['units']:8.2f}  {step['signal']}")
+            if details:
+                nodes = []
+                for index, node in enumerate(path):
+                    kind = kind_names.get(self.kind[node], "FF" if self.register[node] else "INPUT")
+                    pins = ("A", "B", "S") if kind == "$_MUX_" else ("A", "B", "C")
+                    via = [] if index == 0 else [pins[p] for p in range(3)
+                        if self.pred[p][node] == path[index-1]]
+                    nodes.append({"units": arrival[node], "signal": detail_names.get(node, f"internal#{node}"),
+                                  "kind": kind, "via_pins": via, "fanout": self.fanout[node]})
+                item["primitive_nodes"] = nodes
+                for node in nodes:
+                    print(f"  DETAIL {node['units']:8.2f} {node['kind']:10s} "
+                          f"via={','.join(node['via_pins']) or '-'} fanout={node['fanout']} {node['signal']}")
             result.append(item)
         return result
 
@@ -334,6 +359,8 @@ def main():
                         help="Require FF sources by default; inputs must be explicitly enabled")
     parser.add_argument("--top", type=int, default=3)
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--details", action="store_true",
+                        help="Include primitive types, predecessor pins and fanout; still NOT STA")
     args = parser.parse_args()
     if args.top < 1:
         parser.error("--top must be positive")
@@ -342,7 +369,7 @@ def main():
     graph = Graph()
     graph.first_pass(args.netlist)
     graph.second_pass(args.netlist)
-    paths = graph.trace(args.src, args.to, args.top, args.srcbit, args.tonode, args.source_kind, args.tobit)
+    paths = graph.trace(args.src, args.to, args.top, args.srcbit, args.tonode, args.source_kind, args.tobit, args.details)
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps({"netlist_sha256": graph.sha256,

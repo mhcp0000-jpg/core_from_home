@@ -21,18 +21,24 @@ CoreMark CRC/exit, 실제 C/FP/load-store ELF, assertion-enabled block/backend �
 RV32F는 exact-rational oracle로 static/dynamic rounding 각각113,600 vector를 비교했습니다.
 전체 ISA 장기 differential, 외부 Spike/Sail·riscv-arch-test 및 서버 공정 STA sign-off는 아직 완료하지 않았습니다.
 
-> 최신 설계 checkpoint는 v1.18.20(queue availability 병렬 판정 + sequential BTB prelookup, 기존 SB/PMP 수정 포함)입니다. 서버 목표는 **1.2 GHz + CoreMark IPC 1.3**이며 동시 달성은 아직 미확인입니다.
-> v1.18.13 기준값은469,739 cycles / 576,450 instret / IPC1.227171입니다. working request-hold 보강 후 bypass=0은469,994 cycles / IPC1.226505입니다.
-> opt-in `AGU_LOAD_BYPASS=1` 후보는 같은 ELF에서431,358 cycles / IPC1.336361, CRC/exit/assertions PASS입니다. 기본값은0입니다.
-> Nangate45 screening(ABC target1000ps 동일): v19→v20 frontend full-map2564.64→2443.47ps(−4.72%, area+4.65%), whole-core macro3036.62→2998.79ps(−1.25%, area−0.63%). 이전 v18 whole-core2925.99ps보다는 아직 느립니다. Macro array read 경로는 생략됩니다. IPC1.336361은 유지하며 서버 2 nm Fmax로 환산할 수 없습니다. 합성 runner의 기본 target은1000ps이며 manifest/CSV에 실제 조건을 기록합니다.
-> 기본 FPU fast latency는5입니다. 상세 최신 구조/측정 조건은 [HDD](docs/HDD_Core_Architecture.md)의 v1.18.13 절을 보세요.
-> branch 병렬 평가 및 load bypass의 상태·타이밍·안전 조건은 HDD v1.18.14 절에 기록합니다. 서버 1.2GHz 달성은 아직 확인되지 않았습니다.
-> 기존 `sources_core.f`, `rtl/filelist.f`, Xcelium RTL/TB file list와 `rv_ooo_core` top port는 변경하지 않았습니다. IPC1.3 후보 비교에는 시뮬레이션과 합성 모두 `AGU_LOAD_BYPASS=1`을 사용하세요(기본0).
-> v1.18.17은 내부 `rv_fetch_queue`의 `normal_fill_addr_i/normal_fill_valid_i`를 추가하고 frontend에서 연결합니다. 이 leaf를 별도로 instantiate하는 검증환경에서만 연결 확인이 필요합니다. 두 신규 parameter의 standalone 기본값은0입니다. 상세 동작/시험/서버 timing budget은 HDD §5-6/5-7 checkpoint를 참고하세요.
+> 코어 설정은 **RTL Top/PKG에서만 선택**합니다. `rtl/rv_ooo_pkg.sv`의 `CORE_CFG_*`를 core/backend/SoC/TB가 참조하며 배포 runner는 hardware parameter를 덮어쓰지 않습니다.
+> 현재 기본 구성은 AGU1/EARLY1/PAIR0/BRANCH_TAG1/DIV_TAG1/CHECKPOINTS8입니다. 설정 변경 후 RTL부터 재-elaboration하세요. 기존 filelists/top ports는 그대로입니다.
+> 이 기본 RTL의 fresh no-override CoreMark는439557cycles/576450instret/IPC1.311434, CRC/status9/exit0 PASS이며 C/FP009e00b9도 PASS입니다. 실제 2nm1.2GHz 목표는 미완료입니다.
+> 실행 시작 `[CORE_CONFIG]`와 manifest로 실제 설정을 확인합니다. 과거 opt-in/override 성능 이력과 다른 profile을 혼합하지 마세요. 상세는 [HDD §0-B](docs/HDD_Core_Architecture.md#0-b-현재-rtl-설정-계약-toppkg만-사용-2026-10-03)입니다.
 
-> v1.18.18의 RTL filelist와 core/SoC 외부 interface는 그대로입니다. Backend FPU는 LATENCY5를 유지하며 optional LATENCY6 시험만 추가했습니다. 서버 합성 및 성능 비교는 `rv_ooo_core.AGU_LOAD_BYPASS=1`을 같은 값으로 설정하세요. SB/PMP의 상세 불변조건·검증 범위와 미채택 timing 후보는 HDD §15.30/§15.34/§5-8에 구분해 기록했습니다.
+## 서버 RTLA 합성: 그대로 읽는 기본 RTL
 
-> v1.18.20은 queue의 1~4 parcel 가용성을 병렬 판정하고 lane1 BTB의 PC0+2/PC0+4 조회를 명령 길이 선택보다 먼저 수행합니다. predictor 정책/latency/filelist/top port는 불변이며 내부 predictor parameter `SEQUENTIAL_QUERIES`는 standalone 기본0, frontend 연결1입니다. CoreMark431358cycles/IPC1.336361 및 모든 profiler counter가 동일합니다. assertion-enabled block35개, RV32/RV64 predictor8구성/queue16구성 cycle-equivalence PASS. 서버에서는 기존 `sim/xcelium/sources_core.f`, top `rv_ooo_core`, `AGU_LOAD_BYPASS=1`로 **재-elaboration/재합성**하세요. 서버1.2GHz는 아직 미확인입니다. 상세는 HDD §5-10입니다.
+- Top: **`rv_ooo_core`**
+- Filelist: **`sim/xcelium/sources_core.f`** (기존 파일 그대로)
+- Core parameter override/AGU define: **추가하지 않음**
+- 구조 설정: `rtl/rv_ooo_pkg.sv`의 `CORE_CFG_*`, 나머지 크기/ISA는 RTL top
+- 회사 library/SDC/clock 조건: 기존 환경 유지. 최신 RTL부터 새로 elaboration하며 이전 DB/netlist를 재사용하지 않음
+
+분기 hierarchy에는 **`g_branch_tag_pipeline`**이 생성되어야 합니다.
+`g_branch_fallthrough`가 보이면 이전 RTL/cached DB 또는 외부 override를 읽은 것이므로
+그 결과를 이 버전의 성능과 비교하지 마세요. SRAM/SoC/TIM은 core top 밖입니다.
+결과는 사용 commit, launch/capture FF, data arrival/required/slack, 중간 cell/net path,
+top area를 함께 알려주세요. 이전 branch0의 약1.13ns와는 다른 hardware profile입니다.
 
 ## Linux 서버에서 ELF 바로 실행
 

@@ -1,28 +1,21 @@
 # Xcelium `verilog_sub` + HTIF 실행 가이드
 
-## Timing/IPC 후보의 서버 재현 설정
+## 코어 설정은 RTL Top/PKG에서만 선택
 
-load-bypass 후보는 기본값0이며 실행 시 plusarg가 아니라 **compile/elaboration 옵션**이다.
-기존 실행 방법을 그대로 사용하고 bash에서는 다음처럼 지정한다.
+`rtl/rv_ooo_pkg.sv`의 `CORE_CFG_*`가 core/SoC/DPI TB에 연결된다.
+현재 AGU1/EARLY1/PAIR0/BRANCH_TAG1/DIV_TAG1/CHECKPOINTS8이다.
+별도 `AGU_LOAD_BYPASS=1`, parameter override 또는 AGU define은 사용하지 않는다.
+기존 shell에 남은 코어 옵션 환경변수는 unset하고 RTL부터 다시 compile한다.
 
 ```bash
-AGU_LOAD_BYPASS=1 RTL_ASSERTIONS=1 FSDB_ENABLE=0 \
-  ./sim/xcelium/run_verilog_sub.sh /server/path/coremark.elf
+./sim/xcelium/run_verilog_sub.sh /server/path/coremark.elf
 ```
 
-csh/tcsh에서는 `setenv AGU_LOAD_BYPASS 1` 후 기존 runner를 실행한다.
-runner는 compile job에 `-AGU_LOAD_BYPASS=1`을 전달하고 `isrun.scr`가
-`RV_AGU_LOAD_BYPASS`를 define한다. HTIF TB의 `CoreAguLoadBypass` 기본값만1로 선택하며
-합성 RTL의 기본 parameter0이나 ISA/memory map은 변경하지 않는다.
-compile 로그의 `Core configuration: AGU_LOAD_BYPASS=1`을 확인한다.
-simulation만 `xrun -R`로 재실행해서 설정을 바꿀 수는 없고 재elaboration이 필요하다.
-원래 기준으로 비교하려면0으로 다시 compile한다. 직접 compile job을 제출할 때도
-`verilog_sub -Is -compile ./sim/xcelium/isrun.scr -AGU_LOAD_BYPASS=1`로 전달할 수 있다.
-
-로컬 같은 ELF의 공식 측정은431358 cycles/576450 instret/IPC1.336361이지만,
-서버 ELF/compiler/TIM 응답 조건이 다르면 동일 IPC를 보장하지 않는다.
-합성에서는 TB define 대신 `rv_ooo_core.AGU_LOAD_BYPASS=1` parameter를 지정해야
-동일 RTL 후보의 STA를 측정한다. 서버1.2GHz sign-off는 아직 미확인이다.
+시작 `[CORE_CONFIG]` 로그에서 실제 값을 확인한다. 설정을 바꾸려면 RTL Top/PKG를
+편집하고 재elaboration해야 하며 `xrun -R`만으로 cached snapshot은 바뀌지 않는다.
+ELF/timeout/assertion/FSDB 옵션은 검증 환경 설정이므로 그대로 사용 가능하다.
+동일 local ELF/iter2의 no-override 실행은439557cycles/576450instret/IPC1.311434,
+CRC/exit PASS다. 서버 ELF/compiler/TIM 조건 차이와 실제1.2GHz는 별도 확인한다.
 
 ## FSDB 파형 생성
 

@@ -24,7 +24,10 @@ HEARTBEAT_CYCLES="${HEARTBEAT_CYCLES:-100000}"
 ELF_VERIFY="${ELF_VERIFY:-1}"
 LSU_TRACE="${LSU_TRACE:-1}"
 RTL_ASSERTIONS="${RTL_ASSERTIONS:-0}"
-AGU_LOAD_BYPASS="${AGU_LOAD_BYPASS:-0}"
+if [[ -n "${AGU_LOAD_BYPASS+x}" || -n "${EARLY_LOAD_SELECT+x}" || -n "${BRANCH_TAG_PIPELINE+x}" || -n "${DIV_TAG_PIPELINE+x}" || -n "${COMPATIBLE_PAIR_SELECT+x}" || -n "${BR_CHECKPOINTS+x}" ]]; then
+  printf 'Core option environment overrides are no longer supported. Edit rtl/rv_ooo_pkg.sv and rebuild; unset old core option variables.\n' >&2
+  exit 2
+fi
 TRACE_FILE="${TRACE_FILE:-${BUILD_DIR}/commit_trace.csv}"
 SPIKE_TRACE_FILE="${SPIKE_TRACE_FILE:-${BUILD_DIR}/trace_log.out}"
 FSDB_ENABLE="${FSDB_ENABLE:-1}"
@@ -66,10 +69,6 @@ if [[ "${ELF_VERIFY}" != "0" && "${ELF_VERIFY}" != "1" ]]; then
   printf 'ELF_VERIFY must be 0 or 1: %s\n' "${ELF_VERIFY}" >&2
   exit 2
 fi
-if [[ "${AGU_LOAD_BYPASS}" != "0" && "${AGU_LOAD_BYPASS}" != "1" ]]; then
-  printf 'AGU_LOAD_BYPASS must be 0 or 1: %s\n' "${AGU_LOAD_BYPASS}" >&2
-  exit 2
-fi
 if [[ "${FSDB_DUMP_MDA}" != "0" && "${FSDB_DUMP_MDA}" != "1" ]]; then
   printf 'FSDB_DUMP_MDA must be 0 or 1: %s\n' "${FSDB_DUMP_MDA}" >&2
   exit 2
@@ -93,10 +92,9 @@ printf 'Building DPI library: %s\n' "${dpi_library}"
 # the directory from which this runner was launched.
 cd "${CORE_ROOT}"
 printf 'Step 1: Compiling/elaborating RTL...\n'
-printf 'Core configuration: AGU_LOAD_BYPASS=%s (elaboration-time)\n' "${AGU_LOAD_BYPASS}"
+printf 'Core configuration: RTL Top/PKG defaults only; simulation prints [CORE_CONFIG].\n'
 "${VERILOG_SUB}" -Is -compile "${COMPILE_SCRIPT}" \
   -RTL_ASSERTIONS="${RTL_ASSERTIONS}" \
-  -AGU_LOAD_BYPASS="${AGU_LOAD_BYPASS}" \
   -FSDB_ENABLE="${FSDB_ENABLE}"
 
 printf 'Step 2: Running simulation with ELF: %s\n' "${BINARY}"

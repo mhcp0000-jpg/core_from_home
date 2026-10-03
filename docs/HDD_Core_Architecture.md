@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.21 backend/LSQ timing candidate; matched functional regression PASS, server STA pending (2026-10-03) |
+| 상태 | v1.18.22 RTL-default configuration centralized; no-tool-override CoreMark/backend/elaboration PASS, server STA pending (2026-10-03) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -16,7 +16,66 @@
 
 최신 성능 채택 기준(2026-10-02 사용자 결정): 동일 CoreMark 입력·설정에서 **IPC ≥ 1.25**를 유지하고 클럭 개선을 확인한 후보는 중간 단계로 채택할 수 있다. timing pipeline의 선택 폭을 넓힌 결정이며, 최종 활성 목표 **실제 2nm 환경의 1.2GHz + 동일 CoreMark IPC1.3**는 그대로다. 로컬 Nangate45 delay는 후보 screening용이고 실제 서버 Fmax로 환산하지 않는다.
 
-### 0-A. 서버 합성용 현재 버전과 검증 범위 (2026-10-03)
+### 0-B. 현재 RTL 설정 계약: Top/PKG만 사용 (2026-10-03)
+
+**이 절이 아래 fbc67e1 설정 안내보다 우선한다.** fbc67e1의 top 기본값은 일부0이지만
+로컬 timing/IPC runner가1로 override했으므로 서버에서 기본 top을 합성한 결과와
+같은 구성이라고 볼 수 없었다. 이 차이를 전달하지 않은 문제를 수정했다.
+이 설정 계약을 포함한 RTL은 아래 PKG 값을 실제 기본값으로 사용한다.
+과거 fbc67e1에는 이 변경이 없으며 서버는 CORE_CFG_*가 포함된 새 commit을 사용한다.
+
+| 설정 | rv_ooo_pkg.sv 정의 / 현재 값 | 하드웨어 의미 |
+| --- | --- | --- |
+| AGU_LOAD_BYPASS | CORE_CFG_AGU_LOAD_BYPASS=1 | 검증된 AGU/LSQ load bypass 경로 사용 |
+| EARLY_LOAD_SELECT | CORE_CFG_EARLY_LOAD_SELECT=1 | early load 선택, unknown older store stall 유지 |
+| COMPATIBLE_PAIR_SELECT | CORE_CFG_COMPATIBLE_PAIR_SELECT=0 | 현재 측정한 issue-pair 정책 유지 |
+| BRANCH_TAG_PIPELINE | CORE_CFG_BRANCH_TAG_PIPELINE=1 | branch tag/control FF 뒤 다음 cycle PRF/BRU 실행 |
+| DIV_TAG_PIPELINE | CORE_CFG_DIV_TAG_PIPELINE=1 | DIV tag/control FF 뒤 operand read/execute |
+| BR_CHECKPOINTS | CORE_CFG_BR_CHECKPOINTS=8 | rename branch recovery checkpoint 수 |
+
+이는 CSR/runtime switch나 `ifdef`가 아니라 elaboration-time parameter다.
+`rv_ooo_core`, `rv_backend`, `rv_soc_top`과 실제 DPI TB의 기본 parameter는 모두
+PKG를 참조하며 상위에서 하위로 명시 전달한다. 분기0이면 `g_branch_fallthrough`,
+1이면 `g_branch_tag_pipeline`만 생성된다. 동적으로 양쪽을 선택하는 mux가 아니다.
+ISA/XLEN/queue 크기 등 나머지 코어 parameter는 RTL top에서, SoC memory map은
+`rv_soc_pkg.sv`/`rv_soc_top`에서 설정한다. tool 환경변수로 다른 코어를 만들지 않는다.
+
+배포 `run_full_core_timing.ps1`, `run_soc_elf_test.ps1`, open-timing Windows/Linux
+runner는 hardware parameter override를 넣지 않는다. Xcelium runner/isrun의
+AGU compile define도 제거했다. ELF 위치/timeout/assertions/FSDB 및 library/SDC/clock
+constraint는 실행·검증 환경 설정으로 남지만 코어 구조 선택과 혼용하지 않는다.
+Core 설정을 변경하려면 RTL Top/PKG를 편집하고 반드시 RTL부터 다시 elaboration한다.
+이미 생성한 snapshot/netlist의 값은 PKG 편집만으로 바뀌지 않는다.
+
+```powershell
+.\scripts\run_soc_elf_test.ps1 -ElfPath <coremark.elf> -BuildRoot .\out\pkg_profile_soc -RtlAssertions -PerfPath .\out\pkg_profile_perf.json
+.\scripts\run_full_core_timing.ps1 -TopModule rv_ooo_core -BuildRoot .\out\pkg_profile_whole
+.\scripts\test_core_config.ps1
+```
+
+별도 hardware 옵션 없는 fresh asserted SoC의 시작 `[CORE_CONFIG]`에서 1/1/0/1/1/8을
+확인했다. 같은 CoreMark ELF/iter2는timed439557cycles/576450instret/IPC1.311434,
+CRC/status9/host exit0이며 전체 profiler SHA B6DF3D7B…가 이전 명시override 구성과
+동일하다. 같은 executable C/FP는009e00b9/host exit0 PASS다. Actual no-override backend
+회귀도server08c8/trap/interrupt/CSR/PMP/unmapped를 포함해 PASS했다. Actual Yosys/slang
+no-override default-core elaboration은 hierarchy link PASS, branch tag-pipeline cell1개,
+legacy fallthrough cell0개를 assertion으로 확인했다. 실제2nm1.2GHz는 아직 미증명이다.
+Standalone leaf 합성은 그 leaf의 RTL 기본 geometry를 사용하므로 core 내부 instance와
+다를 수 있다. 서버와의 최종 비교 기준은 같은 commit의 **전체 rv_ooo_core**다.
+
+서버 RTLA 인계: 기존 core filelist/top port는 불변이다. 회사 library/SDC를 그대로
+사용하되 새 RTL부터 elaboration하고 tool parameter override/AGU define을 추가하지 않는다.
+Hierarchy의 `g_branch_tag_pipeline` 존재/`g_branch_fallthrough` 부재로 실제 구조를 확인한다.
+전달받을 결과는 commit, setup arrival/required/slack, launch/capture FF, cell/net path,
+top area다. 기본값0 구조에서 보고된 LSU→IQ→PRF→fallthrough branch→fast buffer 약1.13ns는
+이 기본값1 버전과 다른 hardware profile이므로 공정 조건만 같다고 직접 비교하지 않는다.
+이 배포에는 미채택 ROB onehot/CSR FP-write-enable/LSU cluster availability prototype을
+넣지 않았다. 바뀐 기본 구조는 이미 검증된 AGU/branch/div 경계이며 실제 서버 clock은
+새 RTL의 같은 설정으로 측정해야 한다.
+
+### 0-A. 과거 fbc67e1 서버 전달 및 검증 이력 (2026-10-03)
+
+아래 별도 parameter override 명령은 과거 재현 이력이다. 현재 실행 계약은 §0-B다.
 
 이 절은 뒤의 prototype/pending 이력보다 우선하는 현재 배포 상태다. 이번 버전은 성능 목표 달성판이 아니라 **실제 서버 STA로 효과를 확인할 기능 검증된 timing 후보**다. 최신 LSQ 후보를 production RTL에 반영했으며 실제 실행된 SoC와 합성 snapshot의 core source 31개를 SHA256로 대조해 일치시켰다. 후속 ROB head-read, decoded PRF, committed-RAS overlay 실험은 이 서버용 버전에 넣지 않았다.
 
@@ -51,7 +110,7 @@
 | Commit-ready 분리 formal | 직전 shared-age RTL 대비 LQ4/SQ4 flags4 + default24/16 + odd7/5 PADDR64의 6구성 two-state 동등성 PASS. ready 관측만 valid로 qualified, 나머지 output/state는 모두 비교. store effect-valid를 제거한 잘못된 negative control은 SB enqueue 등466개 미동등성으로 reject. |
 | 전체 LSQ formal의 한계 | 최적화 단계별 작은 geometry/선택 알고리즘 증거는 HDD §5-29~32의 범위대로만 인정한다. 원본 default24/16에 대한 전체 unbounded proof, arbitrary X/Z equivalence 또는 전체 ISA signoff라고 주장하지 않는다. |
 | LSQ 단독 N45 A/B | 동일 full-array/reset 모델 **2994.29→2342.15ps (−21.78%)**, **72524.368→79109.198µm² (+9.08%)**. private 2nm Fmax로 환산 불가. |
-| 전체 코어 / 실제 서버 | 새 LSQ 포함 whole 합성은 아직 미완료. 기존 완료 후보 최고 N45 screening3204.62ps; 후보에 따라3237.40/3265.54ps로 오히려 느린 경우도 있었으므로 leaf 개선을 whole 개선으로 확대하지 않는다. **실제 1.2GHz 달성은 서버 STA 확인 전 미증명.** |
+| 전체 코어 / 실제 서버 | 서버판 동일 새 LSQ 포함 whole는 **3380.42ps /1608049.8µm²**, actual exit0/peak8.37GiB로 완료. 기존 최선 N45 screening3204.62ps보다 느리며 leaf 개선을 whole 개선으로 확대하지 않는다. 새로운 worst와 후속 CSR 후보는 §5-35. **실제 1.2GHz 달성은 서버 STA 확인 전 미증명.** |
 
 재현용 기존 Windows runner 예(ELF 경로는 실제 파일로 바꾼다):
 
@@ -7101,13 +7160,287 @@ AGU1/EARLY1/PAIR0/CP8/BRANCH1/DIV1 일치다. Predictor policy 튜닝이 아니�
 LSQ SHA256 D8F3653EBA6AB061B59E366537A939BA6A78D29658FC821F986B2B32A9D77FE9,
 actual full-array/reset leaf2342.15ps/79109.198µm²이며 **whole delay는 아니다**.
 
-Current onehot+RAS whole queue55025 actual ABC13544/39496 live, Fine/Flatten exit0
-(Flatten peak8.01GiB). Next `out/full_core_lsq_commit_probe_no_ras_candidate` Coarse/Map
-exit0, queue79223/`lsq_commit_probe_no_ras_whole_queue_v2.log`는 현재13544 actual exit0와
-result/summary 뒤 Fine부터 이어 간다. 최초 queue의 잘못된 build-manifest 경로는 SHA gate가
-실행 전에 거부했고 log를 보존했다. Current whole을 restart/변경하지 않는다.
-Production LSQ/predictor 미변경, 새 후보 Push 없음, `.f` 불변이다. 최종 실제2nm1.2GHz와
-whole-screening2500ps는 아직 미확인이다.
+후속 확인: onehot+RAS whole은 actual ABC13544 exit0,3236.64ps/1628838.231999µm²,
+peak8.0999GiB로 완료됐다. DIV+pair3237.40ps와 사실상 차이가 없어 leaf20.85% 개선을
+whole clock 개선으로 확대하지 않는다. 새 mapped worst는 ROB head_q[0]→trap/redirect→
+LSU store_commit_valid/ready→retire_fire[0]→mret_commit→CSR mtval_q[22]이며 exact trace
+54gates/91.27heuristic units(NOT STA/ns)다. 이 feedback 역시 ready availability 분리의 대상이다.
+
+`out/full_core_lsq_commit_probe_no_ras_candidate`는 앞선 actual exit0/result/summary gate를
+확인한 뒤 Fine20464 exit0(221.80s/3.8303GiB), Flatten18324 exit0(218.74s/7.8939GiB)를
+마쳤다. 현재 ABC6840/12224가 진행 중이다. observation timeout을 종료로 취급하거나
+새로 시작하지 않는다. 최초 queue의 잘못된 build-manifest 경로는 SHA gate가 실행 전에
+거부했고 log를 보존했다.
+
+Production LSQ는 기능 검증·source SHA 일치 후 서버용 **fbc67e1**로 반영/Push했다.
+Predictor는 원래 RTL, `.f` 불변이다. 최종 실제2nm1.2GHz와 whole-screening2500ps는
+아직 미확인이다. 후속 ROB 실험은 §5-33이며 fbc67e1에 포함하지 않는다.
+
+###### 5-33. ROB head-read / next-PC 후속 A/B (2026-10-03, 서버 버전과 분리)
+
+실제 whole 최장 경로가 ROB head에서 시작하므로 binary variable-index head read를
+분해했다. 기존 entry/reset/completion/dual-retire/flush 우선순위는 유지한다. 이 절의 후보는
+모두 `out/`의 독립 RTL이며 서버에 보낸 fbc67e1의 ROB를 바꾸지 않았다.
+
+| 동일 full-array/reset ROB leaf, N45 | Delay ps | Area µm² | 판단 |
+|---|---:|---:|---|
+| 현재 ROB 기준 | 1227.69 | 149535.358 | 48 entries/11 live-query/4 complete ports |
+| Decoded shared head read | 1214.31 | 146034.798 | 약1.1% 개선에 그침 |
+| Registered one-hot head | 1137.72 | 148053.472 | 약7.3% delay, 약1.0% area 개선; 후속 whole 후보 |
+| Per-entry next-PC + decoded head | 1256.11 | 159040.336 | 느려지고 면적 증가, 미채택 |
+| Per-entry next-PC + one-hot head | 1120.58 | 156217.278 | one-hot 단독보다 delay 약1.5%만 개선, area 약5.5% 증가; 우선순위 낮춤 |
+
+Decoded read는 head/head+1 binary address를 공유 decoder로 바꾸고 entry word를
+balanced masked-OR tree로 읽는다. X/Z 또는 범위 밖 주소는 unknown 결과로 유지한다.
+하지만 mapped worst가 head_q[0]→retire_next_pc_o[62]였고, 같은 endpoint의 구조는
+37→39primitive gates/47.54→47.62heuristic units여서 단순 decoder 변경만으로는 해결되지
+않았다. 구조 단위는 STA/ns가 아니다.
+
+등록형 one-hot 후보는 **48개의 resettable head-select FF**를 추가하고 binary head_q를
+그대로 유지한다. lane1 read는 one-hot을 한 칸 회전해 주소 increment/decoder를 피한다.
+reset은 entry0, global flush 및 boundary 없는 selective flush는 기존 tail의 decode,
+boundary 있는 selective flush는 hold, normal retire는 fire0/fire1에 따라 한 칸/두 칸
+회전한다. lane1 fire는 lane0 fire를 요구한다. 새 SVA는 one-hot과 binary head decode의
+일치를 매 cycle 확인한다. entry payload/state, completion priority, PC/exception metadata,
+head/tail sequence 및 commit latency에는 변화가 없다. 추가 FF는 48개이며 architectural
+state가 아니라 cursor의 중복 표현이다. 이 후보의 worst는 head_select_q[30]→
+retire_next_pc_o[31]로 next-PC 산술이 여전히 남는다.
+
+Next-PC preselection은 각 entry의 branch target 또는 PC+2/4를 먼저 계산한 뒤 head
+word와 별도 tree에서 선택한다. 추가 FF는 없지만 parallel arithmetic 면적이 든다.
+독립 후보의 whole-ROB delay 회귀를 확인해 채택하지 않았다. 결합 후보에서는 worst가
+flush_sequence_i[3]→entry update mux로 이동했지만 작은 추가 이득에 비해 면적 비용이
+커 우선 one-hot 단독으로 진행한다. 이 숫자는 whole-core/실제2nm Fmax가 아니다.
+
+검증 범위와 결과:
+
+- 네 후보 각각 Git943fcae 원본 대비 (XLEN32,N48)/(XLEN64,N48)/(XLEN32,N7)/(XLEN64,N4) 네 구성,
+  각60000cycle all-public-output/original-state equality PASS(후보별24만cycle).
+  reset/sequence wrap/selective flush/duplicate or stale completion/dual allocation·retire 포함.
+- Decoded 후보 actual full-module undef-enabled formal은 32/4,64/7,32/7 세 구성 PASS.
+  default48 추가 proof는 owned23472를 RAM scheduling 목적으로 중단했으며 **미완료**다.
+  반쪽 증거나 작은 geometry 결과를 default full proof로 쓰지 않는다.
+- One-hot cursor update algorithm SAT은 entries2/4/7/48 모두 PASS. induction hypothesis는
+  legal head/tail, one-hot=decode(head), lane1 fire⇒lane0 fire다. 잘못된 flush decode 및
+  dual-retire에서 한 칸만 이동하는 negative 각4개를 모두 reject했다. 이는 cursor rule
+  lemma이지 actual whole-module/full ISA proof가 아니다. 최초 helper의 Verilog return
+  parse 및 `$check` lowering 실패도 보존하고 portable combinational guard 모델로 재검사했다.
+- 추가 actual one-hot ROB sequential equivalence는 XLEN32/64 각각 N4/LIVE_QUERY8/
+  COMPLETE4에서 undef-enabled base case+induction PASS다. 원본에는 verification-only
+  combinational `head_select_q=decode(head_q)` wire만 추가하고, 그 wire와 새 FF의 관계도
+  증명 대상에 포함했다(가정으로 강제하지 않음). 원래 public output/state 및 cursor 관계
+  모두 proved/0unproven이다. Actual candidate의 flush cursor를 잘못 entry0으로 고정한
+  negative는 sequential inequivalence로 reject했다. N4 결과를 default48 proof로 확대하지 않는다.
+- One-hot 단독 actual SoC CoreMark는439557cycles/576450instret/IPC1.311434,
+  전체 profiler SHA B6DF…까지 fbc67e1과 동일, CRC/status9/host exit0 PASS다.
+  같은 executable C/FP signature009e00b9/exit0도 PASS. Compiled source와 frozen leaf/
+  whole preparation의 core31개 SHA 일치를 확인했다. 추가 assertion-enabled backend
+  integration의 trap/interrupt/CSR/PMP/unmapped/server08c8 SH/LBU도 actual exit0 PASS다.
+- One-hot 단독 whole `full_core_lsq_commit_probe_rob_onehot_candidate`는 서버 구성과 동일한
+  AGU1/EARLY1/PAIR0/CP8/BRANCH1/DIV1, 원래 predictor와 최신 LSQ를 사용한다.
+  Coarse/Map actual exit0로 준비를 마쳤다. Queue47746은 현재 actual Yosys6840 handle을
+  붙잡고 exit0/result/summary 뒤 Fine부터 순차 실행하며 추가 full job을 겹치지 않는다.
+  현재 whole 결과 및 실제 서버 timing은 미확인이다. fbc67e1 서버 결과와 혼동하지 않는다.
+
+###### 5-34. Trap CSR 저장 경로 분리 후보 (2026-10-03, 서버 RTL 미변경)
+
+서버용 fbc67e1과 같은 full-array pre-ABC netlist에서 ROB head_q[0]→
+CSR mtval_q[22]를 추적했다. 최신 LSQ commit-ready 분리로 같은 지정 경로는
+기존 RAS+LSQ 후보의54 gates/91.27 heuristic units에서46 gates/79.18로 줄었다.
+이 비교는 같은 endpoint의 구조 비교이며 실제 global worst delay/STA 증거는 아니다.
+남은 후반은 retire fire→MRET commit→CSR storage priority다. MRET 뒤에19개의 mux가
+남고 공통 조건 하나가 약2856 primitive loads로 fanout되어, 관련 없는 CSR/PMP case
+갱신이 trap scalar 저장 로직에도 붙는 것을 확인했다. 연결 존재만으로 그 전체 경로가
+실제 입력에서 sensitizable하거나 critical하다고 단정하지 않는다.
+
+`scripts/trace_full_array_path.py --details`는 선택한 경로의 primitive 종류, 이전 노드가
+들어오는 pin(A/B/S), fanout을 추가한다. 기본 report/heuristic 계산은 바꾸지 않았다.
+추가 opt-in/MUX pin coverage를 포함한17개 unit test PASS다. 모든 숫자는 heuristic이며
+ps/ns가 아니다. timing exception/false-path를 추가해 경로를 숨기지 않았다.
+
+목표는 새 pipeline 없이 mepc/mcause/mtval의 저장 mux를 나머지 CSR/PMP 저장과 분리하는
+것이다. CSR request/pending/commit handshake, CSR read mux, mstatus/privilege, counters,
+PMP lock/sanitize, architectural update 시점 및 reset은 기존대로 유지한다.
+
+| 동일 CSR full-array/reset N45 leaf | Delay ps | Area µm² | 판정 |
+|---|---:|---:|---|
+| fbc 원본 | 794.87 | 8004.206 | XLEN32/PADDR32/PMP8/C1/F1/S0, 665 FF |
+| 세 trap CSR shared FF + factored MRET exclusion | 875.38 | 7113.372 | leaf 회귀; procedural X 의미 차이 주의 |
+| Shared FF + 명시적 MRET hold priority | 861.98 | 7384.958 | leaf 회귀 |
+| 각각 독립 FF + 명시적 MRET hold priority | 772.16 | 7025.326 | delay 약2.86%/area 약12.23% 감소, 후속 검증 우선 |
+| 각각 독립 FF + flat ordered NBA override | 889.75 | 7298.774 | 지정 MRET 경로는 짧지만 global leaf 회귀 |
+
+선호 후보의 한 edge 동작을 순서대로 읽으면 다음과 같다.
+
+1. Reset이면 mepc/mcause/mtval을 기존 값0으로 초기화한다.
+2. `trap_valid && trap_ready`면 mepc는 기존 HAS_C alignment로 fault PC, mcause는
+   interrupt bit와 cause, mtval은 기존 trap value를 기록한다.
+3. 그렇지 않고 legal committed MRET이면 세 trap CSR은 **hold**한다. 같은 edge에
+   CSR commit이 겹쳐도 원본 MRET 우선순위를 유지한다.
+4. 나머지 경우 pending CSR write commit이면 주소341/342/343과 일치하는 레지스터만
+   pending write data로 갱신한다. read-only CSR op나 다른 주소면 hold한다.
+
+Main CSR FF block의 같은 trap/MRET/commit priority는 유지하되 세 scalar의 reset/trap/
+case assignment만 새 독립 FF block으로 옮겼다. FF 수665, output port, pipeline latency와
+architectural commit cycle은 동일하다. 선호 source SHA256은
+`5EEEFDD0A7BD6A69B32A017FB5B26D2A8937BC434C5F0320180AA9AF81B53D94`다.
+지정 MRET input→mtval[22]는21 gates/30.90 heuristic units에서12/18.28로 줄었다.
+Flat ordered-NBA 후보는8/12.67까지 줄지만 module 최대 delay는889.75ps로 오히려
+늘었다. 지정 경로만 짧아졌다고 global 개선 후보로 확정하지 않는다.
+
+네 후보 각각 actual CSR RTL의 모든 output/original state에 대해 undef-enabled
+equivalence가 PASS했다. 구성은 (XLEN32,PADDR32,PMP8,S0), (64,56,8,0),
+(32,32,4,1), (64,64,16,1)이며 protocol 가정은 추가하지 않았다. HAS_SMODE=1은
+parameter 동등성 검사이지 Supervisor/MMU 기능 완성 증거가 아니다.
+`-undef` formal을 IEEE SystemVerilog procedural X/Z 동작 검증으로 확대하지 않는다.
+특히 첫 factored `!mret_fire && csr_write`는 procedural `if(X)` fallthrough와 의미가
+다를 수 있어 채택하지 않는다. 선호 후보는 기존 explicit if/else priority를 그대로 쓴다.
+
+선호 scalar 후보만 fbc에 CSR source override를 적용한 fresh assertion-enabled actual
+SoC CoreMark439557cycles/576450instret/IPC1.311434, CRC/status9/host exit0 PASS다.
+전체 profiler SHA B6DF…도 서버판과 동일하며 같은 executable C/FP009e00b9/exit0 PASS다.
+Backend trap/interrupt/CSR/PMP/unmapped/server08c8 통합 검증도 actual exit0 PASS다.
+Compiled/frozen core31개 SHA 일치와 후보만 CSR override인 것을 확인했다.
+CSR-only whole Coarse/Map preparation은 actual exit0로 완료됐다. 순차 queue는 앞선 ROB
+whole 완료 뒤 진행할 예정이었지만, 실제 worst가fflags인 것을 확인해 scalar-only 대기열을
+Fine 실행 전에 명시 중단하고 preparation을 보존했다. §5-35의 FP-write-enable 후보를
+다음 우선 측정으로 연결한다. 기능 PASS를 timing sign-off로 확대하지 않는다.
+Production CSR/ROB/predictor 및 `.f`는 바꾸지 않았으며 서버 측정 버전은 계속 fbc67e1이다.
+앞선 ROB one-hot whole은 현재 fbc whole 종료 뒤 순차 측정하며, CSR 후보를 그 frozen
+snapshot에 몰래 섞지 않는다. 서버 STA 결과 수신 뒤 실제 worst path와 전체 A/B를 기준으로
+다음 배포 후보를 선정한다.
+
+###### 5-35. 완료된 whole worst: ROB head→FP flags, 우선 측정 후보 (2026-10-03)
+
+서버 fbc67e1과 core31source/parameter가 같은 `full_core_lsq_commit_probe_no_ras_candidate`
+전체 합성이 actual Yosys6840 exit0로 종료됐다. 모든 배열/reset을 포함한 N45 결과는
+**3380.42ps /1608049.799999µm²**, sampled peak private8.3701GiB, ABC stage4507.3s다.
+앞선 최선3204.62ps보다 느리다. LSQ leaf의21.78% 개선만으로는 global clock 개선이
+확인되지 않았다. 이 결과를 private2nm의 실패/성공으로 환산하지 않는다.
+
+실제 ABC worst의 시작은 ROB head_q[0], 끝은 CSR fflags_q[3]다. Full pre-ABC에서도
+정확한 mapped endpoint alias를 추적해 다음 흐름을 확인했다(54primitivegates/
+87.26heuristic units, **STA/ns 또는 sensitization proof 아님**).
+
+```text
+ROB head word → head complete/exception → precise trap/architectural redirect
+             → LSU commit-ready lane0/1 → dual retire-fire
+             → retired FP fflags OR → CSR fflags storage
+```
+
+후반 accrual→fflags 저장에23primitive gates가 있었고, CSR/PMP case의 procedural
+priority mux가 이어졌다. 우선 trap scalar만 분리한 §5-34 후보는 이 actual worst를
+바꾸지 않으므로 아직 실행하지 않은 scalar-only whole 대기열을 취소했다. 정확한 owned
+PowerShell7880/name/start18:30:02를 확인했고 최초 Stop-Process 실패 뒤 같은 handle의
+Kill/exit를 확인했다. Coarse/Map/source/proof artifact는 보존했다. 관측 timeout 때문에
+실행 중인 합성을 재시작한 것이 아니며 현재 ROB whole는 그대로 진행한다.
+
+| 추가 CSR leaf, 동일 full-array/reset N45 | Delay ps | Area µm² | 결과/scope |
+|---|---:|---:|---|
+| 원본 fbc CSR | 794.87 | 8004.206 | 기준,665FF |
+| Trap scalar3 분리 | 772.16 | 7025.326 | §5-34 |
+| 추가 counter FF 분리 | 803.81 | 7606.004 | 4cfg formal PASS, global leaf 회귀 |
+| Counter 분리+1/2/4-distance carry prefix | 880.63 | 7614.250 | 4cfg formal PASS, 회귀 |
+| Scalar3+parallel CSR-exists | 759.73 | 7182.000 | RV32 undef PASS, RV64 module csr_exists 1wire 미증명; 미채택 |
+| Scalar3+FP state separate FF only | 819.95 | 7079.856 | 4cfg formal PASS; 지정 accrual path도23gates 그대로 |
+| Scalar3+FP state/CSR-write-enable 분리 | **678.10** | **7071.876** | 전체 worst 대응 후속 후보; full timing 아직 미확인 |
+
+Parallel-exists는 실제 RV64 address-cone의 cutpoint 없는 known-input SAT가 PASS했지만,
+그 증거로 module undef proof 실패를 지우지 않는다. 별도 unrestricted-undef SAT의
+ordinary equality countermodel은 gold/gate 둘 다X이므로 알려진 주소의 실제 mismatch
+증거로도 해석하지 않는다. 아직 전체 동일성 검증을 완료한 후보가 아니어서 배포하지 않는다.
+
+선호 FP-write-enable 후보는 FF 블록을 나누는 데서 멈추지 않고 scalar
+`csr_fflags_write`를 먼저 판정한다. 순서는 다음과 같다.
+
+1. CSR-write intent는 기본0이다. trap이 accept되거나 legal MRET가 commit되면0을 유지한다.
+2. 그 외 pending CSR write commit의 주소가001(fflags)/003(fcsr)이면1이다.
+   Explicit procedural if/else/case를 사용하며 `!trap && !mret`로 치환하지 않는다.
+3. Fflags FF는 reset이면0, write intent이면 captured pending data[4:0], 그 외
+   commit-accrual valid이면 old flags OR accrued flags, 아니면 hold한다.
+4. FRM은 기존 trap/MRET/CSR priority에서002/003 주소만 갱신한다. trap/MRET가
+   CSR write를 막아도 FP flag accrual은 막지 않는 기존 의미를 유지한다.
+
+FF665/reset/ports/latency/architectural commit edge는 그대로다. Source SHA256은
+`3BAF9524E5A4040E4131DAAC6FBE7842F8A0EE2A849B4C30BE64BEC20463050C`다.
+지정 accrual input→fflags[3]은23gates/33.13heuristic에서7/10.32로 줄었다.
+기존 scalar-only의 FF-block 분리만으로는23gates가 그대로였기 때문에 저장 이전에
+eligibility와 data를 분리하는 것이 이번 실험의 핵심이다.
+
+완료한 검증은 actual-module all-output/original-state undef equivalence 네 구성
+(32/32/PMP8/S0,64/56/8/0,32/32/4/1,64/64/16/1) PASS다. Protocol 가정은 없다.
+Trap 시 CSR write 차단을 잘못 제거한 actual negative는 fflags state5개의 inequivalence로
+reject됐다. 이것을 full-ISA/IEEE procedural arbitrary-X proof로 확대하지 않는다.
+
+`rv_csr_file_tb`에는 동일 edge의 네 priority를 추가했다: trap+pending FCSR write+accrual,
+MRET+pending FCSR write+accrual, FCSR write+accrual, FRM-only write+accrual이다.
+초기 flags1/frm3, accrued flags0x10에서 앞의 둘은 flags0x11/frm3,
+FCSR write0x42는 flags2/frm2, FRM write4는 flags0x11/frm4를 요구한다.
+계층 state force 없이 실제 execute→pending→commit port로 구동했고 원본/후보 모두
+assertion-enabled unit PASS다. 기존400032 counter arithmetic vectors, nested trap,
+MRET/MPRV/PMP lock/WFI/TW 회귀도 포함한다.
+
+Fresh actual SoC CoreMark는439557cycles/576450instret/IPC1.311434/CRCstatus9/host exit0,
+전체 profiler SHA B6DF…도 동일하다. 같은 executable C/FP009e00b9/exit0 및 asserted
+backend trap/interrupt/CSR/PMP/unmapped/server08c8 통합 PASS다. Compiled/frozen core31source
+일치를 확인했다. FP-write-enable whole Coarse35036/Map22768 actual exit0로 준비했고,
+queue는 현재 ROB whole의 owning result/summary exit0 뒤 Fine부터 순차 진행한다.
+서버 측정판은 계속 fbc67e1이며 production RTL/기존 `.f`는 바꾸지 않았다.
+실제1.2GHz와 이 후보 whole timing은 아직 미증명이다.
+
+###### 5-36. 서버 측정판 고정과 후속 후보 분리 (2026-10-03 19:59)
+
+서버 측정 기준은 **fbc67e1**이다. Top `rv_ooo_core`, filelist
+`sim/xcelium/sources_core.f`와 parameter AGU_LOAD_BYPASS=1,
+EARLY_LOAD_SELECT=1, BRANCH_TAG_PIPELINE=1, DIV_TAG_PIPELINE=1,
+COMPATIBLE_PAIR_SELECT=0, BR_CHECKPOINTS=8을 유지한다. 이 인계에서 production
+RTL/filelist는 수정하지 않았다. CoreMark timed439557cycles/576450instret,
+IPC1.311434, CRC/status9/host exit0가 기능·성능 기준이다. Nangate45 whole3380.42ps는
+무료 툴 screening일 뿐, 회사 2nm clock 또는 실제1.2GHz 달성을 의미하지 않는다.
+서버 결과에는 사용 commit/parameter/library/SDC, launch/capture FF, arrival/slack,
+중간 cell/net path와 area를 함께 남겨 동일 조건으로 비교한다.
+
+ROB onehot과 CSR FP-write-enable을 합친 **별도 snapshot**도 fresh asserted SoC와
+backend 회귀를 통과했다. CoreMark timed 수치와 전체 profiler SHA B6DF…가 기준과
+같으며, 같은 executable의 C/FP signature009e00b9/host exit0도 확인했다. Backend는
+trap/interrupt/CSR/PMP/unmapped/server08c8을 포함한다. 실제 compile한 source와
+frozen core31source SHA를 대조했고 Coarse18648/Map28816 actual exit0로 준비했다.
+`out/queue_rob_csr_fpwrite_combo_whole.ps1`는 ROB-only, CSR-only의 전체 합성 owning
+exit0/result/summary 뒤 조합 Fine부터 순차 실행한다. Queue와 준비 완료를 전체
+timing 완료로 세지 않는다. ROB small-module proof와 CSR 네 구성 proof는 각 절의
+범위이며, 조합 전체 default geometry formal/ISA proof로 확대하지 않는다.
+
+다른 후속은 LSU의 **commit availability query와 effect-valid 분리**다. 원본 cluster는
+non-memory/idle default commit_ready에 !flush를 넣고, backend에서도
+`retire_ready = !flush && !rob_trap_valid && lsu_commit_ready`로 다시 차단한다.
+이 중복 경로가 redirect→ready mux→lane1 readiness→retire→architectural CSR의
+조합 의존성을 늘릴 수 있다. 실험본은 default-ready만2'b11로 바꾸며, lane0의
+load/store-specific readiness, lane1 memory serialization, lane0 blocked 시 lane1
+차단은 유지한다. Load/store commit-valid의 !flush와 backend 최종 retire guard도
+유지하므로 flush 동안 store-buffer/MMIO/LQ/SQ architectural effect를 허용하면 안 된다.
+
+| 구간 | 원본과 실험의 비교 계약 |
+| --- | --- |
+| !flush, non-memory/idle | ready=1, 모든 다른 output/state 동일 |
+| !flush, memory head | load/store-specific ready와 lane1 직렬화 동일 |
+| flush | raw idle-ready는 달라도 됨; !flush-qualified ready/모든 effect와 state는 동일 |
+| trap/redirect와 commit 동시 | backend retire-fire=0; squash된 store/MMIO를 가시화하지 않음 |
+
+실험본은 `out/lsu_commit_availability_candidate/rv_lsu_cluster.sv`,
+SHA367ABC477EEB231F75DD67660477A51C2BA1A596A2EFDDD085F613D2FAF50CFA다.
+Default LQ24/SQ16/SB16, EARLY1/AGU1/**AGU_DEPTH2**를 같은 조건으로 합성한 leaf는
+2378.70→2321.63ps, area148122.898→147350.434µm²다. Arrays/reset을 모두 남겼으며
+port/FF/stage/cycle은 추가하지 않았다. 단독 수치를 전체 core/2nm 개선으로 해석하지 않는다.
+
+Actual full-module 비교 wrapper는 양쪽 raw-ready만 !flush로 qualify하고 나머지 원래
+output/state는 그대로 비교한다. 작은 LQ4/SQ4/SB4의 depth1 proof가 진행 중이며
+완료 전에 PASS로 기록하지 않는다. Depth2 실제 구성 proof, effect guard를 제거한
+negative-control 및 asserted SoC/CoreMark+CFP/backend 회귀와 whole timing이 필요하다.
+후속 actual asserted SoC/CoreMark는timed439557cycles/576450instret/IPC1.311434와
+전체 profiler SHA B6DF…가 동일했고, 같은 executable C/FP009e00b9/exit0도 PASS했다
+(executable SHA85941C3E…). Backend 통합은 이 actual gate 뒤 시작했으며 아직 결과를
+완료로 세지 않는다. Formal/whole timing은 미완료이고 production 채택은 하지 않았다.
+서버 baseline과 모든 실험 source/artifact는 별도 보존한다.
 
 ###### 5. 도구
 
