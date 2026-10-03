@@ -204,6 +204,15 @@ module rv_issue_queue #(
   logic [SELECT_WIDTH-1:0][FU_ONEHOT_WIDTH-1:0] sel_fu_onehot;
   logic [SELECT_WIDTH-1:0] sel_store_data_ready;
   logic [SELECT_WIDTH-1:0][ENTRIES-1:0] am_hot;
+  // Explicit balanced payload reduction. A procedural "acc |= entry" loop
+  // elaborates into an ENTRIES-long OR chain before mapping; do not rely on
+  // a particular synthesis engine to rebalance this late wake/select cone.
+  // Bundle data/class/store-ready so all selects have the same depth. This
+  // is purely combinational: no extra stage, state, issue policy or latency.
+  localparam int unsigned PAYLOAD_LEAVES = 1 << $clog2(ENTRIES);
+  localparam int unsigned SELECT_BUNDLE_W = CAND_W + FU_ONEHOT_WIDTH + 1;
+  logic [SELECT_BUNDLE_W-1:0] payload_tree
+    [0:SELECT_WIDTH-1][1:2*PAYLOAD_LEAVES-1] /* verilator split_var */;
   // PROTOTYPE: age-ordering matrix.  age_matrix_q[i][j]=1 means entry j is
   // older than entry i.  Oldest/second-oldest become 1-bit AND/NOR reductions,
   // removing every ROB-sequence comparator from the select network.
@@ -431,20 +440,26 @@ module rv_issue_queue #(
     am_hot[0] = am_first;
     if (SELECT_WIDTH > 1)
       am_hot[1] = am_second;
-    for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-      sel_payload[slot] = '0;
-      sel_fu_onehot[slot] = '0;
-      sel_store_data_ready[slot] = 1'b0;
-      for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
-        sel_payload[slot] |= {CAND_W{am_hot[slot][entry]}} &
-                             CAND_W'(entry_payload[entry]);
-        sel_fu_onehot[slot] |= {FU_ONEHOT_WIDTH{am_hot[slot][entry]}} &
-                               entry_fu_onehot[entry];
-        sel_store_data_ready[slot] |= am_hot[slot][entry] &
-                                      store_data_ready_vec[entry];
+  end
+
+  for (genvar slot = 0; slot < SELECT_WIDTH; slot++) begin : g_payload_select
+    for (genvar leaf = 0; leaf < PAYLOAD_LEAVES; leaf++) begin : g_leaf
+      if (leaf < ENTRIES) begin : g_present
+        assign payload_tree[slot][PAYLOAD_LEAVES+leaf] =
+          {SELECT_BUNDLE_W{am_hot[slot][leaf]}} &
+          {CAND_W'(entry_payload[leaf]), entry_fu_onehot[leaf],
+           store_data_ready_vec[leaf]};
+      end else begin : g_padding
+        assign payload_tree[slot][PAYLOAD_LEAVES+leaf] = '0;
       end
-      sel_pl[slot] = cand_payload_t'(sel_payload[slot]);
     end
+    for (genvar node = 1; node < PAYLOAD_LEAVES; node++) begin : g_node
+      assign payload_tree[slot][node] = payload_tree[slot][2*node] |
+                                        payload_tree[slot][2*node+1];
+    end
+    assign {sel_payload[slot], sel_fu_onehot[slot],
+            sel_store_data_ready[slot]} = payload_tree[slot][1];
+    assign sel_pl[slot] = cand_payload_t'(sel_payload[slot]);
   end
 
   always_comb begin

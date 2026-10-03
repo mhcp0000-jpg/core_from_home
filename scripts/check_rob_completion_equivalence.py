@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cycle-compare actual masked ROB completions with immutable native RTL.
+"""Cycle-compare ROB storage/completions with immutable native RTL.
 
 Builds generated fixtures only below out/. Checks all original public outputs
 and every ROB state bit, not an independent ISA or unbounded formal proof.
@@ -30,7 +30,8 @@ def fixture(current, reference, width, entries, cycles):
     current_ports, reference_ports = ports(current), ports(reference)
     originals = {name for _, _, name in reference_ports}
     extras = {name for _, _, name in current_ports} - originals
-    if extras != {"complete_entry_mask_i", "live_query_entry_o"}:
+    masked = extras == {"complete_entry_mask_i", "live_query_entry_o"}
+    if extras and not masked:
         raise ValueError(f"Unexpected ROB interface delta: {extras}")
     declarations, stimulus, checks = [], [], []
     for direction, kind, name in current_ports:
@@ -51,6 +52,11 @@ def fixture(current, reference, width, entries, cycles):
         connections = [f".{name}({name if direction=='input' else prefix+'_'+name})"
                        for direction, _, name in port_list]
         return f"{module} #({parameters}) {prefix}_i({','.join(connections)});"
+    mask_connections = """
+  for (genvar port=0; port<COMPLETE_PORTS; port++) begin
+    assign complete_entry_mask_i[port]=dut_live_query_entry_o[port];
+  end
+""" if masked else ""
     return f"""
 module rob_completion_equiv_tb;
   import rv_ooo_pkg::*;
@@ -59,11 +65,9 @@ module rob_completion_equiv_tb;
   localparam int COMPLETE_PORTS=4, LIVE_QUERY_PORTS=8;
   localparam int ROB_INDEX_WIDTH=$clog2(ROB_ENTRIES), ROB_COUNT_WIDTH=$clog2(ROB_ENTRIES+1);
   {chr(10).join(declarations)}
-  {instance('rv_rob', 'dut', True, current_ports)}
+  {instance('rv_rob', 'dut', masked, current_ports)}
   {instance('rv_rob_reference', 'ref', False, reference_ports)}
-  for (genvar port=0; port<COMPLETE_PORTS; port++) begin
-    assign complete_entry_mask_i[port]=dut_live_query_entry_o[port];
-  end
+  {mask_connections}
   always #5 clk_i=~clk_i;
   int cycle, seed, allocation_cycles, completion_cycles, selective_flushes, resets, wraps;
   logic [SEQ_WIDTH-1:0] last_sequence;
@@ -142,7 +146,7 @@ endmodule
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", default="081e714")
-    parser.add_argument("--rtl", type=Path, help="Saved experimental ROB source; default is current production RTL")
+    parser.add_argument("--rtl", type=Path, help="Saved same-interface or entry-mask ROB candidate; default is working-tree RTL")
     parser.add_argument("--width", type=int, choices=(32, 64), default=32)
     parser.add_argument("--entries", type=int, choices=(4, 7, 48), default=48)
     parser.add_argument("--cycles", type=int, default=60000)

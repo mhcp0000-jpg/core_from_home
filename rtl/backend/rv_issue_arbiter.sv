@@ -63,6 +63,7 @@ module rv_issue_arbiter #(
   logic [EXEC_PORTS-1:0] fm0, fm1, fallow, fpair, fm1_rest;
   logic [EXEC_PORTS-1:0] fm0_hot, fm1_hot, fpair_hot,
                           fm0_choice_hot, first_hot, second_hot;
+  logic [EXEC_PORTS-1:0][EXEC_PORTS-1:0] fm1_except_hot;
   logic fe0, fe1, fgrant2;
   logic [PORT_INDEX_WIDTH-1:0] fp_first, fp_second;
 
@@ -213,11 +214,20 @@ module rv_issue_arbiter #(
       fp_first = lowest_port(first_hot);
       // Candidate1 may issue only with fe0. Its alternative can therefore be
       // computed before the late fe0 decision, independently of first_hot.
-      fm1_rest = fm1 & ~fm0_choice_hot;
-      fgrant2 = fe0 && fe1 && (|fm1_rest);
-      for (int unsigned port = 0; port < EXEC_PORTS; port++)
-        second_hot[port] = fm1_rest[port] &&
-          !(|(fm1_rest & ((EXEC_PORTS'(1) << port) - 1)));
+      // Precompute the younger candidate's lowest port for EACH possible
+      // older port, in parallel. Late oldest selection only gates/ORs these
+      // terms; it no longer feeds another priority encoder via fm1_rest.
+      fm1_rest = fm1 & ~fm0_choice_hot; // debug alias, not in selection
+      second_hot = '0;
+      for (int unsigned older_port = 0; older_port < EXEC_PORTS; older_port++)
+        for (int unsigned port = 0; port < EXEC_PORTS; port++) begin
+          fm1_except_hot[older_port][port] = (port != older_port) &&
+            fm1[port] && !(|(fm1 & ((EXEC_PORTS'(1) << port) - 1) &
+                            ~(EXEC_PORTS'(1) << older_port)));
+          second_hot[port] |= fpair_hot[older_port] &&
+                              fm1_except_hot[older_port][port];
+        end
+      fgrant2 = fe0 && fe1 && (|fpair);
       fp_second = lowest_port(second_hot);
       if (fe0 || fe1) begin
         fo_candidate_grant[fe0 ? 0 : 1] = 1'b1;

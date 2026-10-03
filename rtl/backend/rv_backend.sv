@@ -2,6 +2,11 @@ module rv_backend #(
   parameter bit AGU_LOAD_BYPASS = 1'b0,
   parameter bit EARLY_LOAD_SELECT = 1'b1,
   parameter bit COMPATIBLE_PAIR_SELECT = 1'b0,
+  // Experimental branch-only raw-tag issue/execute boundary. Default stays
+  // unchanged until full-core timing and IPC/correctness gates are passed.
+  parameter bit BRANCH_TAG_PIPELINE = 1'b0,
+  // Optional DIV-only raw-tag boundary; leaves normal ALU/load latency alone.
+  parameter bit DIV_TAG_PIPELINE = 1'b0,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
@@ -537,10 +542,42 @@ module rv_backend #(
   );
 
   // PRFs: three operands for each issue candidate plus two retirement probes.
+  // The branch prototype adds two INT read ports AFTER its raw-tag register.
+  // Capturing values here instead would leave wake/select/PRF in one cycle.
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0] sequence_id;
+    logic [1:0][PHYS_TAG_WIDTH-1:0] src_phys;
+    reg_class_e [1:0] src_class;
+    branch_op_e operation;
+    logic [XLEN-1:0] pc, immediate;
+    inst_len_e inst_len;
+    prediction_meta_t prediction;
+    logic dst_valid;
+    reg_class_e dst_class;
+    logic [PHYS_TAG_WIDTH-1:0] dst_phys;
+  } branch_issue_t;
+  branch_issue_t branch_issue_q;
+  logic branch_issue_valid_q;
+  logic branch_slot_ready, branch_execute_valid;
+  logic [ROB_SEQ_WIDTH-1:0] branch_execute_sequence;
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0] sequence_id;
+    logic [1:0][PHYS_TAG_WIDTH-1:0] src_phys;
+    reg_class_e [1:0] src_class;
+    divide_op_e operation;
+    logic word_operation, dst_valid;
+    logic [PHYS_TAG_WIDTH-1:0] dst_phys;
+  } div_issue_t;
+  div_issue_t div_issue_q;
+  logic div_issue_valid_q, div_slot_ready, div_execute_valid;
+  localparam int unsigned DIV_READ_BASE = 8 + (BRANCH_TAG_PIPELINE ? 2 : 0);
+  localparam int unsigned INT_READ_PORTS = DIV_READ_BASE + (DIV_TAG_PIPELINE ? 2 : 0);
   logic [7:0][PHYS_TAG_WIDTH-1:0] int_read_addr, fp_read_addr;
-  logic [7:0][XLEN-1:0] int_read_data;
+  logic [INT_READ_PORTS-1:0][PHYS_TAG_WIDTH-1:0] int_prf_read_addr;
+  logic [INT_READ_PORTS-1:0][XLEN-1:0] int_read_data;
   logic [7:0][31:0] fp_read_data;
-  logic [7:0] int_read_ready, fp_read_ready;
+  logic [INT_READ_PORTS-1:0] int_read_ready;
+  logic [7:0] fp_read_ready;
   logic [5:0][PHYS_TAG_WIDTH-1:0] int_query_addr, fp_query_addr;
   logic [5:0] int_query_ready, fp_query_ready;
   logic [1:0] int_wb_valid, fp_wb_valid, int_alloc_valid, fp_alloc_valid;
@@ -548,6 +585,14 @@ module rv_backend #(
   logic [1:0][XLEN-1:0] int_wb_data;
   logic [1:0][31:0] fp_wb_data;
   logic [1:0][2:0] dispatch_src_ready;
+
+  assign int_prf_read_addr[7:0] = int_read_addr;
+  if (BRANCH_TAG_PIPELINE) begin : g_branch_read_addresses
+    assign int_prf_read_addr[8+:2] = branch_issue_q.src_phys;
+  end
+  if (DIV_TAG_PIPELINE) begin : g_div_read_addresses
+    assign int_prf_read_addr[DIV_READ_BASE+:2] = div_issue_q.src_phys;
+  end
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -575,11 +620,13 @@ module rv_backend #(
 
   rv_phys_regfile #(
     .DATA_WIDTH(XLEN), .PHYS_REGS(INT_PHYS_REGS),
-    .TAG_WIDTH(PHYS_TAG_WIDTH), .READ_PORTS(8), .QUERY_PORTS(6),
+    .TAG_WIDTH(PHYS_TAG_WIDTH), .READ_PORTS(INT_READ_PORTS), .QUERY_PORTS(6),
     .WRITE_PORTS(2), .ALLOC_PORTS(2), .INITIAL_MAPPED_REGS(32),
     .ZERO_REGISTER(1'b1), .WRITE_BYPASS(1'b0)
   ) u_int_prf (
-    .clk_i, .rst_ni, .read_addr_i(int_read_addr), .read_data_o(int_read_data),
+    .clk_i, .rst_ni,
+    .read_addr_i(int_prf_read_addr),
+    .read_data_o(int_read_data),
     .read_ready_o(int_read_ready), .query_addr_i(int_query_addr),
     .query_ready_o(int_query_ready), .write_valid_i(int_wb_valid),
     .write_addr_i(int_wb_phys), .write_data_i(int_wb_data),
@@ -866,6 +913,8 @@ module rv_backend #(
   // Global issue selection with FU-specific backpressure folded into masks.
   logic [1:0] fast_req_ready, lsu_issue_ready;
   logic mul_req_ready, div_req_ready, fpu_req_ready;
+  assign branch_slot_ready = !branch_issue_valid_q || fast_req_ready[0];
+  assign div_slot_ready = !div_issue_valid_q || div_req_ready;
   logic [1:0][4:0] effective_mask;
   logic fpu_issue_valid_q;
   logic [ROB_SEQ_WIDTH-1:0] fpu_issue_sequence_q;
@@ -882,12 +931,15 @@ module rv_backend #(
       // Class decode runs from registered IQ entries in parallel with wakeup
       // and age selection, not after selecting/encoding the class payload.
       effective_mask[candidate][0] = cand_port_mask[candidate][0] &&
-        (cand_fu_onehot[candidate][FU_INT] || cand_fu_onehot[candidate][FU_BRANCH]) &&
-        fast_req_ready[0];
+        ((cand_fu_onehot[candidate][FU_INT] && fast_req_ready[0] &&
+          (!BRANCH_TAG_PIPELINE || !branch_issue_valid_q)) ||
+         (cand_fu_onehot[candidate][FU_BRANCH] &&
+          (BRANCH_TAG_PIPELINE ? branch_slot_ready : fast_req_ready[0])));
       effective_mask[candidate][1] = cand_port_mask[candidate][1] &&
         ((cand_fu_onehot[candidate][FU_INT] && fast_req_ready[1]) ||
          (cand_fu_onehot[candidate][FU_MUL] && mul_req_ready) ||
-         (cand_fu_onehot[candidate][FU_DIV] && div_req_ready));
+         (cand_fu_onehot[candidate][FU_DIV] &&
+          (DIV_TAG_PIPELINE ? div_slot_ready : div_req_ready)));
       effective_mask[candidate][2] = cand_port_mask[candidate][2] &&
         (cand_fu_onehot[candidate][FU_LOAD] || cand_fu_onehot[candidate][FU_STORE]) &&
         lsu_issue_ready[0];
@@ -915,10 +967,13 @@ module rv_backend #(
     logic [4:0] resource;
     resource = '0;
     case (fu)
-      FU_INT: resource[1:0] = fast_req_ready;
-      FU_BRANCH: resource[0] = fast_req_ready[0];
+      FU_INT: begin
+        resource[1:0] = fast_req_ready;
+        resource[0] &= !BRANCH_TAG_PIPELINE || !branch_issue_valid_q;
+      end
+      FU_BRANCH: resource[0] = BRANCH_TAG_PIPELINE ? branch_slot_ready : fast_req_ready[0];
       FU_MUL: resource[1] = mul_req_ready;
-      FU_DIV: resource[1] = div_req_ready;
+      FU_DIV: resource[1] = DIV_TAG_PIPELINE ? div_slot_ready : div_req_ready;
       FU_LOAD, FU_STORE: resource[3:2] = lsu_issue_ready;
       FU_FP: resource[4] = !fpu_issue_valid_q || fpu_req_ready;
       default: resource = '0;
@@ -1081,6 +1136,9 @@ module rv_backend #(
   // Selecting a boolean after comparison avoids port assignment -> XLEN-wide
   // operand mux -> compare -> mispredict in series. This is still one branch
   // issue port and two global candidates; no extra issue/read bandwidth.
+  if (!BRANCH_TAG_PIPELINE) begin : g_branch_fallthrough
+  assign branch_issue_valid_q = 1'b0;
+  assign branch_issue_q = '0;
   for (genvar candidate = 0; candidate < 2; candidate++) begin : g_candidate_branch
     rv_branch_unit #(.XLEN(XLEN)) u_branch(
       .valid_i(cand_valid[candidate] && (cand_fu[candidate] == FU_BRANCH)),
@@ -1104,8 +1162,84 @@ module rv_backend #(
   assign branch_link = candidate_branch_link[port_candidate[0]];
   assign branch_misaligned = candidate_branch_misaligned[port_candidate[0]];
   assign branch_mispredict = candidate_branch_mispredict[port_candidate[0]];
+  end else begin : g_branch_tag_pipeline
+    logic [XLEN-1:0] operand0, operand1;
+    assign operand0 = bypass_or_prf(branch_issue_q.src_class[0],
+      branch_issue_q.src_phys[0], int_read_data[8], 32'b0);
+    assign operand1 = bypass_or_prf(branch_issue_q.src_class[1],
+      branch_issue_q.src_phys[1], int_read_data[9], 32'b0);
+    rv_branch_unit #(.XLEN(XLEN)) u_branch(
+      .valid_i(branch_execute_valid), .operation_i(branch_issue_q.operation),
+      .pc_i(branch_issue_q.pc), .operand_a_i(operand0), .operand_b_i(operand1),
+      .immediate_i(branch_issue_q.immediate),
+      .instruction_bytes_i(branch_issue_q.inst_len == INST_LEN_16 ? 3'd2 : 3'd4),
+      .predicted_taken_i(branch_issue_q.prediction.taken),
+      .predicted_target_i(branch_issue_q.prediction.target[XLEN-1:0]),
+      .taken_o(branch_taken), .target_o(branch_target), .next_pc_o(branch_next_pc),
+      .link_value_o(branch_link), .target_misaligned_o(branch_misaligned),
+      .mispredict_o(branch_mispredict));
+    // One-entry elastic raw-tag slot. Branches may consume/refill together.
+    // P0 INT is blocked while the old branch owns its result-buffer input;
+    // otherwise two completions would contend for one physical input.
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
+        branch_issue_valid_q <= 1'b0;
+        branch_issue_q <= '0;
+      end else if (flush_valid) begin
+        if (branch_issue_valid_q && (flush_all ||
+            sequence_after_backend(branch_issue_q.sequence_id,flush_sequence)))
+          branch_issue_valid_q <= 1'b0;
+      end else if (selected_port_valid[0] &&
+          cand_fu_onehot[port_candidate[0]][FU_BRANCH]) begin
+        branch_issue_valid_q <= 1'b1;
+        branch_issue_q.sequence_id <= port_sequence[0];
+        branch_issue_q.src_phys <= cand_src_phys[port_candidate[0]][1:0];
+        branch_issue_q.src_class <= cand_src_class[port_candidate[0]][1:0];
+        branch_issue_q.operation <= branch_op_e'(port_operation[0][3:0]);
+        branch_issue_q.pc <= port_pc[0];
+        branch_issue_q.immediate <= port_immediate[0];
+        branch_issue_q.inst_len <= port_len[0];
+        branch_issue_q.prediction <= port_prediction[0];
+        branch_issue_q.dst_valid <= port_dst_valid[0];
+        branch_issue_q.dst_class <= port_dst_class[0];
+        branch_issue_q.dst_phys <= port_dst_phys[0];
+      end else if (branch_issue_valid_q && fast_req_ready[0]) begin
+        branch_issue_valid_q <= 1'b0;
+      end
+    end
+`ifndef SYNTHESIS
+    function automatic logic source_available(input int unsigned source);
+      logic available;
+      available = branch_issue_q.src_class[source] == REG_NONE ||
+                  (branch_issue_q.src_class[source] == REG_INT && int_read_ready[8+source]);
+      for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+        available |= branch_issue_q.src_class[source] == REG_INT && direct_wake_valid[w] &&
+          (direct_wake_class[w] == branch_issue_q.src_class[source]) &&
+          (direct_wake_phys[w] == branch_issue_q.src_phys[source]);
+      return available;
+    endfunction
+    // Tags cannot be recycled before their live consumer retires. If the
+    // original wake came from a held producer not yet granted PRF writeback,
+    // that producer must still provide the value through direct bypass.
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      branch_execute_valid && fast_req_ready[0] |->
+        source_available(0) && source_available(1));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      branch_issue_valid_q && !fast_req_ready[0] && !flush_valid |=>
+        flush_valid || (branch_issue_valid_q && $stable(branch_issue_q)));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      branch_issue_valid_q && !flush_valid |->
+        !(port_valid[0] && (port_fu[0] == FU_INT)));
+`endif
+  end
+  assign branch_execute_valid = !flush_valid &&
+    (BRANCH_TAG_PIPELINE ? branch_issue_valid_q :
+      (port_valid[0] && (port_fu[0] == FU_BRANCH)));
+  assign branch_execute_sequence = BRANCH_TAG_PIPELINE ?
+    branch_issue_q.sequence_id : port_sequence[0];
 
 `ifndef SYNTHESIS
+  if (!BRANCH_TAG_PIPELINE) begin : g_branch_legacy_equal
   // Check this retiming-free factoring against the original post-port-mux
   // evaluation on every actually issued branch. Inactive payload is don't-care.
   logic reference_branch_taken, reference_branch_mispredict, reference_branch_misaligned;
@@ -1127,6 +1261,7 @@ module rv_backend #(
        branch_misaligned, branch_mispredict} ==
       {reference_branch_taken, reference_branch_target, reference_branch_next_pc,
        reference_branch_link, reference_branch_misaligned, reference_branch_mispredict});
+  end
 `endif
 
   // One elastic result buffer per single-cycle integer port.
@@ -1135,16 +1270,39 @@ module rv_backend #(
   logic [1:0] fast_req_exception,fast_req_mispredict;
   logic [1:0][XLEN-1:0] fast_req_tval,fast_req_target;
   exception_code_e [1:0] fast_req_cause;
+  logic [1:0][ROB_SEQ_WIDTH-1:0] fast_req_sequence;
+  logic [1:0] fast_req_dst_valid;
+  reg_class_e [1:0] fast_req_dst_class;
+  logic [1:0][PHYS_TAG_WIDTH-1:0] fast_req_dst_phys;
   always_comb begin
-    fast_req_valid[0]=port_valid[0];
+    fast_req_sequence=port_sequence[1:0];
+    fast_req_dst_valid=port_dst_valid[1:0];
+    fast_req_dst_class=port_dst_class[1:0];
+    fast_req_dst_phys=port_dst_phys[1:0];
+    fast_req_valid[0]=BRANCH_TAG_PIPELINE ?
+      (selected_port_valid[0] && !flush_valid &&
+       cand_fu_onehot[port_candidate[0]][FU_INT]) : port_valid[0];
     fast_req_valid[1]=port_valid[1]&&(port_fu[1]==FU_INT);
-    fast_req_data[0]=(port_fu[0]==FU_BRANCH)?branch_link:alu_result[0];
+    fast_req_data[0]=BRANCH_TAG_PIPELINE ? alu_result[0] :
+      ((port_fu[0]==FU_BRANCH)?branch_link:alu_result[0]);
     fast_req_data[1]=alu_result[1];fast_req_exception='0;
-    fast_req_exception[0]=(port_fu[0]==FU_BRANCH)&&branch_misaligned;
+    fast_req_exception[0]=!BRANCH_TAG_PIPELINE &&
+      (port_fu[0]==FU_BRANCH)&&branch_misaligned;
     fast_req_cause='0;fast_req_tval='0;
     fast_req_tval[0]=branch_target;fast_req_mispredict='0;
-    fast_req_mispredict[0]=(port_fu[0]==FU_BRANCH)&&branch_mispredict;
+    fast_req_mispredict[0]=!BRANCH_TAG_PIPELINE &&
+      (port_fu[0]==FU_BRANCH)&&branch_mispredict;
     fast_req_target='0;fast_req_target[0]=branch_next_pc;
+    if (BRANCH_TAG_PIPELINE && branch_issue_valid_q) begin
+      fast_req_valid[0]=branch_execute_valid;
+      fast_req_sequence[0]=branch_issue_q.sequence_id;
+      fast_req_dst_valid[0]=branch_issue_q.dst_valid;
+      fast_req_dst_class[0]=branch_issue_q.dst_class;
+      fast_req_dst_phys[0]=branch_issue_q.dst_phys;
+      fast_req_data[0]=branch_link;
+      fast_req_exception[0]=branch_misaligned;
+      fast_req_mispredict[0]=branch_mispredict;
+    end
   end
   logic [1:0][ROB_SEQ_WIDTH-1:0] fast_result_sequence;
   logic [1:0] fast_result_dst_valid,fast_result_exception,fast_result_mispredict;
@@ -1157,10 +1315,10 @@ module rv_backend #(
     rv_exec_result_buffer #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),.DEPTH(2),
       .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)) u_buffer(
       .clk_i,.rst_ni,.request_valid_i(fast_req_valid[fast]),
-      .request_ready_o(fast_req_ready[fast]),.request_sequence_i(port_sequence[fast]),
-      .request_destination_valid_i(port_dst_valid[fast]),
-      .request_destination_class_i(port_dst_class[fast]),
-      .request_destination_phys_i(port_dst_phys[fast]),
+      .request_ready_o(fast_req_ready[fast]),.request_sequence_i(fast_req_sequence[fast]),
+      .request_destination_valid_i(fast_req_dst_valid[fast]),
+      .request_destination_class_i(fast_req_dst_class[fast]),
+      .request_destination_phys_i(fast_req_dst_phys[fast]),
       .request_data_i(fast_req_data[fast]),
       .request_exception_valid_i(fast_req_exception[fast]),
       .request_exception_cause_i(fast_req_cause[fast]),
@@ -1206,15 +1364,92 @@ module rv_backend #(
   logic [XLEN-1:0] div_result_data;
   logic [ROB_SEQ_WIDTH-1:0] div_result_sequence;
   logic [PHYS_TAG_WIDTH-1:0] div_result_dst_phys;
+  logic [XLEN-1:0] div_operand0, div_operand1;
+  logic [ROB_SEQ_WIDTH-1:0] div_execute_sequence;
+  logic div_execute_word, div_execute_dst_valid;
+  logic [PHYS_TAG_WIDTH-1:0] div_execute_dst_phys;
+  divide_op_e div_execute_operation;
+  if (!DIV_TAG_PIPELINE) begin : g_div_fallthrough
+    assign div_issue_valid_q = 1'b0;
+    assign div_issue_q = '0;
+    assign div_operand0 = port_operand0[1];
+    assign div_operand1 = port_operand1[1];
+    assign div_execute_valid = port_valid[1] && (port_fu[1] == FU_DIV);
+    assign div_execute_sequence = port_sequence[1];
+    assign div_execute_word = port_word[1];
+    assign div_execute_dst_valid = port_dst_valid[1];
+    assign div_execute_dst_phys = port_dst_phys[1];
+    assign div_execute_operation = divide_op_e'(port_operation[1][1:0]);
+  end else begin : g_div_tag_pipeline
+    // Select tags in cycle S; read/bypass operands and start the unchanged
+    // divider in S+1. The slot can wait while an older division executes.
+    // Consuming/refilling is safe: DIV has its own FU/result, unlike BRU/P0.
+    assign div_operand0 = bypass_or_prf(div_issue_q.src_class[0],
+      div_issue_q.src_phys[0], int_read_data[DIV_READ_BASE], 32'b0);
+    assign div_operand1 = bypass_or_prf(div_issue_q.src_class[1],
+      div_issue_q.src_phys[1], int_read_data[DIV_READ_BASE+1], 32'b0);
+    assign div_execute_valid = div_issue_valid_q && !flush_valid;
+    assign div_execute_sequence = div_issue_q.sequence_id;
+    assign div_execute_word = div_issue_q.word_operation;
+    assign div_execute_dst_valid = div_issue_q.dst_valid;
+    assign div_execute_dst_phys = div_issue_q.dst_phys;
+    assign div_execute_operation = div_issue_q.operation;
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
+        div_issue_valid_q <= 1'b0;
+        div_issue_q <= '0;
+      end else if (flush_valid) begin
+        if (div_issue_valid_q && (flush_all ||
+            sequence_after_backend(div_issue_q.sequence_id, flush_sequence)))
+          div_issue_valid_q <= 1'b0;
+      end else if (selected_port_valid[1] &&
+                   cand_fu_onehot[port_candidate[1]][FU_DIV]) begin
+        div_issue_valid_q <= 1'b1;
+        div_issue_q.sequence_id <= port_sequence[1];
+        div_issue_q.src_phys <= cand_src_phys[port_candidate[1]][1:0];
+        div_issue_q.src_class <= cand_src_class[port_candidate[1]][1:0];
+        div_issue_q.operation <= divide_op_e'(port_operation[1][1:0]);
+        div_issue_q.word_operation <= port_word[1];
+        div_issue_q.dst_valid <= port_dst_valid[1];
+        div_issue_q.dst_phys <= port_dst_phys[1];
+      end else if (div_issue_valid_q && div_req_ready) begin
+        div_issue_valid_q <= 1'b0;
+      end
+    end
+`ifndef SYNTHESIS
+    function automatic logic source_available(input int unsigned source);
+      logic available;
+      available = div_issue_q.src_class[source] == REG_NONE ||
+        (div_issue_q.src_class[source] == REG_INT && int_read_ready[DIV_READ_BASE+source]);
+      for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+        available |= div_issue_q.src_class[source] == REG_INT && direct_wake_valid[w] &&
+          (direct_wake_class[w] == div_issue_q.src_class[source]) &&
+          (direct_wake_phys[w] == div_issue_q.src_phys[source]);
+      return available;
+    endfunction
+    // Every accepted raw-tag consumer still owns live source mappings. A
+    // wakeup producer delayed by WB remains on bypass until PRF is written.
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      div_execute_valid && div_req_ready |-> source_available(0) && source_available(1));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      div_issue_valid_q && !div_req_ready && !flush_valid |=>
+        flush_valid || (div_issue_valid_q && $stable(div_issue_q)));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      selected_port_valid[1] && !flush_valid &&
+      cand_fu_onehot[port_candidate[1]][FU_DIV] |-> div_slot_ready);
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      div_issue_valid_q |-> div_issue_q.src_class[0] inside {REG_NONE, REG_INT} &&
+                           div_issue_q.src_class[1] inside {REG_NONE, REG_INT});
+`endif
+  end
   rv_divider #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
     .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)) u_div(
-    .clk_i,.rst_ni,.request_valid_i(port_valid[1]&&(port_fu[1]==FU_DIV)),
-    .request_ready_o(div_req_ready),.operand_a_i(port_operand0[1]),
-    .operand_b_i(port_operand1[1]),
-    .operation_i(divide_op_e'(port_operation[1][1:0])),
-    .word_operation_i(port_word[1]),.request_rob_sequence_i(port_sequence[1]),
-    .request_destination_valid_i(port_dst_valid[1]),
-    .request_destination_phys_i(port_dst_phys[1]),
+    .clk_i,.rst_ni,.request_valid_i(div_execute_valid),
+    .request_ready_o(div_req_ready),.operand_a_i(div_operand0),
+    .operand_b_i(div_operand1),.operation_i(div_execute_operation),
+    .word_operation_i(div_execute_word),.request_rob_sequence_i(div_execute_sequence),
+    .request_destination_valid_i(div_execute_dst_valid),
+    .request_destination_phys_i(div_execute_dst_phys),
     .flush_valid_i(flush_valid),.flush_all_i(flush_all),
     .flush_sequence_i(flush_sequence),.result_valid_o(div_result_valid),
     .result_ready_i(div_result_ready),.result_o(div_result_data),
@@ -2023,9 +2258,9 @@ module rv_backend #(
       end
       if(branch_resolve_valid&&branch_resolve_live)
         branch_resolved_q[fast_result_sequence[0]]<=1'b1;
-      if (port_valid[0] && (port_fu[0] == FU_BRANCH) && fast_req_ready[0]) begin
-        branch_actual_taken_q[port_sequence[0]] <= branch_taken;
-        branch_actual_target_q[port_sequence[0]] <= branch_target;
+      if (branch_execute_valid && fast_req_ready[0]) begin
+        branch_actual_taken_q[branch_execute_sequence] <= branch_taken;
+        branch_actual_target_q[branch_execute_sequence] <= branch_target;
       end
     end
   end

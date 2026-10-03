@@ -1,6 +1,9 @@
 module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
                           parameter bit EarlyLoadSelect = 1'b1,
-                          parameter bit CompatiblePairSelect = 1'b0);
+                          parameter bit CompatiblePairSelect = 1'b0,
+                          parameter bit BranchTagPipeline = 1'b0,
+                          parameter bit DivTagPipeline = 1'b0,
+                          parameter bit DivStressOnly = 1'b0);
   import rv_ooo_pkg::*;
 
   logic clk, rst_n;
@@ -69,7 +72,9 @@ module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
 
   rv_backend #(.XLEN(32), .PADDR_WIDTH(32), .MEM_DATA_WIDTH(64),
                .EARLY_LOAD_SELECT(EarlyLoadSelect), .AGU_LOAD_BYPASS(AguLoadBypass),
-               .COMPATIBLE_PAIR_SELECT(CompatiblePairSelect)) u_dut (
+               .COMPATIBLE_PAIR_SELECT(CompatiblePairSelect),
+               .BRANCH_TAG_PIPELINE(BranchTagPipeline),
+               .DIV_TAG_PIPELINE(DivTagPipeline)) u_dut (
     .clk_i(clk), .rst_ni(rst_n), .fetch_valid_i(fetch_valid),
     .fetch_ready_o(fetch_ready), .fetch_pc_i(fetch_pc),
     .fetch_instr_i(fetch_instr), .fetch_inst_len_i(fetch_len),
@@ -138,6 +143,131 @@ module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
     @(posedge clk);
     @(negedge clk);
     clear_fetch();
+  endtask
+
+  function automatic logic [31:0] div_instruction(
+    input logic [4:0] rd, rs1, rs2, input logic [2:0] funct3
+  );
+    return {7'b0000001, rs2, rs1, funct3, rd, 7'b0110011};
+  endfunction
+
+  task automatic drain_writes(input int wanted);
+    int timeout;
+    timeout = 0;
+    while ((write_count < wanted || !u_dut.rob_empty || (|u_dut.dec_valid)) && timeout < 1500) begin
+      @(negedge clk);
+      timeout++;
+    end
+    if (timeout == 1500 || write_count != wanted)
+      $fatal(1, "DIV stress drain expected=%0d actual=%0d rob_pc=%08x", wanted, write_count, u_dut.rob_head_pc);
+  endtask
+
+  int div_wait_cycles, div_refills, div_flush_kills, div_flush_keeps, div_global_kills, sequence_wraps;
+  logic [ROB_SEQ_WIDTH-1:0] last_dispatch_sequence;
+  if (DivStressOnly) begin : g_div_coverage
+    always_ff @(posedge clk) begin
+      if (!rst_n) begin
+        div_wait_cycles <= 0; div_refills <= 0; div_flush_kills <= 0;
+        div_flush_keeps <= 0; div_global_kills <= 0; sequence_wraps <= 0;
+        last_dispatch_sequence <= '0;
+      end else begin
+        if (u_dut.div_issue_valid_q && !u_dut.div_req_ready) div_wait_cycles <= div_wait_cycles+1;
+        if (u_dut.div_issue_valid_q && u_dut.div_req_ready && !u_dut.flush_valid &&
+            u_dut.selected_port_valid[1] && u_dut.cand_fu_onehot[u_dut.port_candidate[1]][FU_DIV])
+          div_refills <= div_refills+1;
+        if (u_dut.flush_valid && u_dut.div_issue_valid_q) begin
+          if (u_dut.flush_all) div_global_kills <= div_global_kills+1;
+          else if (u_dut.sequence_after_backend(u_dut.div_issue_q.sequence_id, u_dut.flush_sequence))
+            div_flush_kills <= div_flush_kills+1;
+          else div_flush_keeps <= div_flush_keeps+1;
+        end
+        if (u_dut.dispatch_fire) begin
+          if (u_dut.rob_alloc_sequence[0] < last_dispatch_sequence) sequence_wraps <= sequence_wraps+1;
+          last_dispatch_sequence <= u_dut.rob_alloc_sequence[0];
+        end
+      end
+    end
+  end
+
+  task automatic run_div_stress;
+    logic [31:0] expected [0:19];
+    int timeout;
+    expected = '{32'hffffffdb,5,32'hfffffff9,32'hfffffffe,32'h3333332b,4,
+      32'hffffffff,32'hffffffdb,32'h80000000,32'hffffffff,32'h80000000,0,
+      1000,200,40,41,32'h80020000,3,32'h12345678,32'h06117228};
+    // Repeated architectural transactions exercise all DIV/REM signs, zero,
+    // MIN/-1, load->DIV bypass, dependent DIVs, queue backpressure and ROB wrap.
+    for (int round = 0; round < 16; round++) begin
+      write_count = 0;
+      send_pair('h1000,'hfdb00093,1,'h1004,'h00500113);
+      send_pair('h1008,div_instruction(3,1,2,3'b100),1,'h100c,div_instruction(4,1,2,3'b110));
+      send_pair('h1010,div_instruction(5,1,2,3'b101),1,'h1014,div_instruction(6,1,2,3'b111));
+      send_pair('h1018,div_instruction(7,1,0,3'b100),1,'h101c,div_instruction(8,1,0,3'b110));
+      send_pair('h1020,'h800004b7,1,'h1024,'hfff00513);
+      send_pair('h1028,div_instruction(11,9,10,3'b100),1,'h102c,div_instruction(12,9,10,3'b110));
+      send_pair('h1030,'h3e800693,1,'h1034,div_instruction(14,13,2,3'b101));
+      send_pair('h1038,div_instruction(15,14,2,3'b101),1,'h103c,'h00178813);
+      send_pair('h1040,'h800208b7,1,'h1044,'h00300913);
+      send_pair('h1048,'h0108a983,1,'h104c,div_instruction(20,19,18,3'b101));
+      drain_writes(20);
+      for (int index = 0; index < 20; index++)
+        if (write_rd[index] != index+1 || write_data[index] !== expected[index])
+          $fatal(1,"DIV stress round=%0d index=%0d rd=%0d actual=%08x expected=%08x",
+                 round,index,write_rd[index],write_data[index],expected[index]);
+    end
+    for (int preserve = 0; preserve < 2; preserve++) begin
+      write_count = 0;
+      memory_request_hold = 1;
+      send_pair('h5100,div_instruction(21,13,2,3'b101),preserve,'h5104,div_instruction(25,13,2,3'b101));
+      send_pair('h5108,'h0108ab03,0,0,0); // held LW x22,16(x17)
+      send_pair('h510c,{7'b0000000,5'd22,5'd22,3'b000,5'b01000,7'b1100011},1,
+                'h5110,div_instruction(23,13,2,3'b101)); // BEQ +8; wrong-path DIV
+      timeout = 0;
+      while ((!u_dut.div_issue_valid_q || !u_dut.u_div.busy_q || !(|dmem_req_valid)) && timeout < 100) begin
+        @(negedge clk); timeout++;
+      end
+      if (DivTagPipeline && timeout == 100) $fatal(1,"Did not construct a held raw DIV slot");
+      memory_request_hold = 0;
+      timeout = 0;
+      while (!redirect_valid && timeout < 150) begin @(negedge clk); timeout++; end
+      if (!redirect_valid || redirect_pc != 'h5114) $fatal(1,"DIV-slot branch recovery missing");
+      send_pair('h5114,'h02a00c13,0,0,0); // target: ADDI x24,42
+      drain_writes(preserve ? 4 : 3);
+      if (write_rd[0] != 21 || write_data[0] != 200 ||
+          (preserve && (write_rd[1] != 25 || write_data[1] != 200)) ||
+          write_rd[preserve+1] != 22 || write_data[preserve+1] != 'h12345678 ||
+          write_rd[preserve+2] != 24 || write_data[preserve+2] != 42)
+        $fatal(1,"DIV-slot younger kill/older keep architectural result mismatch");
+    end
+    // A faulting older load is held until two younger DIVs fill FU+raw slot.
+    // The load's precise trap must kill BOTH, not commit a wrong-path result.
+    write_count = 0;
+    send_pair('h6100,'hfc800d93,0,0,0); // x27=ffffffc8
+    drain_writes(1);
+    write_count = 0;
+    memory_request_hold = 1;
+    send_pair('h6104,'h000dae03,1,'h6108,div_instruction(21,13,2,3'b101));
+    send_pair('h610c,div_instruction(23,13,2,3'b101),0,0,0);
+    timeout = 0;
+    while ((!u_dut.div_issue_valid_q || !u_dut.u_div.busy_q || !(|dmem_req_valid)) && timeout < 100) begin
+      @(negedge clk); timeout++;
+    end
+    if (DivTagPipeline && timeout == 100) $fatal(1,"Did not construct full-flush DIV slot case");
+    memory_request_hold = 0;
+    timeout = 0;
+    while ((!redirect_valid || !trace_trap[0]) && timeout < 150) begin @(negedge clk); timeout++; end
+    if (!redirect_valid || trace_cause[0] != 5 || trace_tval[0] != 'hffffffc8)
+      $fatal(1,"Older load fault did not produce a precise DIV-slot global flush");
+    send_pair('h80000000,'h02a00c13,0,0,0);
+    drain_writes(1);
+    if (write_rd[0] != 24 || write_data[0] != 42) $fatal(1,"DIV escaped global trap flush");
+    if (DivTagPipeline && (div_wait_cycles == 0 || div_refills == 0 || div_flush_kills == 0 ||
+        div_flush_keeps == 0 || div_global_kills == 0 || sequence_wraps == 0))
+      $fatal(1,"Missing DIV slot coverage wait/refill/kill/keep/global/wrap: %0d/%0d/%0d/%0d/%0d/%0d",
+        div_wait_cycles,div_refills,div_flush_kills,div_flush_keeps,div_global_kills,sequence_wraps);
+    $display("DIV raw-tag stress PASS: wait=%0d refill=%0d younger-kill=%0d older-keep=%0d global-kill=%0d wraps=%0d",
+      div_wait_cycles,div_refills,div_flush_kills,div_flush_keeps,div_global_kills,sequence_wraps);
+    $finish;
   endtask
 
   always @(negedge clk) begin
@@ -228,6 +358,8 @@ module rv_backend_int_tb #(parameter bit AguLoadBypass = 1'b0,
     repeat (4) @(posedge clk);
     @(negedge clk);
     rst_n = 1'b1;
+
+    if (DivStressOnly) run_div_stress();
 
     // Independent producers followed by an older MUL and younger ADD.
     send_pair(32'h1000, 32'h0050_0093, 1'b1,

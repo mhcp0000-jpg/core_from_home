@@ -4,7 +4,8 @@ param(
   [string]$BuildRoot = "C:\rv_build\block_tests",
   [switch]$RtlAssertions,
   [ValidateRange(1, 32)]
-  [int]$BuildJobs = 4
+  [int]$BuildJobs = 4,
+  [string[]]$OnlyTests = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -206,6 +207,16 @@ foreach ($width in @(32, 64)) {
     "tb/unit/backend/rv_exec_result_buffer_depth2_tb.sv") }
 }
 
+foreach ($ports in @(2, 3, 4, 6)) {
+  $tests += @{ Top = "rv_issue_arbiter_equiv_tb"; ParameterArgs = @("-GExecPorts=$ports"); Files = @(
+    "rtl/rv_ooo_pkg.sv", "rtl/backend/rv_issue_arbiter.sv", "tb/unit/backend/rv_issue_arbiter_equiv_tb.sv") }
+}
+
+if ($OnlyTests.Count) {
+  $unknownTests = @($OnlyTests | Where-Object { $_ -notin $tests.Top })
+  if ($unknownTests.Count) { throw "Unknown test names: $($unknownTests -join ', ')" }
+  $tests = @($tests | Where-Object { $_.Top -in $OnlyTests })
+}
 try {
   & subst $drive $repoRoot
   if ($LASTEXITCODE -ne 0) { throw "Failed to map $repoRoot to $drive." }
@@ -217,6 +228,7 @@ try {
     $env:PATH = (Join-Path $W64DevkitRoot "bin") + ";" + $oldPath
 
     foreach ($test in $tests) {
+      if ($OnlyTests.Count -and $test.Top -notin $OnlyTests) { continue }
       $testBuild = Join-Path $BuildRoot $test.Top
       New-Item -ItemType Directory -Force -Path $testBuild | Out-Null
       $mappedSources = $test.Files | ForEach-Object {

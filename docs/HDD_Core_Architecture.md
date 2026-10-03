@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.20 queue availability / sequential BTB prelookup / FIFO-age SB forwarding / parallel PMP priority; server STA pending (2026-10-01) |
+| 상태 | v1.18.21 backend/LSQ timing candidate; matched functional regression PASS, server STA pending (2026-10-03) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -14,7 +14,54 @@
 
 ## 0. Executive Summary
 
-최신 성능 채택 기준(2026-10-02 사용자 결정): 동일 CoreMark 입력·설정에서 **IPC ≥ 1.25**를 유지하고 클럭 개선을 확인한 후보는 채택할 수 있다. 기존 IPC 1.3 유지 조건보다 timing pipeline의 선택 폭을 넓힌 결정이며, 실제 2nm 환경의 1.2GHz 목표는 그대로다. 로컬 Nangate45 delay는 후보 screening용이고 실제 서버 Fmax로 환산하지 않는다.
+최신 성능 채택 기준(2026-10-02 사용자 결정): 동일 CoreMark 입력·설정에서 **IPC ≥ 1.25**를 유지하고 클럭 개선을 확인한 후보는 중간 단계로 채택할 수 있다. timing pipeline의 선택 폭을 넓힌 결정이며, 최종 활성 목표 **실제 2nm 환경의 1.2GHz + 동일 CoreMark IPC1.3**는 그대로다. 로컬 Nangate45 delay는 후보 screening용이고 실제 서버 Fmax로 환산하지 않는다.
+
+### 0-A. 서버 합성용 현재 버전과 검증 범위 (2026-10-03)
+
+이 절은 뒤의 prototype/pending 이력보다 우선하는 현재 배포 상태다. 이번 버전은 성능 목표 달성판이 아니라 **실제 서버 STA로 효과를 확인할 기능 검증된 timing 후보**다. 최신 LSQ 후보를 production RTL에 반영했으며 실제 실행된 SoC와 합성 snapshot의 core source 31개를 SHA256로 대조해 일치시켰다. 후속 ROB head-read, decoded PRF, committed-RAS overlay 실험은 이 서버용 버전에 넣지 않았다.
+
+| 서버 elaboration 조건 | 값/주의 |
+|---|---|
+| Top / filelist | `rv_ooo_core` / 기존 `sim/xcelium/sources_core.f`; `.f` 수정 없음 |
+| 데이터/주소 | 기존 RV32 구성; SoC/TIM 메모리는 top 밖이며 core 내부 PRF/IQ/ROB/LSQ FF는 포함 |
+| Pipeline 옵션 | `BRANCH_TAG_PIPELINE=1`, `DIV_TAG_PIPELINE=1` |
+| LSU 옵션 | `AGU_LOAD_BYPASS=1`, `EARLY_LOAD_SELECT=1` |
+| 나머지 | `COMPATIBLE_PAIR_SELECT=0`, `BR_CHECKPOINTS=8`; ROB48/IQ56/LQ24/SQ16/PRF80 기존 geometry 유지 |
+| Reset / constraints | FF reset 제거 금지; 이전 서버와 동일 library/SDC/load/fanout 조건으로 비교 |
+
+**중요:** `AGU_LOAD_BYPASS`, `BRANCH_TAG_PIPELINE`, `DIV_TAG_PIPELINE`의 RTL 기본값은 호환성을 위해 여전히 0이다. 합성 툴의 elaboration parameter override에서 위 값을 명시하지 않으면 이 절의 IPC/구조를 측정한 구성과 다르다. 시뮬레이션 top에서는 이름이 `CoreAguLoadBypass`, `CoreBranchTagPipeline`, `CoreDivTagPipeline`이며 core parameter로 전달한다. synthesis `SYNTHESIS` define은 검증용 assertion 제외 목적이지 pipeline 옵션을 켜는 방법이 아니다.
+
+| 포함한 변경 | 줄이려는 경로 / 기능 계약 |
+|---|---|
+| Branch/DIV tag staging 옵션 | LSU/WB wakeup→IQ→PRF→branch/div 입력을 tag 보관 경계로 분리. precise flush/generation 확인과 operand read 시점은 HDD §5의 상세 설명을 따른다. 추가 latency 영향은 아래 동일 CoreMark 측정에 포함했다. |
+| WB / ROB | WB saturated rank reduction과 ROB live CAM을 균형 tree로 구성. ROB entry write 주소는 상수화해 late completion의 array-wide partial-write network를 줄였다. retire/allocate/flush 및 duplicate completion 우선순위 유지. |
+| Result buffer / IQ / issue selector | DEPTH2 result buffer는 payload 이동 대신 circular cursor, IQ payload는 balanced selection, issue arbiter는 호환 가능한 port pair를 병렬 비교. FIFO 순서와 in-order dual retire 정책 유지. |
+| LSQ eligible/age 선택 | load 존재 여부는 eligibility OR로 독립 판정. 원래 top-two tournament topology는 유지하되 sequence/index mux 대신 one-hot identity를 전달하고 pair age를 먼저 비교한다. 같은 sequence의 index tie-break와 정확한 half-window 동작도 유지. |
+| Store-to-load forwarding | SQ의 youngest matching older store를 병렬 선정. 부분 byte overlap이나 data 미준비면 stall하고 더 오래된 full-cover store로 우회하지 않는다. unknown older-store 주소는 기존 보수적 stall. unsigned age subtraction 하나로 양방향 비교를 공유해 면적 증가를 줄였다. |
+| Commit-ready availability | LSQ ready를 request-valid와 독립적인 query로 계산해 trap/flush→commit-valid→SQ-ready→retire feedback을 줄인다. ready는 invalid cycle에 1일 수 있지만 queue pop/SB enqueue/MMIO/error 효과는 여전히 valid와 기존 flush 조건을 충족해야 한다. execute 시 store 외부 가시화 금지 규칙은 유지. |
+
+| 완료한 측정/검증 | 결과와 정확한 범위 |
+|---|---|
+| 실제 SoC CoreMark, 기존 predictor, iter2 | timed **439557 cycles / 576450 instret = IPC1.311434**, CRC/status9, host exit0. 변경 전 동일 옵션 구성과 profiler 전체 SHA256 `B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D`까지 동일. short run이며 공식 인증 CoreMark 점수는 아니다. |
+| 측정 구간 | profiler는 439613 cycles/576462 retire로 timing marker 구간과 다르다. timed IPC 계산에 이 두 구간의 값을 섞지 않는다. |
+| CoreMark ELF identity | SHA256 `33FE48D15F11A4A396D821FA1FEECAC527E8322A6AF61B8797DEBB2F02AF69AC` |
+| C/FP 및 backend integration | signature `009e00b9`/exit0; trap, interrupt, CSR, PMP, unmapped memory, server08c8 SH/LBU 시나리오 PASS. 전체 ISA 검증 완료라는 의미는 아니다. |
+| 실제 LSQ directed assertion test | EARLY0/1×AGU0/1 네 구성 PASS. |
+| 원본943fcae 대비 random differential | 32/64-bit PADDR, default24/16 및 odd7/5·small4/4의 네 구성×60000 cycles PASS. commit-ready는 valid 때만 비교, **모든 다른 output/original state는 그대로 비교**; protocol SVA는 이 arbitrary-stimulus 검사에서 비활성이다. |
+| Commit-ready 분리 formal | 직전 shared-age RTL 대비 LQ4/SQ4 flags4 + default24/16 + odd7/5 PADDR64의 6구성 two-state 동등성 PASS. ready 관측만 valid로 qualified, 나머지 output/state는 모두 비교. store effect-valid를 제거한 잘못된 negative control은 SB enqueue 등466개 미동등성으로 reject. |
+| 전체 LSQ formal의 한계 | 최적화 단계별 작은 geometry/선택 알고리즘 증거는 HDD §5-29~32의 범위대로만 인정한다. 원본 default24/16에 대한 전체 unbounded proof, arbitrary X/Z equivalence 또는 전체 ISA signoff라고 주장하지 않는다. |
+| LSQ 단독 N45 A/B | 동일 full-array/reset 모델 **2994.29→2342.15ps (−21.78%)**, **72524.368→79109.198µm² (+9.08%)**. private 2nm Fmax로 환산 불가. |
+| 전체 코어 / 실제 서버 | 새 LSQ 포함 whole 합성은 아직 미완료. 기존 완료 후보 최고 N45 screening3204.62ps; 후보에 따라3237.40/3265.54ps로 오히려 느린 경우도 있었으므로 leaf 개선을 whole 개선으로 확대하지 않는다. **실제 1.2GHz 달성은 서버 STA 확인 전 미증명.** |
+
+재현용 기존 Windows runner 예(ELF 경로는 실제 파일로 바꾼다):
+
+```powershell
+.\scripts\run_soc_elf_test.ps1 -ElfPath <coremark.elf> -BuildRoot .\out\server_candidate_soc -RtlAssertions -CoreAguLoadBypass -CoreBranchTagPipeline -CoreDivTagPipeline -PerfPath .\out\server_candidate_perf.json
+.\scripts\run_full_core_timing.ps1 -TopModule rv_ooo_core -BuildRoot .\out\server_candidate_whole -BranchTagPipeline -DivTagPipeline
+python scripts/check_lsq_random_equivalence.py --reference 943fcae --width 32 --loads 24 --stores 16 --early 1 --bypass 1 --cycles 60000 --qualified-commit-ready --output out/server_candidate_lsq_equiv
+```
+
+`run_full_core_timing.ps1`는 N45 screening만 수행하며 commercial server synthesis를 대체하지 않는다. 서버에서는 `rv_ooo_core`와 위 parameter 값을 직접 elaboration한다. 이전과 같은 constraints에서 **launch FF / capture FF / cell·net 경로 / arrival time / required time / slack / top area**를 보내면 다음 후보를 실제 worst path에 맞춰 선정할 수 있다. 1.2GHz 주기는 약0.833ns지만 조합 논리 arrival budget은 `period − setup − uncertainty ± skew`이며 setup/clock 조건을 무시한 0.833ns 전체가 아니다.
 
 이 문서는 코어와 초기 SoC를 구현할 때 우선하는 단일 설계 기준이다. 모듈 이름만 나열하지 않고 각 블록의 목적, 저장 상태, 상태 전이, 불변조건, 성능·복잡도 trade-off를 함께 설명한다. 현재 목표는 학습과 검증이 가능한 baseline을 만들되, 인터페이스와 recovery 구조는 향후 상용화·RV64·S-mode/MMU 확장을 막지 않도록 설계하는 것이다.
 
@@ -6207,10 +6254,860 @@ Fine sampled peak private는 5.76 GiB, Flatten은 9.54 GiB였다. 최종 pre-ABC
 111817 `DFF_X1`, 총 2973290 cells이고 memory/미변환 word-level 연산은 0개다.
 35개 `$scopeinfo`는 Yosys가 남기는 계층/source-location metadata이며 실제 logic이나
 memory boundary가 아니므로 word-level 검사에서만 제외한다. 전체 netlist
-`out/full_core_checkpoint_flops_87165a7/pre_abc.il` 생성 뒤 ABC를 실행 중이며
-**아직 delay/area/Fmax 결과는 없다**. physical 2nm STA/clock setup/배선 부하는 이
+`out/full_core_checkpoint_flops_87165a7/pre_abc.il` 및 ABC가 모두 exit0으로 완료됐다.
+Nangate45 ABC delay는 3284.24ps, mapped area는 1664601.400µm²이며 ABC는
+6127.43초, sampled peak parent private memory 9.47GiB였다. 최악 경로의 시작은
+core input `dmem_rsp_id_i[1]`으로 서버의 LSU forward FF 시작점과 다르다.
+physical 2nm STA/clock setup/배선 부하는 이
 공개 library 결과로 대체하지 않으며 서버와 동일한 start/end가 실제로 포함되는지
 확인한 다음 후보를 비교한다. 최신 채택 IPC 하한은 1.25다.
+
+후속 full-array 구조 추적은 `scripts/trace_full_array_path.py`로 실행한다.
+두 번의 streaming pass와 compact numeric array를 사용해 2973290개 cell을 모두
+검사하면서 Python의 cell dictionary를 수백만 개 만들지 않는다. memory/미지원
+cell/multiple driver/선택 cone의 combinational cycle은 성공 결과로 취급하지 않고
+오류로 거부한다. source와 endpoint는 실제 FF의 public alias로 제한하며 중간 FF는
+경로를 끊는다. 명시적인 input-source/exact-node 옵션도 지원한다. 작은
+positive/negative fixture 13건은
+`scripts/test_trace_full_array_path.py`로 검증했다.
+
+```powershell
+python scripts/trace_full_array_path.py out/full_core_checkpoint_flops_87165a7/pre_abc.il `
+  --src forward_valid_q --to branch_actual_target_q --top 3 `
+  --json out/full_core_checkpoint_flops_87165a7/forward_to_branch_structural.json
+# 같은 이름의 기존 report는 덮어쓰지 않는다. 다시 실행하려면 새 report 이름을 지정한다.
+```
+
+실제 이 netlist에서 두 source FF bit와 8192 endpoint FF bit를 찾았고,
+`forward_valid_q[0] → direct_wake_valid[5] → IQ source_ready_now → ready_now →
+age reduction → am_hot → sel_pl → INT PRF read → bypass → BRU indirect_target →
+branch_actual_target_q`를 확인했다. 최장 구조 경로는 141 primitive gates /
+166.81 heuristic units였다. 이 값은 **ns가 아니며** ABC가 재균형하는 OR-chain을
+과대평가할 수 있다. Boolean path sensitization/배선/clock setup을 검증하지 않으므로
+서버 STA의 critical delay를 이 값에서 계산하지 않는다. 약246MB private memory로
+전체 분석을 마쳤으며 output JSON에는 입력 netlist SHA-256을 보관한다.
+
+이 근거로 우선 IQ 후보 payload/class/store-ready의 `acc |= masked_entry` loop를
+padding-zero balanced tree로 바꾼 **후보**를 만들었다. 56개 leaf면 선택 AND 뒤의
+OR-depth는 6단이다. 모든 entry의 masked payload를 OR한다는 의미는 기존과 같고,
+추가 FF/stage·issue 정책·candidate 순서·발행/완료 latency는 변경하지 않는다.
+동일 tree에 source-ready(store final-phase)도 함께 포함해 선택 규칙을 유지한다.
+4/7/56-entry 각30000-cycle 이전 immutable943fcae와 all-output cosim은 통과했다.
+fresh assertion-enabled SoC에서 같은 ELF로 실행한 CoreMark는 공식431358cycles /
+576450instret / IPC1.336361이고 profiler의 모든 counter와 JSON SHA-256
+`2BE75F814945B8A2BFD6ACEF780D759148EDFE99C6AE0D4BEBA385C059B31355`도
+기존 기준과 동일하다. CRC e9f5/e714/1fd7/8e3a/72be, 짧은2iteration 실행 status9,
+Host exit0을 확인했다. 같은 fresh executable의 C/FP self-check009e00b9/exit0도
+통과했다. 하지만 timing A/B가 끝나기 전에는 클럭 개선/채택으로 간주하지 않는다.
+
+전체-array IQ 단독 A/B는 동일 runner의 `-TopModule rv_issue_queue`로 수행할 수 있다.
+ENTRIES56/WRITEBACK_PORTS8/PAIR0이며 reset과 모든 배열을 유지한다. baseline은
+`-SourceRoot out/full_core_checkpoint_flops_87165a7/snapshot`을 지정해 실제 frozen
+source를 재사용하고, 후보는 현재 tree에서 새 BuildRoot로 실행한다. input SHA를
+비교해야 하며 현재 Git HEAD만으로 baseline source identity를 판단하지 않는다.
+이 IQ 단독 결과는 **전체 core timing을 대체하지 않는다**. 기본 TopModule은 계속
+`rv_ooo_core`이며 production filelists/top ports는 변경하지 않는다.
+
+IQ A/B는 이후 두 실행 모두 전체 단계 exit0으로 완료됐다. 같은 library/tool/constraint/
+target1000ps, reset-retained/all-array, 20048 DFF 조건이며 snapshot의 source SHA 차이는
+`rv_issue_queue.sv` 하나뿐이다.
+
+| IQ 단독 full-array 후보 | ABC delay | mapped area |
+|---|---:|---:|
+| frozen baseline | 1347.51ps | 300687.996µm² |
+| explicit balanced payload tree | 1315.50ps | 299808.866µm² |
+
+delay −32.01ps(−2.38%), area −879.130µm²(−0.29%)다. baseline의 ABC worst는
+`src_phys_q[9] → source_ready_now → ready_now → age tree → payload select →
+candidate_final_phase → IQ state`이며 서버의 BRU endpoint와 다르다. 그러므로 이
+결과만으로 전체 코어 clock 개선/1.2GHz 달성을 주장하거나 최종 채택하지 않는다.
+현재 `out/full_core_iq_payload_tree`에서 full candidate Coarse/Map은 exit0으로 완료했고,
+core baseline/candidate snapshot의 source SHA 차이도 IQ 한 파일뿐임을 확인했다.
+baseline full ABC가 끝난 뒤 충분한 available commit을 확인해 후보 Fine/Flatten/ABC를
+진행한다. 두 큰 Fine/Flatten 실행을 동시에 올려 안전 guard를 유발하지 않는다.
+
+###### 5-19. 실험: 분기 전용 raw-tag issue/execute 경계
+
+`BRANCH_TAG_PIPELINE=1`은 **아직 채택하지 않은** 분기 전용 파이프라인 후보다.
+backend→core→SoC parameter로 연결하며 기본값은 모두 0이다. issue 폭은 계속2,
+논리 분기 port는 P0 하나, INT ALU는2개다. 새로운 branch raw-tag slot을 넣었다고
+3-wide issue로 바뀌는 것은 아니다. 외부 top port와 production filelists는 불변이다.
+
+기존 경로는 `LSU result-valid → IQ wake/age/payload → PRF read/bypass → BRU →
+branch_actual_target_q`가 한 cycle에 이어졌다. operand **값**을 등록하면 IQ→PRF까지
+첫 cycle에 남는다. 이 후보는 PRF 앞에 **tag와 제어 정보**를 등록한다.
+
+```text
+cycle N:   producer wake → IQ oldest-two/select → branch_issue_q(raw tags/control)
+                                                     │ clock boundary
+cycle N+1: registered tags → INT PRF/bypass → BRU → fast0 result buffer + actual metadata
+cycle N+2: fast0 completion → branch recovery/predictor training/ROB completion
+```
+
+`branch_issue_q`는 ROB sequence, INT source tag2개/source class2개, branch operation,
+PC/immediate, instruction length, prediction metadata, destination valid/class/tag를
+보관한다. `branch_issue_valid_q`가 유효성을 나타내고 모든 bit는 reset에서0으로
+초기화한다. INT PRF에는 registered tag가 구동하는 전용 read port2개(8→10)를
+추가한다. FP PRF는8R 그대로다. 지연을 실제로 분리하기 위한 비용이며 read port
+추가의 area/fanout 영향은 전체 코어 mapping/서버 STA에서 함께 확인해야 한다.
+
+| 조건 | IQ의 분기 수락 / raw slot 동작 | fast0 input |
+|---|---|---|
+| slot 비어 있음 | P0 분기는 slot에 tag/control 저장 | 선택된 INT만 기존 fall-through 실행 |
+| slot 유효, fast0 ready=1 | 기존 분기 consume, 새 분기를 같은 edge에 refill 가능 | 기존 slot의 분기 sequence/destination/link/exception/target |
+| slot 유효, fast0 ready=0 | 새 분기 수락 금지, slot payload/valid 유지 | 기존 분기는 backpressure 대기 |
+| slot 유효인 cycle | P0 INT 발행 금지; P1 INT 등 다른 resource는 기존 규칙 유지 | 같은 fast0 input에 INT와 분기가 동시에 들어오지 않음 |
+| flush-all / slot이 flush sequence보다 younger | 새 수락/실행을 막고 해당 slot invalidate | 잘못된 경로의 completion 없음 |
+| younger-flush지만 slot이 older/equal | payload 보존, flush cycle에는 실행·refill하지 않음 | 다음 cycle부터 재개 |
+
+INT producer가 issue 당시 wake했지만 아직 PRF에 쓰지 못했다면, 다음 cycle에도
+held live producer의 direct bypass로 값을 읽는다. source physical tag는 그 live
+consumer보다 younger instruction의 commit 전에 재활용할 수 없다는 rename/ROB
+불변조건에 의존한다. 실행 시 source-ready 또는 live bypass가 실제로 존재하는지,
+blocked slot이 안정적으로 유지되는지, fast0 INT와 branch 소유가 겹치지 않는지를
+clocked assertion으로 확인한다. IQ의 predecoded class-onehot을 slot 수락/INT request
+valid에 사용해 encoded FU class를 늦게 재해독하지 않는다.
+
+branch 실제 taken/target 기록은 **새로 issue한** sequence가 아니라 **실제로 BRU를
+실행한 slot**의 sequence로 저장한다. fast0 buffer도 그 slot의 destination/sequence를
+받는다. 그래야 old consume/new refill이 겹치는 cycle에 두 분기의 metadata가
+섞이지 않는다. ROB in-order commit, checkpoint restore/release, precise store
+visibility 규칙은 변경하지 않는다. 모든 branch opcode에 적용하며 CoreMark의
+특정 PC나 분기 패턴을 선택하는 정책은 없다.
+
+첫 prototype의 같은2iteration CoreMark는439557cycles/576450instret/
+IPC1.311434(기존431358 대비+8199cycles/+1.90%)였다. CRC와 status9/Host exit0은
+통과했으며 checkpoint stall28895→29531, branch mispredict7881→7752였다.
+wrong-path timing이 달라져 predictor counter까지 동일할 필요는 없지만, 같은 input과
+CRC/architectural result/instret 및 실제 timing 개선을 확인해야 한다. predecoded-class
+factoring 후의 CoreMark profiler hash도 첫 prototype과 동일했다:
+`B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D`.
+옵션0 fresh rebuild는 기존 profiler hash2BE75F…/IPC1.336361와 동일하다.
+
+첫 prototype의 C/FP009e00b9/exit0, assertion-enabled backend integration의
+interrupt/MRET/ECALL/EBREAK/PMP/misaligned/unmapped load-store 검사도 통과했다.
+HTIF full-SoC 외부 접근 시험은 cause/tval5/ffffffc8,7/ffffffc8,4/ffffffcb,6/ffffffcb,
+5/ffffffcb,7/ffffffcb 및 HTIF TEST PASS/exit0을 확인했다. 처음에 HTIF ELF를
+일반 HostIF top으로 실행한 timeout은 **잘못된 harness 선택**이므로 RTL 기능 실패나
+검증 성공으로 세지 않는다. 추가 source-availability assertion을 넣은 최종 fresh
+`out/branch_tag_availability_soc`도 CoreMark/C-FP/exit0을 통과했다. 측정 종료까지
+593263개 commit의 PC/instruction/trap/cause 흐름도 기존 후보와 일치했다.
+full-array `out/full_core_branch_tag_pipeline`은 ABC까지 exit0으로 완료했고
+3204.62ps / 1680663.544µm²다. baseline 대비 global ABC delay -2.42%, area +0.96%이며
+이 후보의 worst 시작은 `dmem_rsp_id_i[6]`다. **2nm 서버 clock 개선은 미확인**이다.
+옵션1의 IPC가1.3을 넘었다는 사실만으로
+전체 목표 달성/최종 채택을 선언하지 않는다.
+
+```powershell
+# 비교 가능한 실제 source/ELF hash와 parameter manifest를 executable 옆에 저장한다.
+./scripts/run_soc_elf_test.ps1 -ElfPath out/separate_fill_soc/payload.elf `
+  -BuildRoot out/branch_tag_trial -CoreAguLoadBypass -CoreBranchTagPipeline `
+  -RtlAssertions -PerfPath out/branch_tag_trial_perf.json
+./scripts/run_integration_tests.ps1 -BuildRoot out/branch_tag_integration `
+  -AguLoadBypass -BranchTagPipeline -RtlAssertions
+./scripts/run_full_core_timing.ps1 -BuildRoot out/full_branch_tag_trial `
+  -BranchTagPipeline -StopStage Map
+```
+
+###### 5-20. 실험: ROB live CAM와 WB age-rank 조합 깊이 단축 (2026-10-02)
+
+**문제 위치와 분석 범위.** §5-19 후보의 전체 ABC worst는 core의 memory response
+ID input에서 시작한다. 해당 ABC endpoint를 full pre-ABC netlist의 정확한 alias로
+다시 추적한 결과 `dmem_rsp_id_i[6] → raw/wb sequence → wb_source_live[8] →
+source_ready[1] → g_fast[1].u_buffer.g_depth2.pop → 결과 buffer D`를 확인했다.
+118 primitive gates/155.71 heuristic units는 연결 구조의 깊이이며 **ns/STA가 아니다**.
+보고서는 `out/full_core_branch_tag_pipeline/response_id_worst_structural.json`에
+netlist SHA와 함께 저장한다. ABC global 3204.62ps를 서버 FF-to-FF path 시간으로
+그대로 사용하거나 이 구조 점수로 2nm 시간을 환산하지 않는다.
+
+**ROB live query.** 48-entry resident-generation CAM은 그대로 유지한다. 각 leaf는
+`entry.valid && entry.sequence_id == query_sequence`이고 64-leaf까지 zero padding한다.
+내부 node는 좌우 child의 OR, root가 query 결과다. 48개 결과를 procedural
+`if (hit) live=1`로 직렬 누적하는 대신 OR depth를 6단으로 명시한다. sequence
+bitmap이나 새 generation state, 파이프라인, 새 FF는 추가하지 않는다.
+
+1. query sequence와 48개 entry sequence를 병렬 비교한다.
+2. entry가 valid인 비교 결과만 leaf hit로 인정한다.
+3. 64→32→16→8→4→2→1 균형 OR reduction으로 하나의 resident bit를 만든다.
+4. WB arbiter는 이전과 같은 resident bit를 같은 cycle에 받는다.
+
+flush 입력이 들어온 cycle의 query는 **clock edge 이전 resident entries**를 보고한다.
+WB arbiter가 별도의 flush/age mask로 younger 결과를 discard하고, edge에서 ROB
+entries가 갱신된다. 기존 unit test의 pre-flush `111`→post-flush killed sequence `0`
+계약을 바꾸지 않는다. simulation-only `live_cam_reference`와 매 query의 clocked
+assertion은 기존 linear CAM 알고리즘과의 일치를 검사한다. reset/sequence-wrap/
+allocate/retire/recovery 이후도 같은 불변조건을 지킨다.
+
+**WB bounded unary rank.** 11개 completion source, INT2/FP2/ROB4 port는 불변이다.
+기존 이진 popcount의 덧셈 carry와 `< available_ports` 비교 대신 rank4까지만
+보관하는 thermometer vector를 사용한다. bit k는 older contender가 **k+1개 이상**
+임을 뜻한다. 예를 들어 0/1/2/3/4+ contenders는 `0000/0001/0011/0111/1111`이다.
+
+균형 binary tree의 leaf는 `{zero padding, contender}`다. 두 subtree를 합칠 때
+`count>=k`는 왼쪽>=k 또는 오른쪽>=k, 또는 왼쪽>=j이고 오른쪽>=k-j인 모든
+분할의 OR로 계산한다. 덧셈 carry 없이 AND/OR로 합치며 port limit 이상은 포화한다.
+일반 parameter에서는 rank width를 `min(SOURCE_COUNT,max(INT,FP,ROB ports))`로
+정한다. source보다 큰 port count도 처리하고 존재할 수 없는 output slot은 0이다.
+
+- INT port가 2개이면 `!rank[1]`, ROB port가 4개이면 `!rank[3]`가 capacity 조건이다.
+- 정확한 rank0는 `!rank[0]`, rank1은 `rank[0] && !rank[1]`이다.
+- resource-eligible source union의 completion rank도 같은 알고리즘을 쓴다.
+- wrap-aware older sequence 비교와 동일 sequence의 낮은 source-number 우선 규칙,
+  stale/flush discard, exception write 금지, 출력 payload/fflags/wakeup은 불변이다.
+- grant 선택, source ready, payload 및 동시 completion timing은 이전과 같다.
+  새 register/stage/ready speculations는 없으므로 IPC 비용이 없어야 한다.
+
+| 같은 Nangate45 WB 단독 조건 (11 source, 2/2/4 ports) | ABC delay | mapped area |
+|---|---:|---:|
+| frozen binary rank baseline | 1501.60ps | 11368.574µm² |
+| bounded unary rank 후보 | 1278.74ps | 10577.756µm² |
+
+WB 단독 delay -14.84%, area -6.96%다. leaf delay는 전체 core 결과를 대체하지 않는다.
+ROB 단독도 같은 runner/reset/all-array/48-entry/11-query/4-completion 조건에서
+1526.65ps / 213495.590µm² → 1159.72ps / 214752.972µm²로 완료했다
+(delay -24.04%, area +0.59%). **이 ROB global worst의 시작/끝은 양쪽 모두
+head_q→retire_next_pc_o**이며 live-query 경로 자체의 ns 측정이 아니다.
+named structural query0 경로는 53→12 primitive gates로 줄었고 OR tree 6단을 확인했다.
+`out/full_rob_live_baseline/query0_structural.json`과
+`out/full_rob_live_tree_candidate/query0_structural.json`은 heuristic units이지 ns가 아니다.
+출력 동등성은 immutable943fcae와 30000 random vectors로 비교했고, unary count/
+capacity/rank equality는 11-bit mask 전체 **2048개**를 builtin count oracle로 검사했다.
+`out/wb_unary_oracle_equivalence/wb/result.log`가 결과다. 기존 assertion-enabled
+ROB 및 WB unit도 통과했다. Icarus는 기존 ROB SVA syntax를 처리하지 못했으므로
+그 compile 시도는 PASS로 세지 않고 Verilator assertion-enabled 결과를 사용한다.
+
+fresh assertion-enabled CoreMark는 439557 timed cycles/576450 instret/IPC1.311434,
+CRC/status9/Host exit0이며 profiler SHA
+`B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D`가
+§5-19 후보와 동일하다. C/FP self-check009e00b9/exit0도 통과했다. 실제 source/tool/
+ELF/parameter hash는 `out/wb_rob_balanced_soc/run_manifest.json`에 보관한다.
+core 옵션은 AGU1/EARLY1/PAIR0/CP8/BRANCH_TAG_PIPELINE1이다.
+default0 fresh `out/wb_rob_balanced_default_soc`는 기존431358/576450/IPC1.336361와
+profiler SHA2BE75F…까지 일치했고 C/FP009e00b9/exit0도 통과했다. 최신
+assertion-enabled backend integration은 interrupt/MRET/ECALL/EBREAK/PMP/주소 fault를
+통과했다. HTIF full-SoC의 6-case aligned/misaligned/byte unmapped LW/SW/LBU/SB는
+각각 cause5/7/4/6/5/7 및 tvalffffffc8/ffffffcb, HTIF TEST PASS/Host exit0을 확인했다.
+
+전체 후보 `out/full_core_wb_rob_balanced`의 Coarse/Map은 완료했다. 첫 Fine PID10940은
+ROB leaf A/B와 큰 변환 단계의 memory peak가 겹치지 않게 의도적으로 종료했다.
+이 -1 exit는 RTL 실패 또는 성공으로 세지 않는다. frozen input과 Coarse/Map은
+보존했고 leaf 종료 후 `-StartStage Fine`으로 새 프로세스(session96333)에서 재개했다.
+첫 중단 결과는 `memory_schedule_stop_Fine.*`로 보관했다. 재개 Fine은 peak5.70GiB로
+완료했다. Flatten/ABC도 2026-10-03 완료했으며 ABC 5409.15s, parent sampled peak
+9.48GiB, exit0이다. 전체 결과는 **3288.24ps/1660893.36µm²**로 §5-19의
+3204.62ps보다 delay가 **2.61% 악화**했다. 따라서 leaf 개선을 전체 클럭 개선으로
+채택하지 않는다. 실제 서버 STA/1.2GHz 달성도 미확인이다. production filelist 불변.
+
+새 ABC worst의 start는 `u_backend.u_csr_file.pmpaddr_q[92]`, end는
+`$auto$rtlil.cc:3480:MuxGate$11260937`이다. 동일 pre-ABC 전체 모델의 exact-node
+추적(`pmp_worst_structural.json`)은 `PMP NAPOT range → LSU PMP deny → AGU completion
+→ WB complete_sequence[0] → ROB entries_q[1381]`을 확인했다. 총190 primitive gates /
+243.10 heuristic units이며, WB complete_sequence까지89.98units, 이후 ROB 기록
+구간이153.12units다. **이는 구조 경로이며 ABC mapped 구간별 ns나 sensitization
+증명은 아니다.** 공유 최적화 때문에 첫 source alias가 pmpaddr[122]로 표시된다.
+
+###### 5-21. 실험: DEPTH2 result buffer의 circular slot 저장 (2026-10-03)
+
+**목적.** WB ready/pop이 head payload 전체 복사를 제어하는 기존 shift FIFO 경로를
+제거한다. `rv_exec_result_buffer` DEPTH1은 그대로다. DEPTH2의 interface, latency,
+capacity2, `ready=(count<2)&&!flush` 규칙도 유지한다. full+pop에서 same-cycle push를
+허용하지 않는 기존 계약은 바꾸지 않는다.
+
+**상태.** payload는 `slots_q[0:1]` 두 고정 슬롯에 보관한다. XLEN32에서는 슬롯당
+128bits, XLEN64에서는224bits다. head/tail은 각1bit, count는2bits이며 reset에서
+모든 슬롯과 제어 FF를0으로 만든다. 기존 대비 제어 FF2개가 추가된다.
+
+**전이.** push는 tail 슬롯만 기록하고 tail을 반전한다. pop은 head만 반전하며
+payload를 복사하거나 지우지 않는다. 동시 push/pop은 non-full 상태에서 각각
+진행하고 count를 유지한다. 출력은 `slots_q[head]`, valid는 count!=0이다.
+invalid cycle의 payload는 don't-care이며 기존 shift FIFO와의 equality 대상이 아니다.
+
+flush는 두 유효 슬롯의 ROB age를 **독립적으로** 검사한다. issue completion 순서가
+program order와 같다고 가정하지 않는다. 둘 모두 keep면 포인터/순서를 유지하고,
+head만 keep면 count1/tail=!head, second만 keep면 head=!old_head/count1/tail=old_head,
+둘 모두 kill이면 count0/head0/tail0이다. flush 동안 transfer는 없으며 payload는
+이동하지 않는다. 이후 free 슬롯을 push가 덮어쓴다.
+
+**불변조건/검증.** count<=2, count1이면 head!=tail, nonempty push는 head와 다른
+슬롯을 기록하며 valid&&!ready&&!flush 동안 output stable을 assertion으로 검사한다.
+XLEN32/64 각200000-cycle reference queue test에서 push/pop/full/stall/reset/sequence
+wrap/임의 age 순서 selective flush가 PASS했다. 각 run push110733/pop106821/flush8669.
+fresh assertion-enabled CoreMark는 §5-19의439557cycles/576450instret/IPC1.311434 및
+모든 profiler counter/SHA B6DF3D7…를 보존했다. C/FP009e00b9, backend integration,
+HTIF6-case unmapped/aligned/misaligned fault도 PASS/Host exit0이다.
+
+동일 full-array/reset/Nangate45 buffer leaf는 shift561.91ps/2759.484µm² → circular
+540.38ps/2188.382µm²(−3.83%delay/−20.70%area)다. `out/full_core_circular_result_buffer`
+전체 후보는 Coarse/Map만 완료했다. **전체 clock 개선은 미확인**이며 leaf 개선만으로
+채택하지 않는다. 이 snapshot은 §5-20과 이 buffer만 포함하고 다음 ROB 후보는 없다.
+
+###### 5-22. 실험: ROB 엔트리별 고정 주소 쓰기 (2026-10-03)
+
+**문제/목적.** §5-20의 worst가 ROB 기록 FF로 끝나므로 가변 인덱스로 배열의 struct
+필드들을 갱신하는 allocation/retire 쓰기와 completion 쓰기가 겹치는 합성 구조를
+우선 분리한다. `rv_rob`에 state/stage/interface를 추가하지 않고 각 엔트리의 storage
+always_ff를 generate하여 쓰기 주소를 상수로 만든다. head/tail/count/next_sequence
+cursor는 별도 always_ff에서 기존 식으로 갱신한다.
+
+**우선순위.** reset은 payload 포함 전체0, global flush는 valid만0이다. selective flush는
+younger valid만 지우되 same-edge older/boundary completion을 기록한다. normal cycle은
+completion → retire → allocation 순서이며 후자가 같은 필드의 우선권을 가진다.
+completion의 duplicate sequence는 높은 port가 fflags/branch field를 덮어쓴다. 예외
+필드는 exception-valid인 높은 port만 덮어쓰므로 높은 non-exception completion이
+낮은 port의 예외를 지우지 않는다. generation 비교는 pre-edge resident state다.
+normal retire+동일 슬롯 allocation은 allocation이 우선하여 새 generation을 보존한다.
+
+**검증/진행.** immutable943fcae와 public output 및 모든 entry/head/tail/count/next-sequence
+cycle equality를 비교하는 helper를 동일-interface 후보에도 사용 가능하게 확장했다.
+RV32/64×4/7/48-entry 각60000cycles(총360000cycles) full-state equality PASS다. 기존 assertion-enabled
+ROB unit PASS, fresh CoreMark439557/576450/IPC1.311434 및 **모든 profiler counter/SHA
+B6DF3D7…가 동일**, C/FP009e00b9/Host exit0도 확인했다. 최신 assertion-enabled backend
+integration 및 HTIF6fault cause/tval/TEST PASS/exit0도 PASS다. default0 fresh CoreMark는
+431358/576450/IPC1.336361 및 모든 profiler counter/SHA2BE75F…를 보존했고 C/FP도
+009e00b9/exit0이다. finite cycle equivalence이지
+unbounded formal 또는 전체 ISA sign-off가 아니다.
+
+ROB leaf는 기존 live-tree1159.72ps/214752.972µm² → constant-entry1227.69ps/
+149535.358µm²다. **global leaf delay+5.86%, area−30.37%**이므로 leaf speedup이라고
+표현하지 않는다. 새 leaf worst는 head_q[0]→retire_instruction_o[55]이며 이전
+head_q→retire_next_pc와도 endpoint가 다르다. 동일 complete_sequence_i[0]→모든
+entry FF의 최장 primitive 경로는111→73gates,153.12→99.25heuristic units로 줄었다.
+pre-ABC cell 수799528→287231, resident state9386FF는 같으며 read/reset을 생략하지
+않았다. artifacts는 `out/full_rob_static_entry_candidate`와 기존 ROB tree run이다.
+
+전체 preABC에서도 **동일 pmpaddr_q[92] → 동일 ROB entries_q[1381] FF bit**를 exact
+`--srcbit/--tobit`으로 조회하여190→152gates,243.10→189.19heuristic units를 확인했다.
+PMP/LSU 구간은 그대로이고 complete_sequence까지89.98→89.94units로 거의 동일하다.
+따라서 감소분은 ROB 기록 구간이라는 구조적 근거다. 이 값 역시 ns 또는 mapped
+STA가 아니며 실제 worst 이동 여부는 ABC 완료 후 확인해야 한다. 새 tracer의
+exact FF-Q endpoint 선택은 내부 combinational node를 FF로 잘못 취급하지 않으며
+Q-bit positive/comb-node negative를 포함한 자체15tests PASS다. artifacts:
+`out/full_core_static_rob_candidate/pmp_to_same_rob_bit_structural.json`.
+
+whole snapshot `out/full_core_static_rob_candidate`는 §5-19/20/21과 이 후보를 포함한다.
+Coarse/Map/Fine/Flatten/ABC가 모두 완료했다(Fine peak3.81GiB/249.37s,
+Flatten7.23GiB/171.89s, 각 exit0). full preABC cells2458499/111794DFF이며 기존
+§5-20보다 primitive 수가 줄었지만 배열/PRF/IQ/read path를 생략한 것은 아니다.
+SoC 실제 compiled source 및 whole frozen source와 working-tree의 SHA mismatch가
+각0건임을 확인했다. ABC3894.30s/peak8.35GiB/exit0, 전체3341.68ps/
+1589876.679999µm²다. §5-20의3288.24ps 대비delay+1.63%, area−4.28%이며
+§5-19의3204.62ps 대비도delay+4.28%다. 따라서 **전체 timing 개선으로 미채택**이다.
+이45nm screening을 실제2nm1.2GHz 달성으로 해석하지 않는다.
+production filelist는 불변이다.
+
+###### 5-23. 최신 전체 worst 추적: memory response→IQ→PRF→DIV (2026-10-03)
+
+**관측 근거.** §5-22 ABC의 start는 `dmem_rsp_id_i[6]`, end는
+`$auto$rtlil.cc:3480:MuxGate$9507601`, mapped delay3341.68ps다. 같은 SHA의 전체
+preABC2458499-cell 모델에서 exact end를 추적한 artifact는
+`out/full_core_static_rob_candidate/dmem_id_worst_structural.json`이다. primitive
+91gates/118.85heuristic units로 다음 경로를 확인했다.
+
+1. flattened response ID[6]은 lane1의 ID[0], 즉 응답 LQ index의 한 bit다.
+2. `rv_lsu_cluster`의 `load_meta_*_q[response_lq_index]` 비동기 조회가 load 목적지
+   valid/live/class/tag를 만든다. ID는 반환 data bit가 아니다.
+3. 빈 WB skid는 fall-through하므로 metadata가 `direct_wake_valid[6]`으로 전달된다.
+   이 wakeup은 same-cycle IQ ready/age/select에 반영된다.
+4. 선택된 candidate의 tag로 INT PRF를 읽고 bypass와 실행-port operand mux를 지난다.
+   일부 preABC 공유 alias가 fp_read_addr로 표시되지만 실제 endpoint는 FPU가 아니다.
+5. `u_div.signed_overflow` 등의 요청 특수값 판정 및 result selection을 거쳐
+   **`u_backend.u_div.result_q[1]` FF**로 끝난다. tracer의 shortest alias인
+   source_data[97]은 DIV output32bit의 bit1이며, mapped.v/preABC의 source_data concat과
+   `div_result_data = u_div.result_q` 연결로 확인했다.
+
+**구조상 분할.** metadata+skid+wakeup까지20.59units, IQ select/read address까지58.68,
+INT PRF data까지77.75, bypass candidate operand까지90.95, port operand까지94.22,
+DIV result D까지118.85다. **구간별 mapped ns가 아니라 구조 heuristic 누적값**이므로
+이 비율을3341.68ps에 곱해 실제 delay로 주장하지 않는다. ABC의 mapped79-cell worst와
+preABC91-gate 구조 경로는 mapping 전후 표현도 다르며 동일 sensitized path 증명은 아니다.
+
+**의미.** DIV의32회 iterative division이 한 cycle에 펼쳐진 문제가 아니다. request
+accept edge에서 divide-by-zero 또는 signed MIN/−1 overflow의 결과를 즉시 result FF에
+기록하는 fast path가 load wakeup→IQ→PRF와 같은 cycle에 이어져 있다. BRANCH_TAG_PIPELINE은
+분기만 분리하므로 DIV/INT/LSU request의 issue→operand→execute 경로는 남아 있다.
+
+**당시 다음 후보(이후 §5-24에서 구현).** DIV만 IQ select 뒤 raw physical tags/operation/ROB generation/
+destination을 register하고 다음 cycle 전용 PRF read+bypass+DIV setup을 수행하는
+issue/execute 경계가 우선이다. 일반 ALU와 모든 load를 일괄1cycle 늦추는 변경과
+구분한다. DIV latency+1cycle, PRF read-port 및 slot-area 증가 가능성이 있으므로
+flush 시 younger slot kill/older preserve, operand availability, result backpressure,
+sequence wrap, signed/unsigned/word, zero/overflow 결과를 검증해야 한다. 현재 CoreMark
+전체 commit log에서 DIV/REM은13건이나 이것만으로 IPC 비용을0이라고 단정하지 않고
+동일 ELF fresh counter/CRC/trace와 전체 ABC를 다시 확인해야 한다. 이번 요청은
+추적이었으며, 당시 DIV pipeline은 RTL 변경/검증/채택하지 않았다. 후속 상태는 §5-24를 따른다.
+
+사용자 지정 다음 screening 목표는 동일 전체 모델 **2500ps 이하**다.3341.68ps에서
+841.68ps(25.19%) 이상 줄여야 하며, 한 경로를 분리해도 INT/LSU/FPU/IQ 등 다른
+경로가 worst가 될 수 있어 달성을 보장하지 않는다. 실제2nm clock/IPC 목표도 별도다.
+
+###### 5-24. DIV raw-tag issue/execute 경계 후보 (2026-10-03)
+
+**목적/범위.** §5-23의 memory response→wakeup→IQ→PRF→DIV setup을 두 cycle로
+분리한다. `rv_backend`, `rv_ooo_core`, `rv_soc_top`의 `DIV_TAG_PIPELINE` 기본값은
+0이며, 활성화 여부는 합성/실행 manifest에 기록한다. `rv_divider`의 iterative
+알고리즘, signed/unsigned 및 zero/overflow 결과 규칙은 바꾸지 않았다. 생산 filelist와
+top 외부 bus/interface는 불변이고 현재는 타이밍 채택 전 후보다.
+
+```text
+cycle N:   LSU/WB wake → IQ age/select → port arbitration → div_issue_q(raw tags)
+cycle N+1:                                registered tags → INT PRF → bypass → DIV
+                                           └ DIV busy이면 slot 유지
+```
+
+**보관 상태.** `div_issue_t`는 ROB sequence(8), source physical tag(2×7), source class
+(2×3), DIV op(2), word flag(1), destination valid(1)/tag(7)를 보관하며 별도 valid가
+있다. RV32에서 word flag는 상수로 제거되어 전체 모델 FF 증가량은39다. source **값**을
+select cycle에서 읽어 저장하는 구조가 아니므로 PRF mux가 raw-tag FF 앞에 이어지지 않는다.
+`INT_READ_PORTS = 8 + 2×BRANCH_TAG_PIPELINE + 2×DIV_TAG_PIPELINE`이며 DIV read base는
+`8 + 2×BRANCH_TAG_PIPELINE`이다. 두 flag가 모두 켜지면12 ports다. FP PRF ports는 그대로다.
+
+**상태 전이/타이밍.** 슬롯은 `!valid || div_req_ready`이면 IQ의 새 DIV를 받을 수 있다.
+비어 있는 슬롯은 divider가 busy여도 다음 DIV를 한 개 보관한다. divider가 request를
+소비하는 edge에 새 DIV를 동시에 refill할 수 있다. DIV FU는 다른 INT/MUL FU와 결과
+source가 독립적이므로 pending DIV 소비와 다른 P1 명령 발행을 동시에 허용한다.
+단독 DIV의 select→request는1cycle 증가하며 divider 내부 latency는 동일하다.
+valid+not-ready이면 metadata를 유지한다. reset은 valid와 payload를 모두0으로 만든다.
+
+**flush/불변조건.** flush cycle에는 divider request도 새 slot allocation도 발생하지
+않는다. younger selective flush는 sequence age 비교로 slot을 제거하고 older slot은
+보존한다. global trap flush는 모든 pending slot을 제거한다. 이미 실행 중인 divider의
+flush는 기존 divider 계약을 따른다. request 수락 때 두 INT operand가 PRF ready 또는
+유효한 same-cycle bypass로 제공되어야 한다. hold-stability, slot availability,
+source class(NONE/INT) 및 operand availability는 clocked assertion으로 확인한다.
+ROB age는 modular sequence 규칙이며 raw-tag 단계가 precise commit을 대신하지 않는다.
+
+**검증 근거.** `tb/integration/backend/rv_backend_int_tb.sv`의 `DivStressOnly` mode는
+일반 commit/bus protocol로16round의 signed DIV/REM, unsigned DIV/REM, zero, MIN/−1,
+DIV→DIV 의존성, LW→DIV bypass를 실행한다. wait3256cycle/refill145회, younger kill,
+older preserve, global access-fault flush, sequence wrap을 각각 실제 발생시켜 PASS했다.
+파일은 `out/div_tag_stress.log`이며 내부 force로 상태를 만들어 통과시킨 시험이 아니다.
+일반 integration의 trap/interrupt/MRET/ECALL/CSR/PMP/aligned/misaligned/unmapped와
+full-SoC HTIF6fault cause/tval/exit0도 PASS했다.
+
+동일 AGU1/EARLY1/PAIR0/CP8/BRANCH1에서 fresh CoreMark는 timed439557cycles,
+576450instructions, **IPC1.311434**이고 전체 profiler439613/576462 및 모든 counter의
+SHA256 `B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D`가
+DIV flag0과 같다. 전체 실행 종료 cycle까지 동일하다는 뜻은 아니다(DIV는 대부분 측정
+구간 밖). CRC/status9는 기존 short-run 계약이며 공식 CoreMark score 인증이 아니다.
+C-FP signature009e00b9/Host exit0도 PASS했다. BRANCH0/DIV0 기본값 fresh build는
+IPC1.336361/전체 counter SHA2BE75F…/동일 C-FP signature를 유지했다.
+XLEN32/PADDR32, XLEN64/PADDR56 × BRANCH0/1 × DIV0/1의8개 조합은 Verilator
+elaboration/assert/noUNOPTFLAT PASS이며 RV64 ISA 실행 signoff는 아니다. 별도 pyslang
+check는 설치 패키지 없음으로 실행 실패했으므로 RTL PASS로 기록하지 않는다.
+
+**전체 구조 추적/남은 병목.** 같은 full-array preABC 모델에서 exact
+`dmem_rsp_id_i[6]→u_div.result_q[1]`은91→41gates,118.85→58.19heuristic units로
+분리되었다. `div_issue_q→같은 result_q[1]`은42gates/53.92units다. 그러나 앞단
+`dmem_rsp_id_i[6]→div_issue_q`의 최장은75gates/100.26units이고 IQ ready/age/select
+뒤 `u_select`의 compatible-port 선택→older port 선택→younger port 재선택이 남아 있다.
+세 artifact는 `out/full_core_div_tag_candidate/*_structural.json`에 있으며 **실제 ns,
+sensitized timing path 또는 전체 mapped delay가 아니다**.
+
+전체 `rv_ooo_core` Coarse/Map/Fine/Flatten은 PASS(preABC2465163cells/111833DFF),
+ABC는4606.05s/peak8.51GiB/exit0로 **종료**,3369.99ps/1600300.953999µm²다.
+직전3341.68ps보다delay+0.85%/area+0.66%로 전체 clock 개선으로 미채택이다.
+DIV의 기존 경계는 분리되었으나 새 worst가 ROB head→committed RAS update로 이동했다.
+비교 기준3341.68ps와 다음 screening 목표2500ps는 같은
+Nangate45/full-array/reset 모델에서만 비교한다. 이 경계의 구조 단축이나 IPC 유지만으로
+2500ps 달성/실제2nm1.2GHz/clock 채택을 선언하지 않는다. 다음 독립 후보는 younger
+port priority를 모든 가능한 older port별로 미리 계산하여 late selection 뒤 encoder를
+제거하는 것으로, 후속 구현/검증은 §5-25에 기록한다.
+
+###### 5-25. 발행 중재기의 compatible-port 병렬 선계산 후보 (2026-10-03)
+
+**문제/목적.** `rv_issue_arbiter`는 oldest candidate를 먼저 발행하면서 가능한 경우
+다른 port에 second-oldest도 발행한다. 기존 fast path는 compatible older port를
+결정한 뒤 그 port를 younger mask에서 지우고 다시 priority encode했다. 따라서 IQ
+출력이 늦게 도착하면 pair search→older priority→younger priority가 직렬로 이어졌다.
+
+**동작을 유지하는 분해.** ready와 candidate mask를 AND한 `fm0/fm1`에서 서로 다른
+port에 둘 다 발행할 수 있는 older-port mask `fpair` 및 lowest one-hot `fpair_hot`을
+구한다. 동시에 모든 가능한 older port `p`에 대해 younger의 lowest port를 계산한다.
+
+```text
+fm1 ─┬─ lowest port excluding p=0 ─┐
+     ├─ lowest port excluding p=1 ─┤  fpair_hot[p]로 AND → balanced OR → second_hot
+     ├─ lowest port excluding p=2 ─┤
+     └─ ...                       ┘
+fm0/fm1 → compatible pair mask → oldest compatible one-hot ────────────┘
+```
+
+`fm1_except_hot[p][q]`는 q가 p와 다르고 fm1[q]가 켜졌으며 p를 제외한 q보다 낮은
+fm1 bit가 없을 때1이다. `second_hot[q] = OR_p(fpair_hot[p] AND
+fm1_except_hot[p][q])`로 late older selection 뒤의 두 번째 priority encoder를 없앤다.
+pair가 없으면 기존처럼 oldest의 lowest ready port 한 개만 선택하며, oldest가
+ineligible이면 younger의 lowest ready port를 선택한다. generic age-search 경로는
+그대로 보존하여 `AGE_ORDERED=1 && CANDIDATE_COUNT=2`에서 assertion oracle로 사용한다.
+
+**예시.** older가 port1/2, younger가 port1만 가능하면 older를 port2, younger를
+port1로 보낸다. 두 candidate가 port1만 가능하면 older만 발행한다. older valid가
+0이면 younger를 port1로 보낸다. 같은 FU가 ready가 아니면 해당 mask bit가 지워지므로
+두 후보가 한 execution port를 동시에 점유하지 않는다. 이 변경은 FF나 stage를
+추가하지 않으므로 pipeline latency와 architectural age/dual-issue 정책은 불변이다.
+
+**검증/한계.** `rv_issue_arbiter_equiv_tb`의 ExecPorts2/3/4/5/6은 각각
+512/4096/32768/262144/2097152개 valid/mask/ready 조합과 straight/wrapped age를 포함해
+모든 exported output을 generic search와 비교하여 PASS했다(총2396672개). runner는
+`scripts/run_block_tests.ps1 -OnlyTests rv_issue_arbiter_equiv_tb -RtlAssertions`다.
+동일 Nangate45/constraint/target1000 leaf A/B는 **678.13→490.81ps(−27.62%)**, area
+117.04→121.03µm²(+3.41%)다. artifact는 `out/arbiter_parallel_{baseline,candidate}`다.
+
+변경된 full SoC `out/div_pair_soc` fresh CoreMark는 §5-24와 같은 timed IPC1.311434,
+전체 profiler SHA B6DF3D7…를 유지했고 C-FP009e00b9/Host exit0도 PASS했다.
+`out/div_pair_integration`의 일반 trap/interrupt/CSR/PMP/unmapped 회귀와 AGU0
+`out/div_pair_stress`의 DIV wait3240/refill145/각flush·sequence wrap1도 PASS했다.
+DIV 자체는 RV32/64 각150000cycle의 immutable divider interface/timing equality PASS다.
+이 병렬 변경 후 기본 BRANCH0/DIV0 full SoC도 fresh IPC1.336361/전체 profiler SHA
+2BE75F…/C-FP009e00b9/exit0를 유지했다. fresh HTIF6fault의 cause/tval과 Host exit0,
+XLEN32/64×BRANCH0/1×DIV0/1 8cfg elaboration/assert/noUNOPTFLAT도 PASS했다.
+
+현재 working RTL에 이 병렬 후보가 연결돼 있고 생산 filelist는 불변이다. 별도 frozen
+`out/full_core_div_pair_candidate`의 whole ABC는 attached actual exit0로 완료됐다.
+3369.99→3237.40ps(−3.93%),area1600300.953999→1608962.711999µm²(+0.54%)다.
+원래 wrapper의 memory-guard 기록과 실제 계속 실행한 child의 검증 완료를 구분해 보존했다.
+이는 DIV-only 대비 개선이지만 branch-only3204.62ps보다 느려 전체 최우수 결과는 아니다.
+새 mapped start는 LSQ `candidate_index[5]`, end는 `load_meta_address_q` flattened bit456이다.
+§5-29에서 그 경로를 분석한다. 2.5ns screening 또는 실제2nm1.2GHz 달성은 미확인이다. 전체 primitive
+구조 ranking에서 FPU normalization loop가 매우 길게 잡히지만 ABC balancing 전 표현의
+과대평가이므로 실제 mapped worst를 대신하는 수정 우선순위 근거로 사용하지 않는다.
+추가로 younger valid를 pair search에서 빼서 late 선택에만 반영한 별도 후보도262144
+equality PASS했지만 leaf495.80ps로490.81ps보다 느려 production에는 반영하지 않았다.
+
+###### 5-26. DIV-only 전체 결과와 ROB retire→committed RAS 경로 (2026-10-03)
+
+§5-24의 전체 ABC 종료 결과는3369.99ps/1600300.953999µm²다. 직전3341.68ps보다
+0.85% 느려졌으므로 DIV 경계만으로 전체 clock이 개선됐다고 판단하지 않는다.
+mapped start는 `u_backend.u_rob.head_q[1]`, end는 MuxGate$9611863이다. 동일 full
+preABC의 exact endpoint 추적은 **committed_ras_q의 flattened bit480**으로 끝나며
+60gates/95.54heuristic units다. 이 bit를 확인 없이 특정 unpacked array entry로
+읽지 않는다. artifact는 `out/full_core_div_tag_candidate/rob_head_worst_structural.json`이다.
+
+```text
+ROB head index → head valid/complete → trap/redirect 결정
+ → LSU store commit-valid/ready → retire-ready/fire → bp_commit_valid
+ → committed RAS dual-commit variable-index write → RAS word FF
+```
+
+이 경로는 instruction 예측 lookup 자체가 아니라 **정확히 retire된 call/return의
+fallback image 갱신**이다. committed RAS는 trap/interrupt redirect 때 speculative
+RAS를 복구하는 기준이므로 speculative RAS와 분리돼야 한다. 단순히 callback을 한
+cycle 늦추고 기존 committed image로 복구하면 직전 call을 잃을 수 있어 안전하지 않다.
+
+다음 별도 후보 `out/ras_static_candidate`는 stage/정책을 바꾸지 않고 주소만 분해한다.
+registered pointer의 base/plus1/minus1을 미리 계산한 뒤, lane0가 call이면 lane1 push는
+plus1, 유효한 return이면 minus1, 아니면 base slot에 쓴다. 각 word를 constant index로
+기록하고 lane1 우선순위를 유지한다. pointer/count/history 갱신, empty return 무시,
+full count saturation, compressed call, reset 및 redirect 복구는 기존과 같다.
+8cfg(XLEN32/64, small/full PHT·BTB, general/sequential query) ×100000cycles에서
+공개 출력과 committed/speculative RAS의 word/pointer/count/history 상태를 매 phase
+비교하여 총160만 output 비교 PASS했다. 같은 full-FF predictor leaf는1299.04→1300.13ps,
+area329526.386→326967.200µm²로 delay가 조금 악화됐다. commit-valid0→RAS word의
+primitive 구조 깊이도10→13gates라 이 첫 형태를 clock 개선으로 채택하지 않는다.
+별도 preclass 후보는 call/return 분류를 commit-valid와 분리하고 word 주소만 마지막에
+선택한다. 동일8cfg 비교 PASS, leaf1297.01ps/324201.864µm², 같은 입력→word5gates다.
+둘 다 전체 코어 개선 증거는 아니며 production predictor는 아직 바꾸지 않았다.
+정책 변경이나 CoreMark 맞춤 예측 개선이 아니다. callback 분리 후속은§5-28이다.
+
+###### 5-27. PRF decoded-read 별도 후보 (2026-10-03)
+
+§5-24 전체 모델의 memory-response→fast ALU result-buffer 구조 경로에도 IQ select,
+INT PRF indexed read, bypass, ALU가 남는다. 실제 모듈 이름은 `g_fast[0/1].u_buffer`다.
+처음 잘못된 `u_fast_*_buffer` 필터는 endpoint0으로 실패했고 PASS로 세지 않았다.
+정정한 exact source trace는107gates/138.21heuristic units다. **현재 global mapped
+worst라는 뜻은 아니며**, 추가 경로 확인 artifact는
+`out/full_core_div_tag_candidate/dmem_id_to_fast_buffers_structural.json`이다.
+
+독립 `out/prf_decoded_candidate`는 address equality로 word를 선택하고 masked data를
+고정 balanced OR tree로 모은다. `case(|selected)`의 default X가 unknown/out-of-range
+index에서 기존 array read의 X 결과를 유지한다. register state/reset/write priority,
+ready/query/probe, allocation-over-write readiness, write bypass 및 zero-register 규칙은
+바꾸지 않는다. stage/interface 변경도 없다. same full-FF INT32/READ8 leaf는
+671.65→559.50ps(−16.70%),61168.562→46931.178µm²(−23.28%)다.
+
+Width32/64 × Words19/80 × write-bypass0/1 × zero-register0/1의16cfg×20000cycle,
+총320000 all-output/assert 비교 PASS 및 Icarus X/Z/out-of-range/data-X/bypass/allocate/
+zero corner PASS다. 첫 fuzz는 TB가 duplicate allocation을 만들어 기존 contract SVA로
+실패했고, 이를 제외하도록 TB를 고쳐 fresh rerun했다. DUT 오류 수정은 아니었다.
+12-read-port all-state/undef formal은32-bit의8cfg,64-bit19word의4cfg,
+64-bit80word/bypass0/zero0까지 총13cfg PASS했다(INITIAL_MAPPED_REGS=16).
+첫 중단 뒤 재개해 여기까지 확인했고, 전체 mapping RAM 확보를 위해 미완료
+64-bit80word/bypass0/zero1의 owned Yosys PID41168을 name/start-time 확인 후 명시 종료했다.
+완료 로그를 보존해 `-Resume`으로 이어 실행하며 미완성/중단 case는 PASS로 세지 않는다.
+production PRF에는 미반영이고 전체 timing/실제2nm signoff/IPC 개선 증거로 대신하지 않는다.
+
+###### 5-28. Committed predictor callback 분리와 정확한 복구 image (2026-10-03)
+
+목표는 ROB→trap/flush→LSU commit-ready→retire-fire의 늦은 valid가 넓은 RAS word와
+pointer/count/history의 갱신 경로를 그대로 통과하지 않게 하는 것이다. 실제 retire,
+ROB head 이동, rename commit, store visibility와 예측 알고리즘은 변경하지 않는다.
+외부 모듈 interface도 그대로다. 두 후보는 ignored out에 있고 production에는 미반영이다.
+
+첫 word-only overlay 후보(`out/ras_overlay_candidate`)는 lane별 static word-write
+mask와 sequential PC를 pending FF에 담고, 다음 cycle에 RAS backing storage로 배출한다.
+architecturally current image는 storage에 pending write를 lane0→lane1 순서로 덮어쓴 값이다.
+redirect는 반드시 이 current image를 읽으며 lagging storage만 읽지 않는다. pointer,
+count,history는 이 후보에서 기존 cycle 그대로 갱신한다. RV32 추가 FF는96개다.
+8cfg×100000cycle/160만 public-output 및 effective committed/speculative state 비교 PASS.
+same leaf1315.82ps/333013.114µm²로 global leaf는 악화됐지만 commit-valid0→RAS 관련 FF는
+10→3 primitive gates로 분리됐다. fresh assertion-enabled SoC는 동일 CoreMark
+439557cycles/576450instret/IPC1.311434, CRC/status9/exit0 및 **전체 profiler SHA
+B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D**가 유지됐다.
+이 증거는 이 word-only 후보에 해당하며 후속 full-overlay의 IPC 증거로 대신하지 않는다.
+
+full-overlay 후보(`out/ras_full_overlay_candidate`)는 conditional/call/return event,
+taken 및 sequential PC를 등록한다. backing RAS/history/pointer/count에 이전 callback을
+반영하고, 새 pending callback을 합친 effective view를 공개 committed state로 사용한다.
+기존처럼 conditional-history 갱신과 call/return을 동시에 처리하며 call이 return보다
+우선이다. lane0 뒤 lane1을 처리하고 empty-return 무시, count saturation과 pointer wrap,
+compressed length, PC carry, reset을 모두 유지한다. RV32 추가 FF는72개다.
+
+예: edge N에서 call A를 retire하면 pending=A, backing=이전 image S이고 effective=S+A다.
+edge N+1에서 trap redirect가 오면 speculative RAS는 edge 직전의 effective S+A를 복구한다.
+같은 edge의 새 callback B가 있다면 committed effective는 S+A+B가 되지만 redirect 복구에는
+B를 넣지 않는다. 이것이 기존 nonblocking assignment의 정확한 같은-edge 의미다.
+pending을 생략하면 A를 잃고, current incoming callback까지 복구에 넣으면 B를 잘못
+포함한다. reset은 backing와 모든 pending FF를 함께0으로 만든다.
+
+full-overlay8cfg의 public/effective committed/speculative state 총160만 비교 PASS.
+별도 XLEN32/64 full-table directed128cycles+random10000cycles 각20256 비교도 PASS했다.
+empty return/full dual call/wrap/call-return/return-call/compressed call/PC carry와 pending 중
+reset 및 redirect를 포함한다. 최초 prototype의 SV end 오타는 compile에서 실패했고
+수정한 fresh build 결과만 PASS로 센다. full-ISA/모든4-state/formal signoff 증거는 아니다.
+같은 full-FF leaf1299.04→1256.70ps(−3.26%),area329526.386→327334.812µm²다.
+commit-valid0→pending/storage FF 최장2gates/2.72heuristic units로 원래10gates와 구분된다.
+artifact `commit_to_state_structural.json`은 구조 깊이이며 ns/물리STA로 환산하지 않는다.
+
+whole DIV+parallel-arbiter job은 wrapper가 memory guard를 기록한 뒤 stop 권한을 얻지
+못했지만 Yosys35360/ABC31844가 실제 계속 실행한다. 새 합성을 중복 실행하지 않고
+같은 process query handle로 종료 코드와 최종 mapped output을 관찰한다. 원래 guard
+기록은 보존하며 `Abc.attached_exit.json`/`timing_summary_attached.json`의 검증 종료 결과만
+완료로 취급한다. 이전 observer의 `End of script` 조건은 Yosys `-T`에서 footer가 없어
+잘못됐고 v2가 실제 exit0+최종 Verilog backend/area/delay/mapped artifact를 확인한다.
+
+full-overlay 최초 whole Coarse도 memory guard가 기록됐고 child가 나중에 종료했다.
+exit code가 확보되지 않은 Coarse를 PASS로 바꾸지 않는다. 이 checkpoint에서 Map 재개는
+preflight로 거부돼 실패를 보존했다. terminal 상태 확인 뒤 새 frozen run
+`out/full_core_ras_full_overlay_recovered`에서 Coarse/Map을 fresh 실행해 exit0 PASS했다.
+비교 source 차이는 predictor 한 파일뿐이며 검사 candidate와 frozen predictor SHA는
+24C989492546BF94D546F520155B0056C51BD6615F57AC10F67C2769EC80C782로 동일하다.
+이 run의 Fine/Flatten/ABC는 앞선 whole job의 검증 완료 뒤 직렬 실행한다. full-overlay
+fresh assertion-enabled CoreMark도439557cycles/576450instret/IPC1.311434, CRC/status9/exit0,
+전 profiler SHA B6DF3D7… 동일로 PASS했다. 같은 executable의 C/FP signature009e00b9/exit0도
+PASS다. SoC compiled-source manifest와 이 frozen whole-core manifest 사이의 core SHA
+mismatch는0이며 AGU1/EARLY1/PAIR0/CP8/BRANCH1/DIV1의 동일 구성을 확인했다.
+small-table general-query의 XLEN32/64 module formal도 exit0 PASS했다(각2747/5115 equiv
+cells proven,0unproven; PHT32/BTB16WAYS2/undef handling scope). Full-size table와 모든4-state
+signoff로 확대해 말하지 않는다. redirect가 effective view 대신 lagging backing storage를
+읽는 negative variant는512 speculative-RAS bits가 미증명되어 equiv_status에서 명확히
+거부됐다. 이 expected rejection을 정상 후보 실패로 세지 않는다. Negative formal의
+예상보다 큰 memory peak가 첫 Flatten과 겹쳐 guard를 만들었으므로 그 guarded 로그를
+보존했다. child의 terminal 상태를 확인한 뒤 Fine checkpoint에서 Flatten을 새로 실행해
+exit0/peak7.86GiB PASS했고, 현재 실제 whole ABC Yosys42536/ABC28728가 진행 중이다.
+whole2.5ns/실제2nm1.2GHz 개선은 아직 미확인이다.
+모든 production filelist는 불변이고 아직 commit/push하지 않았다.
+
+###### 5-29. LSU replacement 존재 판정과 oldest identity 선택의 분리 (2026-10-03)
+
+§5-25의 새3237.40ps whole worst를 동일 preABC exact start/end로 추적하면
+LSQ candidate-index FF→candidate-resident→active-AGU/index→eligible load vector→
+two-oldest tournament→selected-candidate-found0→active-effect-permit→load-request-selected→
+load-meta-address FF다. 219gates/276.26heuristic units이며 artifact는
+`out/full_core_div_pair_candidate/new_worst_structural.json`이다. 메모리 response→IQ→PRF
+경로와 다른 **LSU 내부 요청/교체 판단**이므로 과거 critical-path 설명으로 대신하지 않는다.
+
+이 경로의 `active_effect_permit`는 blocked candidate가 ready로 바뀌는 cycle에 다른
+replacement가 있으면 request-valid를 숨겨, 미수락 request identity가 다음 edge에
+바뀌는 것을 막는다. 필요 정보는 replacement의 주소/sequence/age 순위가 아니라
+존재 여부 하나다. 그러나 기존 `selected_candidate_found[0]`를 쓰면 found를 계산하는
+five-level sequence/index tournament 전체가 이 현재-cycle 제어 경로에 들어간다.
+
+독립 `out/lsq_existence_candidate`는 동일 eligibility vector를 OR한
+`lq_replacement_available`로 이 한 곳의 guard만 대체한다. oldest/second-oldest identity
+선택, captured candidate의 sequence/index, queue state, ordering/forwarding, commit,
+flush/reset, interface/stage/latency는 그대로다. 추가 FF는0이다. 전체 selector를 다시
+24×24 rank matrix로 늘리지 않고 bool과 data 계산의 사용 목적을 분리하는 후보다.
+
+실제 frozen `sequence_after`/`lq_select_before`와 tournament body를 추출한 combinational
+lemma는 Entries2/3/4/7/24/32에서 **모든 two-state eligible/sequence 입력**, tie와 wrap을
+포함해 root-found0 == OR(eligible)를 SAT로 증명했다. ROB half-window 가정을 추가하지
+않았다. eligible entry0를 OR에서 누락한 negative control은 각6cfg 모두 proof fail로
+거부됐다. 이 theorem은 존재 bit의 two-state 등가성만 증명하며 arbitrary X/Z 상태나
+전체 코어 ISA/clock signoff가 아니다. Actual small LSQ module LQ4/SQ4의
+4cfg(EARLY0/1×AGU0/1)는 two-state cycle/state formal equivalence PASS이고,
+같은4cfg의 실제 `rv_lsq_tb`는 assertion/UNOPTFLAT 검사 활성 상태에서 PASS다.
+full RAS overlay와 결합한 full-SoC CoreMark는439557cycles/576450instret/
+IPC1.311434, profiler SHA256 B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D로
+기준과 동일하다. CRC/status9/host-exit0 및 같은 실행 파일의 C/FP signature009e00b9도 PASS다.
+
+동일 full-array/reset-retained LSQ leaf A/B는2994.29→2982.55ps(−0.39%),
+area72524.368→72230.704µm²(−0.40%)로 작은 개선에 그쳤다. 이를 whole-core
+2.5ns 또는 실제2nm1.2GHz 달성으로 해석하지 않는다. 후보의 mapped worst는
+candidate_index[1]→resident/AGU→SQ youngest forwarding tree→candidate-order-valid→
+lq_completed_q flattened bit12다. preABC exact mapped start/end 구조 추적은
+175gates/221.74heuristic units(NOT STA/ns),
+`out/lsq_existence_candidate/worst_structural.json`에 보존했다.
+따라서 다음 실험은 존재 bit보다 SQ youngest-store 선택 경로를 우선한다.
+production LSQ에는 아직 미반영이고 filelist는 불변이다.
+
+###### 5-30. LSU forwarding 및 후보 identity의 늦은 비교 경로 병렬화 (2026-10-03, 실험 중)
+
+앞 절의 leaf worst는 load 후보 sequence에 대해 SQ의 distance를 빼고, 네 단계에서
+distance 비교와 선택 mux를 반복해 youngest overlapping store를 고르는 경로다.
+`out/lsq_parallel_forward_candidate`는 SQ entry끼리의 나이 비교를 등록된 sequence에서
+병렬 계산한다. Load가 준비되면 기존 older/주소/byte-mask 조건으로 match vector를 만들고,
+각 store는 **자신보다 젊거나 같은 sequence에서 낮은 index인 matching store가 없을 때**
+winner가 된다. Data-valid/partial-overlap/forward-data는 winner one-hot로 선택한다.
+가장 젊은 store가 partial-cover이거나 data-not-ready이면 여전히 stall한다. 더 오래된
+완전한 store로 넘어가지 않으며, unknown older address/MMIO/store commit/flush 규칙도 불변이다.
+
+여기서 modular sequence ordering을 무조건 전역 total order로 가정하지 않는다.
+Matching store는 모두 `0 < unsigned(load_seq-store_seq) < 2^(SEQ_WIDTH-1)`라는
+원래 older 필터를 통과한다. 이 집합에서는 두 store의 signed modular 비교가 distance
+순서와 같다는 local pair theorem을 W4/8/12/16 SAT로 증명했다. Tie는 원래 tree와
+동일한 lower-index 우선이다. 직접 whole-winner SAT는 SQ2/3/4 및 wrong-age negative
+control에서 PASS/rejection을 확인했으나 SQ7 proof는 장시간 종료되지 않아 해당 owned
+solver를 중단했고 SQ16은 실행하지 않았다. 이를 default SQ16 exhaustive proof로 부르지 않는다.
+
+Forwarding 후보의 actual LQ4/SQ4 module formal은 진행 중이며 완료 구성만 PASS로 센다.
+별도로 assertion/UNOPTFLAT 활성 actual LSQ TB4cfg PASS, 32/64-bit address 및
+LQ24/SQ16·LQ7/SQ5·LQ4/SQ4를 포함한4cfg×60000cycle all-public-output/original-state
+random differential PASS다(protocol SVA 비활성 random stimulus임을 구분한다).
+Full-SoC CoreMark439557/576450/IPC1.311434 및 profiler SHA B6DF…는 기준과 동일하며,
+CRC/status9/exit0, 동일 실행 파일 C/FP009e00b9도 PASS다.
+
+다음 후보 `out/lsq_decoupled_valid_candidate`는 LQ 각 subtree의 rank 존재를
+`any=left.any|right.any`, `ge2=left.ge2|right.ge2|(left.any&right.any)`로 직접 계산한다.
+Identity 순서는 그대로 유지하면서 candidate replacement control을 age/data mux에서
+분리한다. Frozen 원래 tree의 second-found == count(eligible)>=2를 LQ2/3/4/7/24/32의
+unrestricted two-state sequence/eligibility에서 SAT PASS, 잘못된 threshold3 negative는
+각6cfg에서 거부했다.
+
+가장 최근 `out/lsq_onehot_identity_candidate`는 원래 top-two tournament topology를 유지하되
+중간 payload를 sequence/index 대신 entry one-hot identity로 전달한다. 모든 entry 간
+sequence 비교는 등록된 LQ sequence만으로 병렬 준비하고, 각 merge는 두 identity가
+가리키는 pair comparison을 선택한다. 마지막 root에서만 one-hot AND/OR로 index/sequence를
+복원한다. **전역 rank matrix scheduling으로 바꾸지 않는다**: half-window 밖의 임의
+sequence에서 비교가 비추이적이어도 원래 같은 subtree/merge 순서를 따른다. Invalid leaf도
+원래의 identity/default를 유지한다. 추가 pipeline cycle/FF/queue entry/interface 변경은0이다.
+Source SHA256은63794D451574141C5C42B0953D9BB3802C189BE8F5D3102B1A482A6DD005A447이다.
+
+동일 Nangate45 library/script/target1000ps, all-array/reset-retained **LSQ leaf** 측정:
+
+| 후보 | Delay ps | Area µm² | 판단 |
+|---|---:|---:|---|
+| frozen 기준 | 2994.29 | 72524.368 | 실제 FF/reset 포함 |
+| replacement OR guard | 2982.55 | 72230.704 | 미미한 개선 |
+| parallel SQ forwarding | 2890.26 | 78681.736 | delay 개선, area 증가 |
+| + independent rank existence | 2835.66 | 78840.804 | found-control 경로 분리 |
+| + one-hot identity tournament | 2370.15 | 92878.156 | 기준 대비 delay−20.85%, area+28.06% |
+
+마지막 후보 ABC exit0이며 mapped worst candidate_index[5]→candidate_sequence flattened bit10다.
+Exact preABC start/end 구조 trace119gates/141.07heuristic units는 이름/구조 추적용이며
+ps/ns/STA 값이 아니다. `out/lsq_onehot_identity_candidate/worst_structural.json`에 보존한다.
+Latest candidate는4cfg×60000cycle public-output/original-state random differential,
+assertion/UNOPTFLAT 활성 actual LSQ TB4cfg PASS다. Small LQ4/SQ4 module formal은
+EARLY1/AGU1 한 구성에서 actual runner exit0/two-state equivalence PASS다.
+다른3cfg/default LQ24 exhaustive formal/arbitrary X/Z/ISA signoff로 확대 해석하지 않는다.
+Full-SoC actual run은439557cycles/
+576450instret/IPC1.311434, profiler SHA B6DF3D7B32B50CD7C292E06B2AF7E648386D7C4114A46F88E2AF1216B3DC8E2D,
+CRC/status9/host-exit0 PASS이고 같은 executable의 C/FP009e00b9/exit0도 PASS다.
+Compiled SoC의31개 core source와 whole immutable snapshot의 SHA mismatch0 및
+AGU1/EARLY1/PAIR0/CP8/BRANCH1/DIV1 parameter 일치를 확인했다.
+Whole-core는 Coarse/Map exit0까지 준비했다. `out/queue_ras_lsq_onehot_whole.ps1`가
+실제 이전 whole Yosys42536의 handle/start identity를 확인해 기다리고, actual exit0와
+owning wrapper의 Abc.result/timing summary를 확인한 뒤에만 새 후보 Fine부터 이어 간다.
+Queue session55025, log `out/ras_lsq_onehot_whole_queue.log`이며 기존 ABC를 재시작하지 않는다.
+Leaf2370ps를 whole2500ps 또는 실제2nm
+1.2GHz 달성으로 대체하지 않는다. 아직 production LSQ/새 후보 Git push는 없고 `.f`는 불변이다.
+
+###### 5-31. Pairwise age 비교의 양방향 산술 공유 (2026-10-03, 독립 실험)
+
+§5-30의 one-hot 선택은 늦은 candidate identity에 대한 sequence mux/compare 연쇄를
+줄였지만, 각 unordered entry pair의 양방향 비교를 별도로 표현해 leaf area가 늘었다.
+`out/lsq_shared_age_candidate`는 a<b마다 unsigned `delta=seq[b]-seq[a]`를 한 번 계산한다.
+H는 half-window 값 `1<<(SEQ_WIDTH-1)`이다.
+
+| 비교 | 공유 delta에서 계산 | 같은 sequence 처리 |
+|---|---|---|
+| LQ a before b | `!delta[MSB]` | a가 낮은 index이므로 true |
+| LQ b before a | `delta[MSB] && delta!=H` | false |
+| SQ b beats a | `!delta[MSB] && delta!=0` | false |
+| SQ a beats b | `delta==0 || (delta[MSB] && delta!=H)` | 낮은 index a가 true |
+
+delta==H이면 두 signed 방향 모두 positive가 아니므로 양쪽 비교가 false여야 한다.
+이를 단순 `reverse=!forward`로 바꾸면 half-window corner에서 원래 tree 의미를 바꾼다.
+Shared comparator는 정확히 그 corner도 유지한다. W1/2/4/8/16/32의 모든 two-state
+seq[a]/seq[b]에서 위 네 비교의 SAT equivalence PASS이고, half-window guard를 제거한
+negative control은 각6cfg에서 proof fail로 거부됐다. 추가 FF/latency/ports 및 실제
+queue/flush/forwarding policy는 변경하지 않는다. Arbitrary X/Z 등가성은 주장하지 않는다.
+
+동일 full-array/reset-retained LSQ leaf는2392.90ps/78659.658µm²다. 기준2994.29ps/
+72524.368 대비 delay−20.08%/area+8.46%, 기존 onehot2370.15ps/92878.156 대비
+delay+0.96%/area−15.31%다. ABC actual exit0이며 current mapped worst는 input
+agu_sq_index_i[0]→agu-ready/active-AGU→eligible→onehot tournament→candidate_sequence
+flattened bit9다. Exact preABC trace114gates/134.43heuristic units는 NOT STA/ns다.
+관련 artifact는 `out/full_lsq_shared_age_candidate/timing_summary.json`,
+`out/lsq_shared_age_candidate/worst_structural.json`에 있다.
+
+Source SHA256은0AAEC87B879AF921382E81DDF7D0A598DD93C1409338ADF139A50BF20C8D9AAD다.
+새 actual module formal/4cfg random differential/4cfg SVA/SoC CoreMark를 별도 실행 중이다.
+먼저 검증된 onehot candidate의 whole 합성 대기열은 그대로 유지해 전후 whole-clock
+변화를 측정한다. 이 후보는 leaf area tradeoff를 추가로 검토하는 것이며 production
+LSQ/그 대기열의 frozen source를 몰래 바꾸지 않는다. Whole clock과 실제2nm signoff는 미확인이다.
+
+후속 shared-age actual run은4cfg×60000cycle random, assertion-enabled LSQ TB4cfg,
+LQ4/SQ4 EARLY1/AGU1 module formal1746cells/0unproven PASS다. Full-SoC CoreMark
+439557/576450/IPC1.311434/profiler SHA B6DF… 불변, CRC/status9/host-exit0와 동일
+executable C/FP009e00b9도 PASS다. Default SQ16/odd SQ5의 winner 알고리즘은 original/
+shared pair 각각300000case, 총120만 focused 비교로 모든 winner index, no-match,
+tie/half-window 제외를 계측했다. Algorithm test와 actual module/ISA proof를 구분한다.
+Helper SV quote 오타와 Windows includer build 실패는 보존했고 수정 후 final67994 exit0만 PASS다.
+
+###### 5-32. 실제 whole 결과와 commit-ready availability 분리 (2026-10-03, 독립 후보)
+
+Full committed-RAS overlay whole은 actual ABC42536 exit0,3265.54ps/
+1619320.219999µm²다(peak8.6246GiB). DIV+pair3237.40ps보다0.87% 느리므로 단독
+clock 개선으로 채택하지 않는다. 이전 failed Flatten.guard도 보존했다.
+Mapped worst는 ROB head_q[1]→trap/CSR redirect→LSU store_commit_valid/ready→
+dual retire-fire→trap controller architectural_next_pc_q다. End alias csr_trap_next_pc[27]를
+RAS word storage로 혼동하지 않는다. Exact trace42gates/70.92heuristic units(NOT STA/ns)는
+`out/full_core_ras_full_overlay_recovered/worst_structural.json`에 있다.
+
+`out/lsq_commit_probe_candidate`는 shared-age/one-hot을 유지하고 기존 두 commit-ready
+출력만 side-effect-free indexed availability로 바꾼다. Port/stage/FF 추가는0이다.
+
+1. Load ready는 range/live/not-killed/completed/sequence-match로 계산한다.
+2. Store ready는 live/sequence/address/data/nonexception과 SB capacity 또는 기존 MMIO
+   completion/error로 계산한다. Request-valid/flush를 이 조회에 먼저 넣지 않는다.
+3. Ready는 valid=0에서도1일 수 있다. **SB enqueue/MMIO request/error/payload는 기존
+   commit-valid를 계속 요구**하며 LSU cluster는 여전히 flush 때 valid를 차단한다.
+4. Queue release는 기존 valid&&ready, flush recovery 우선이다. Actual backend retire도
+   기존 !flush/!rob-trap 조건을 유지한다. Idle-ready1은 commit/외부 메모리 쓰기가 아니다.
+
+Adjacent shared-age reference와 qualified-ready/all-other-output/original-state two-state
+formal6cfg PASS: LQ4/SQ4 EARLY0/1×AGU0/1, default LQ24/SQ16 EARLY1/AGU1 PADDR32,
+LQ7/SQ5 EARLY0/AGU1 PADDR64. Observation wrapper는 **ready만 valid일 때 비교**한다.
+Raw idle-ready equality/full ISA/arbitrary X/Z proof가 아니다. Store effect의 valid 조건을
+없앤 negative는 SB enqueue-valid를 포함한466cells unproven으로 거부했다.
+Actual LSQ SVA/UNOPTFLAT TB4cfg, qualified-random4cfg×60000 vs Git943fcae, backend
+trap/interrupt/CSR/PMP/server08c8 integration PASS다. Checker 새
+`--qualified-commit-ready`는 의도적인 availability 변경에만 opt-in하고 기본은 모든 ready
+bit 엄격 비교다. Checker unit3개는 mask 생성/active-lane 검출 검사이지 RTL proof가 아니다.
+
+RAS overlay 포함/원래 predictor 유지 두 actual SoC 모두 CoreMark439557/576450/
+IPC1.311434, profiler SHA B6DF… 불변, CRC/status9/hostexit0 및 같은 executable
+C/FP009e00b9 PASS다. No-overlay compiled vs whole snapshot31core sources mismatch0,
+AGU1/EARLY1/PAIR0/CP8/BRANCH1/DIV1 일치다. Predictor policy 튜닝이 아니다.
+LSQ SHA256 D8F3653EBA6AB061B59E366537A939BA6A78D29658FC821F986B2B32A9D77FE9,
+actual full-array/reset leaf2342.15ps/79109.198µm²이며 **whole delay는 아니다**.
+
+Current onehot+RAS whole queue55025 actual ABC13544/39496 live, Fine/Flatten exit0
+(Flatten peak8.01GiB). Next `out/full_core_lsq_commit_probe_no_ras_candidate` Coarse/Map
+exit0, queue79223/`lsq_commit_probe_no_ras_whole_queue_v2.log`는 현재13544 actual exit0와
+result/summary 뒤 Fine부터 이어 간다. 최초 queue의 잘못된 build-manifest 경로는 SHA gate가
+실행 전에 거부했고 log를 보존했다. Current whole을 restart/변경하지 않는다.
+Production LSQ/predictor 미변경, 새 후보 Push 없음, `.f` 불변이다. 최종 실제2nm1.2GHz와
+whole-screening2500ps는 아직 미확인이다.
 
 ###### 5. 도구
 

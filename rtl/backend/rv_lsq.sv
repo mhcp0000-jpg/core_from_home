@@ -157,6 +157,7 @@ module rv_lsq #(
   logic [1:0][LQ_INDEX_WIDTH-1:0] candidate_index;
   logic [1:0][SEQ_WIDTH-1:0] candidate_sequence;
   logic [1:0] selected_candidate_found;
+  logic lq_replacement_available;
   logic [1:0][LQ_INDEX_WIDTH-1:0] selected_candidate_index;
   logic [1:0][SEQ_WIDTH-1:0] selected_candidate_sequence;
   logic [1:0] candidate_replace;
@@ -186,10 +187,42 @@ module rv_lsq #(
   // elaborate variable indexing through a multi-dimensional struct array.
   logic lq_select_valid [0:LQ_SELECT_TREE_LEVELS]
                          [0:LQ_SELECT_TREE_LEAVES-1][0:1];
-  logic [SEQ_WIDTH-1:0] lq_select_sequence [0:LQ_SELECT_TREE_LEVELS]
+  logic [LQ_ENTRIES-1:0] lq_select_onehot [0:LQ_SELECT_TREE_LEVELS]
                          [0:LQ_SELECT_TREE_LEAVES-1][0:1];
-  logic [LQ_INDEX_WIDTH-1:0] lq_select_index [0:LQ_SELECT_TREE_LEVELS]
-                         [0:LQ_SELECT_TREE_LEAVES-1][0:1];
+  logic [LQ_ENTRIES-1:0] lq_entry_before [LQ_ENTRIES];
+
+  // Compare registered entry sequences before late eligibility arrives.
+  // Keep the original tournament topology: modular age need not be globally
+  // transitive for arbitrary test inputs. This is NOT a global rank matrix.
+  always_comb begin
+    for (int unsigned a = 0; a < LQ_ENTRIES; a++) begin
+      lq_entry_before[a] = '0;
+    end
+    // One unsigned subtraction per unordered pair gives BOTH directions.
+    // At equal sequence the lower index wins; at exactly half-window neither
+    // signed subtraction is positive. Preserve that non-total-order corner.
+    for (int unsigned a = 0; a < LQ_ENTRIES; a++)
+      for (int unsigned b = a + 1; b < LQ_ENTRIES; b++) begin
+        logic [SEQ_WIDTH-1:0] delta;
+        delta = lq_sequence_q[b] - lq_sequence_q[a];
+        lq_entry_before[a][b] = !delta[SEQ_WIDTH-1];
+        lq_entry_before[b][a] = delta[SEQ_WIDTH-1] &&
+          (delta != {1'b1, {(SEQ_WIDTH-1){1'b0}}});
+      end
+  end
+
+  function automatic logic onehot_select_before(
+    input logic lhs_valid,
+    input logic [LQ_ENTRIES-1:0] lhs_identity,
+    input logic rhs_valid,
+    input logic [LQ_ENTRIES-1:0] rhs_identity
+  );
+    logic [LQ_ENTRIES-1:0] comparison;
+    comparison = '0;
+    for (int unsigned a = 0; a < LQ_ENTRIES; a++)
+      comparison[a] = lhs_identity[a] && (|(lq_entry_before[a] & rhs_identity));
+    return lhs_valid && (!rhs_valid || (|comparison));
+  endfunction
 
   function automatic logic [LQ_INDEX_WIDTH-1:0] first_free_lq(
     input logic [LQ_ENTRIES-1:0] free_bitmap
@@ -287,7 +320,7 @@ module rv_lsq #(
     for (int unsigned lane = 0; lane < 2; lane++)
       active_effect_permit[lane] = active_authorized[lane] &&
         (active_agu[lane] || !candidate_blocked_q[lane] ||
-         !selected_candidate_found[0]);
+         !lq_replacement_available);
   end
 
   always_comb begin
@@ -332,24 +365,17 @@ module rv_lsq #(
 
   always_comb begin
     logic [LQ_ENTRIES-1:0] eligible_work;
-
     eligible_work = '0;
     selected_candidate_found = '0;
     selected_candidate_index = '0;
     selected_candidate_sequence = '0;
-
     for (int unsigned level = 0; level <= LQ_SELECT_TREE_LEVELS; level++)
       for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
         for (int unsigned rank = 0; rank < 2; rank++) begin
           lq_select_valid[level][node][rank] = 1'b0;
-          lq_select_sequence[level][node][rank] = '0;
-          lq_select_index[level][node][rank] = '0;
+          lq_select_onehot[level][node][rank] = '0;
         end
 
-    // Classify all loads independently.  A balanced tournament below carries
-    // the two oldest identities from each subtree.  This replaces the former
-    // 24x24 compare/popcount rank matrix with O(N) compare hardware and
-    // logarithmic selection depth before the registered candidate boundary.
     for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
       logic address_ready;
       address_ready = lq_address_valid_q[entry];
@@ -377,91 +403,70 @@ module rv_lsq #(
           (active_index[1] == LQ_INDEX_WIDTH'(entry)));
     end
 
+    // Existence is independent of age comparisons. Keep the exact tournament
+    // for selecting identities, but do not route its sequence/identity muxes
+    // through the current request-permit decision.
+    lq_replacement_available = |eligible_work;
+
+
     for (int unsigned leaf = 0; leaf < LQ_SELECT_TREE_LEAVES; leaf++) begin
       if (leaf < LQ_ENTRIES) begin
         lq_select_valid[0][leaf][0] = eligible_work[leaf];
-        lq_select_sequence[0][leaf][0] = lq_sequence_q[leaf];
-        lq_select_index[0][leaf][0] = LQ_INDEX_WIDTH'(leaf);
+        // Retain invalid leaf identities too: preserve original don't-care
+        // sequence/index values without relying on environment assumptions.
+        lq_select_onehot[0][leaf][0][leaf] = 1'b1;
       end
     end
-
-    for (int unsigned level = 1; level <= LQ_SELECT_TREE_LEVELS; level++) begin
-      for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++) begin
+    for (int unsigned level = 1; level <= LQ_SELECT_TREE_LEVELS; level++)
+      for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
         if (node < (LQ_SELECT_TREE_LEAVES >> level)) begin
-          if (lq_select_before(
-                lq_select_valid[level-1][node*2][0],
-                lq_select_sequence[level-1][node*2][0],
-                lq_select_index[level-1][node*2][0],
-                lq_select_valid[level-1][node*2+1][0],
-                lq_select_sequence[level-1][node*2+1][0],
-                lq_select_index[level-1][node*2+1][0])) begin
-            lq_select_valid[level][node][0] =
-              lq_select_valid[level-1][node*2][0];
-            lq_select_sequence[level][node][0] =
-              lq_select_sequence[level-1][node*2][0];
-            lq_select_index[level][node][0] =
-              lq_select_index[level-1][node*2][0];
-            if (lq_select_before(
-                  lq_select_valid[level-1][node*2][1],
-                  lq_select_sequence[level-1][node*2][1],
-                  lq_select_index[level-1][node*2][1],
-                  lq_select_valid[level-1][node*2+1][0],
-                  lq_select_sequence[level-1][node*2+1][0],
-                  lq_select_index[level-1][node*2+1][0])) begin
-              lq_select_valid[level][node][1] =
-                lq_select_valid[level-1][node*2][1];
-              lq_select_sequence[level][node][1] =
-                lq_select_sequence[level-1][node*2][1];
-              lq_select_index[level][node][1] =
-                lq_select_index[level-1][node*2][1];
-            end else begin
-              lq_select_valid[level][node][1] =
-                lq_select_valid[level-1][node*2+1][0];
-              lq_select_sequence[level][node][1] =
-                lq_select_sequence[level-1][node*2+1][0];
-              lq_select_index[level][node][1] =
-                lq_select_index[level-1][node*2+1][0];
-            end
+          logic choose_first_left, choose_second_left;
+          choose_first_left = onehot_select_before(
+            lq_select_valid[level-1][node*2][0],
+            lq_select_onehot[level-1][node*2][0],
+            lq_select_valid[level-1][node*2+1][0],
+            lq_select_onehot[level-1][node*2+1][0]);
+          lq_select_onehot[level][node][0] = choose_first_left ?
+            lq_select_onehot[level-1][node*2][0] :
+            lq_select_onehot[level-1][node*2+1][0];
+          if (choose_first_left) begin
+            choose_second_left = onehot_select_before(
+              lq_select_valid[level-1][node*2][1],
+              lq_select_onehot[level-1][node*2][1],
+              lq_select_valid[level-1][node*2+1][0],
+              lq_select_onehot[level-1][node*2+1][0]);
+            lq_select_onehot[level][node][1] = choose_second_left ?
+              lq_select_onehot[level-1][node*2][1] :
+              lq_select_onehot[level-1][node*2+1][0];
           end else begin
-            lq_select_valid[level][node][0] =
-              lq_select_valid[level-1][node*2+1][0];
-            lq_select_sequence[level][node][0] =
-              lq_select_sequence[level-1][node*2+1][0];
-            lq_select_index[level][node][0] =
-              lq_select_index[level-1][node*2+1][0];
-            if (lq_select_before(
-                  lq_select_valid[level-1][node*2][0],
-                  lq_select_sequence[level-1][node*2][0],
-                  lq_select_index[level-1][node*2][0],
-                  lq_select_valid[level-1][node*2+1][1],
-                  lq_select_sequence[level-1][node*2+1][1],
-                  lq_select_index[level-1][node*2+1][1])) begin
-              lq_select_valid[level][node][1] =
-                lq_select_valid[level-1][node*2][0];
-              lq_select_sequence[level][node][1] =
-                lq_select_sequence[level-1][node*2][0];
-              lq_select_index[level][node][1] =
-                lq_select_index[level-1][node*2][0];
-            end else begin
-              lq_select_valid[level][node][1] =
-                lq_select_valid[level-1][node*2+1][1];
-              lq_select_sequence[level][node][1] =
-                lq_select_sequence[level-1][node*2+1][1];
-              lq_select_index[level][node][1] =
-                lq_select_index[level-1][node*2+1][1];
-            end
+            choose_second_left = onehot_select_before(
+              lq_select_valid[level-1][node*2][0],
+              lq_select_onehot[level-1][node*2][0],
+              lq_select_valid[level-1][node*2+1][1],
+              lq_select_onehot[level-1][node*2+1][1]);
+            lq_select_onehot[level][node][1] = choose_second_left ?
+              lq_select_onehot[level-1][node*2][0] :
+              lq_select_onehot[level-1][node*2+1][1];
           end
+          lq_select_valid[level][node][0] =
+            lq_select_valid[level-1][node*2][0] |
+            lq_select_valid[level-1][node*2+1][0];
+          lq_select_valid[level][node][1] =
+            lq_select_valid[level-1][node*2][1] |
+            lq_select_valid[level-1][node*2+1][1] |
+            (lq_select_valid[level-1][node*2][0] &
+             lq_select_valid[level-1][node*2+1][0]);
         end
-      end
-    end
-
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      selected_candidate_found[lane] =
-        lq_select_valid[LQ_SELECT_TREE_LEVELS][0][lane];
-      selected_candidate_index[lane] =
-        lq_select_index[LQ_SELECT_TREE_LEVELS][0][lane];
-      selected_candidate_sequence[lane] =
-        lq_select_sequence[LQ_SELECT_TREE_LEVELS][0][lane];
+      selected_candidate_found[lane] = lq_select_valid[LQ_SELECT_TREE_LEVELS][0][lane];
+      for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
+        selected_candidate_index[lane] = selected_candidate_index[lane] |
+          ({LQ_INDEX_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
+           LQ_INDEX_WIDTH'(entry));
+        selected_candidate_sequence[lane] = selected_candidate_sequence[lane] |
+          ({SEQ_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
+           lq_sequence_q[entry]);
+      end
     end
   end
 
@@ -621,19 +626,29 @@ module rv_lsq #(
     end
   end
 
+  // Pairwise SQ age is independent of the late selected load identity.
+  // Matching older stores are all within the positive half of the sequence
+  // window, so their modular ages form a total order. Equal ages preserve
+  // the original tree's lower-index tie break. No queue state/stage is added.
+  logic [SQ_ENTRIES-1:0] sq_forward_beats [SQ_ENTRIES];
+  always_comb begin
+    for (int unsigned store = 0; store < SQ_ENTRIES; store++) begin
+      sq_forward_beats[store] = '0;
+    end
+    for (int unsigned a = 0; a < SQ_ENTRIES; a++)
+      for (int unsigned b = a + 1; b < SQ_ENTRIES; b++) begin
+        logic [SEQ_WIDTH-1:0] delta;
+        delta = sq_sequence_q[b] - sq_sequence_q[a];
+        sq_forward_beats[a][b] = !delta[SEQ_WIDTH-1] && (delta != '0);
+        sq_forward_beats[b][a] = (delta == '0) ||
+          (delta[SEQ_WIDTH-1] &&
+           (delta != {1'b1, {(SEQ_WIDTH-1){1'b0}}}));
+      end
+  end
+
   for (genvar lane = 0; lane < 2; lane++) begin : g_order_check
-    logic sq_forward_select_valid [0:SQ_FORWARD_TREE_LEVELS]
-                                  [0:SQ_FORWARD_TREE_LEAVES-1];
-    logic [SEQ_WIDTH-1:0] sq_forward_select_distance
-                                  [0:SQ_FORWARD_TREE_LEVELS]
-                                  [0:SQ_FORWARD_TREE_LEAVES-1];
-    logic sq_forward_select_partial [0:SQ_FORWARD_TREE_LEVELS]
-                                  [0:SQ_FORWARD_TREE_LEAVES-1];
-    logic sq_forward_select_data_valid [0:SQ_FORWARD_TREE_LEVELS]
-                                  [0:SQ_FORWARD_TREE_LEAVES-1];
-    logic [DATA_WIDTH-1:0] sq_forward_select_data
-                                  [0:SQ_FORWARD_TREE_LEVELS]
-                                  [0:SQ_FORWARD_TREE_LEAVES-1];
+    logic [SQ_ENTRIES-1:0] sq_forward_matches;
+    logic [SQ_ENTRIES-1:0] sq_forward_winner;
 
     // Candidate identity/metadata is independent of device serialization.
     // Keep it in a separate cone so LSU-cluster's device_load_permit (which
@@ -714,17 +729,8 @@ module rv_lsq #(
       forward_data = '0;
       stall_reason = LSQ_STALL_NONE;
 
-      for (int unsigned level = 0; level <= SQ_FORWARD_TREE_LEVELS;
-           level++) begin
-        for (int unsigned node = 0; node < SQ_FORWARD_TREE_LEAVES;
-             node++) begin
-          sq_forward_select_valid[level][node] = 1'b0;
-          sq_forward_select_distance[level][node] = '1;
-          sq_forward_select_partial[level][node] = 1'b0;
-          sq_forward_select_data_valid[level][node] = 1'b0;
-          sq_forward_select_data[level][node] = '0;
-        end
-      end
+      sq_forward_matches = '0;
+      sq_forward_winner = '0;
 
       if (candidate_present) begin
         selected_address = active_address[lane];
@@ -748,66 +754,26 @@ module rv_lsq #(
                         selected_address
                         [PADDR_WIDTH-1:BYTE_OFFSET_WIDTH]) &&
                        (overlap != '0)) begin
-            sq_forward_select_valid[0][store] = 1'b1;
-            sq_forward_select_distance[0][store] = distance;
-            sq_forward_select_partial[0][store] =
-              overlap != selected_mask;
-            sq_forward_select_data_valid[0][store] =
-              sq_data_valid_q[store];
-            sq_forward_select_data[0][store] = sq_data_q[store];
+            sq_forward_matches[store] = 1'b1;
           end
         end
       end
 
-      // Reduce all overlapping older stores to the youngest one.  The old
-      // running youngest_distance loop formed a 16-entry compare/mux chain;
-      // this tree has four merge levels for the default 16-entry SQ.
-      for (int unsigned level = 1; level <= SQ_FORWARD_TREE_LEVELS;
-           level++) begin
-        for (int unsigned node = 0; node < SQ_FORWARD_TREE_LEAVES;
-             node++) begin
-          if (node < (SQ_FORWARD_TREE_LEAVES >> level)) begin
-            logic choose_left;
-            choose_left = sq_forward_select_valid[level-1][node*2] &&
-              (!sq_forward_select_valid[level-1][node*2+1] ||
-               (sq_forward_select_distance[level-1][node*2] <=
-                sq_forward_select_distance[level-1][node*2+1]));
-            if (choose_left) begin
-              sq_forward_select_valid[level][node] =
-                sq_forward_select_valid[level-1][node*2];
-              sq_forward_select_distance[level][node] =
-                sq_forward_select_distance[level-1][node*2];
-              sq_forward_select_partial[level][node] =
-                sq_forward_select_partial[level-1][node*2];
-              sq_forward_select_data_valid[level][node] =
-                sq_forward_select_data_valid[level-1][node*2];
-              sq_forward_select_data[level][node] =
-                sq_forward_select_data[level-1][node*2];
-            end else begin
-              sq_forward_select_valid[level][node] =
-                sq_forward_select_valid[level-1][node*2+1];
-              sq_forward_select_distance[level][node] =
-                sq_forward_select_distance[level-1][node*2+1];
-              sq_forward_select_partial[level][node] =
-                sq_forward_select_partial[level-1][node*2+1];
-              sq_forward_select_data_valid[level][node] =
-                sq_forward_select_data_valid[level-1][node*2+1];
-              sq_forward_select_data[level][node] =
-                sq_forward_select_data[level-1][node*2+1];
-            end
-          end
-        end
+      // A store wins iff it overlaps this load and no matching store is
+      // younger (or equal age at a lower index). Shared static-age comparison
+      // feeds a balanced reduction, not a load-dependent distance/mux chain.
+      for (int unsigned store = 0; store < SQ_ENTRIES; store++) begin
+        sq_forward_winner[store] = sq_forward_matches[store] &&
+          !(|(sq_forward_matches & sq_forward_beats[store]));
+        partial_overlap = partial_overlap |
+          (sq_forward_winner[store] && ((sq_mask_q[store] & selected_mask) != selected_mask));
+        sq_match = sq_match |
+          (sq_forward_winner[store] && ((sq_mask_q[store] & selected_mask) == selected_mask));
+        sq_match_data_valid = sq_match_data_valid |
+          (sq_forward_winner[store] && sq_data_valid_q[store]);
+        sq_forward_data = sq_forward_data |
+          ({DATA_WIDTH{sq_forward_winner[store]}} & sq_data_q[store]);
       end
-
-      partial_overlap =
-        sq_forward_select_valid[SQ_FORWARD_TREE_LEVELS][0] &&
-        sq_forward_select_partial[SQ_FORWARD_TREE_LEVELS][0];
-      sq_match = sq_forward_select_valid[SQ_FORWARD_TREE_LEVELS][0] &&
-                 !sq_forward_select_partial[SQ_FORWARD_TREE_LEVELS][0];
-      sq_match_data_valid =
-        sq_forward_select_data_valid[SQ_FORWARD_TREE_LEVELS][0];
-      sq_forward_data =
-        sq_forward_select_data[SQ_FORWARD_TREE_LEVELS][0];
 
       // The baseline scheduler also waits for older load addresses. This is
       // deliberately conservative: it prevents a younger normal load from
@@ -917,14 +883,26 @@ module rv_lsq #(
     direct_store_size_o = '0;
 
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      if (load_commit_valid_i[lane] &&
-          (load_commit_index_i[lane] < LQ_ENTRIES) &&
+      // Availability is a side-effect-free indexed probe, independent of
+      // request-valid/redirect. Only valid && ready may release an entry.
+      // LSU still suppresses valid during flush; no SB/MMIO effect escapes.
+      if ((load_commit_index_i[lane] < LQ_ENTRIES) &&
           lq_valid_q[load_commit_index_i[lane]] &&
           !lq_killed_q[load_commit_index_i[lane]] &&
           lq_completed_q[load_commit_index_i[lane]] &&
           (lq_sequence_q[load_commit_index_i[lane]] ==
            load_commit_sequence_i[lane]))
         load_commit_ready_o[lane] = 1'b1;
+
+      if ((store_commit_index_i[lane] < SQ_ENTRIES) &&
+          sq_valid_q[store_commit_index_i[lane]] &&
+          (sq_sequence_q[store_commit_index_i[lane]] == store_commit_sequence_i[lane]) &&
+          !sq_exception_q[store_commit_index_i[lane]] &&
+          sq_address_valid_q[store_commit_index_i[lane]] &&
+          sq_data_valid_q[store_commit_index_i[lane]])
+        store_commit_ready_o[lane] = sq_device_q[store_commit_index_i[lane]] ?
+          (direct_store_complete_i[lane] && !direct_store_error_i[lane]) :
+          sb_enq_ready_i[lane];
 
       if (store_commit_valid_i[lane] &&
           (store_commit_index_i[lane] < SQ_ENTRIES) &&
@@ -944,8 +922,6 @@ module rv_lsq #(
           direct_store_data_o[lane] = sq_data_q[store_commit_index_i[lane]];
           direct_store_mask_o[lane] = sq_mask_q[store_commit_index_i[lane]];
           direct_store_size_o[lane] = sq_size_q[store_commit_index_i[lane]];
-          store_commit_ready_o[lane] = direct_store_complete_i[lane] &&
-                                       !direct_store_error_i[lane];
           store_commit_error_o[lane] = direct_store_complete_i[lane] &&
                                        direct_store_error_i[lane];
         end else begin
@@ -957,7 +933,6 @@ module rv_lsq #(
           sb_enq_mask_o[lane] = sq_mask_q[store_commit_index_i[lane]];
           sb_enq_size_o[lane] = sq_size_q[store_commit_index_i[lane]];
           sb_enq_device_o[lane] = 1'b0;
-          store_commit_ready_o[lane] = sb_enq_ready_i[lane];
         end
       end
     end

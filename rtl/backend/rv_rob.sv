@@ -201,15 +201,24 @@ module rv_rob #(
 
   end
 
-  always_comb begin
-    live_query_valid_o = '0;
-    for (int unsigned query = 0; query < LIVE_QUERY_PORTS; query++) begin
-      for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
-        if (entries_q[entry].valid &&
-            (entries_q[entry].sequence_id == live_query_sequence_i[query]))
-          live_query_valid_o[query] = 1'b1;
-      end
+  // Preserve the resident-generation CAM semantics, including pre-edge flush
+  // visibility.  A forward "if (hit) live=1" scan becomes a serial OR chain
+  // before mapping.  Explicit padding/reduction bounds this part of the late
+  // memory-response -> WB-live -> arbiter-ready path to ceil(log2(entries)).
+  localparam int unsigned LIVE_LEAVES = 1 << $clog2(ROB_ENTRIES);
+  for (genvar query = 0; query < LIVE_QUERY_PORTS; query++) begin : g_live_query
+    logic [2*LIVE_LEAVES-1:1] hit_tree;
+    for (genvar leaf = 0; leaf < LIVE_LEAVES; leaf++) begin : g_leaf
+      if (leaf < ROB_ENTRIES)
+        assign hit_tree[LIVE_LEAVES+leaf] = entries_q[leaf].valid &&
+          (entries_q[leaf].sequence_id == live_query_sequence_i[query]);
+      else
+        assign hit_tree[LIVE_LEAVES+leaf] = 1'b0;
     end
+    for (genvar node = 1; node < LIVE_LEAVES; node++) begin : g_reduce
+      assign hit_tree[node] = hit_tree[2*node] | hit_tree[2*node+1];
+    end
+    assign live_query_valid_o[query] = hit_tree[1];
   end
 
   always_comb begin
@@ -334,151 +343,127 @@ module rv_rob #(
     end
   end
 
+  // Cursor control and entry storage are separate. Each entry has a constant
+  // write address: a late WB completion must not traverse the array-wide
+  // variable-index partial-write network generated for allocation/retirement.
+  // Priority is unchanged: reset > global flush > selective flush >
+  // completion (highest port last) > retire > allocation (highest lane last).
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
-      head_q          <= '0;
-      tail_q          <= '0;
-      count_q         <= '0;
+      head_q <= '0;
+      tail_q <= '0;
+      count_q <= '0;
       next_sequence_q <= '0;
-      for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++)
-        entries_q[entry] <= '0;
     end else if (flush_all_i) begin
-      for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++)
-        entries_q[entry].valid <= 1'b0;
-      head_q  <= tail_q;
+      head_q <= tail_q;
       count_q <= '0;
     end else if (flush_younger_i) begin
       if (flush_boundary_found) begin
-        for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
-          if (entries_q[entry].valid &&
-              sequence_after(entries_q[entry].sequence_id, flush_sequence_i))
-            entries_q[entry].valid <= 1'b0;
-        end
-        tail_q  <= flush_tail;
+        tail_q <= flush_tail;
         count_q <= flush_kept_count;
-
-        // The resolving branch normally completes in the same cycle that it
-        // requests a younger flush. Preserve completions at or before the
-        // boundary; otherwise the branch result could be consumed by WB while
-        // its ROB entry remains permanently incomplete.
-        for (int unsigned port = 0; port < COMPLETE_PORTS; port++) begin
-          if (complete_valid_i[port] &&
-              !sequence_after(complete_sequence_i[port], flush_sequence_i)) begin
-            for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
-              if (entries_q[entry].valid &&
-                  (entries_q[entry].sequence_id == complete_sequence_i[port])) begin
-                entries_q[entry].complete <= 1'b1;
-                entries_q[entry].fflags <= complete_fflags_i[port];
-                if (complete_exception_valid_i[port]) begin
-                  entries_q[entry].exception_valid <= 1'b1;
-                  entries_q[entry].exception_cause <=
-                    complete_exception_cause_i[port];
-                  entries_q[entry].exception_tval <=
-                    complete_exception_tval_i[port];
-                end
-                if (entries_q[entry].is_branch) begin
-                  entries_q[entry].branch_mispredict <=
-                    complete_branch_mispredict_i[port];
-                  entries_q[entry].branch_target <=
-                    complete_branch_target_i[port];
-                end
-              end
-            end
-          end
-        end
       end else begin
-        for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++)
-          entries_q[entry].valid <= 1'b0;
-        head_q  <= tail_q;
+        head_q <= tail_q;
         count_q <= '0;
       end
     end else begin
-      for (int unsigned port = 0; port < COMPLETE_PORTS; port++) begin
-        if (complete_valid_i[port]) begin
-          for (int unsigned entry = 0; entry < ROB_ENTRIES; entry++) begin
-            if (entries_q[entry].valid &&
-                (entries_q[entry].sequence_id == complete_sequence_i[port])) begin
-              entries_q[entry].complete <= 1'b1;
-              entries_q[entry].fflags <= complete_fflags_i[port];
-              if (complete_exception_valid_i[port]) begin
-                entries_q[entry].exception_valid <= 1'b1;
-                entries_q[entry].exception_cause <=
-                  complete_exception_cause_i[port];
-                entries_q[entry].exception_tval <=
-                  complete_exception_tval_i[port];
-              end
-              if (entries_q[entry].is_branch) begin
-                entries_q[entry].branch_mispredict <=
-                  complete_branch_mispredict_i[port];
-                entries_q[entry].branch_target <=
-                  complete_branch_target_i[port];
-              end
+      if (retire_count != 0)
+        head_q <= increment_index(head_q, retire_count);
+      if (accepted_alloc_count != 0) begin
+        tail_q <= increment_index(tail_q, accepted_alloc_count);
+        next_sequence_q <= next_sequence_q + SEQ_WIDTH'(accepted_alloc_count);
+      end
+      count_q <= count_q + ROB_COUNT_WIDTH'(accepted_alloc_count) -
+                 ROB_COUNT_WIDTH'(retire_count);
+    end
+  end
+
+  for (genvar entry = 0; entry < ROB_ENTRIES; entry++) begin : g_entry_storage
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
+        entries_q[entry] <= '0;
+      end else if (flush_all_i ||
+                   (flush_younger_i && !flush_boundary_found)) begin
+        entries_q[entry].valid <= 1'b0;
+      end else begin
+        if (flush_younger_i && entries_q[entry].valid &&
+            sequence_after(entries_q[entry].sequence_id, flush_sequence_i))
+          entries_q[entry].valid <= 1'b0;
+
+        // Selective flush preserves same-edge older/boundary completions.
+        // Match uses pre-edge generation state, including slot reuse.
+        for (int unsigned port = 0; port < COMPLETE_PORTS; port++) begin
+          if (complete_valid_i[port] && entries_q[entry].valid &&
+              (entries_q[entry].sequence_id == complete_sequence_i[port]) &&
+              (!flush_younger_i ||
+               !sequence_after(complete_sequence_i[port], flush_sequence_i))) begin
+            entries_q[entry].complete <= 1'b1;
+            entries_q[entry].fflags <= complete_fflags_i[port];
+            if (complete_exception_valid_i[port]) begin
+              entries_q[entry].exception_valid <= 1'b1;
+              entries_q[entry].exception_cause <= complete_exception_cause_i[port];
+              entries_q[entry].exception_tval <= complete_exception_tval_i[port];
+            end
+            if (entries_q[entry].is_branch) begin
+              entries_q[entry].branch_mispredict <= complete_branch_mispredict_i[port];
+              entries_q[entry].branch_target <= complete_branch_target_i[port];
+            end
+          end
+        end
+
+        if (!flush_younger_i) begin
+          if ((retire_fire[0] && (head_q == ROB_INDEX_WIDTH'(entry))) ||
+              (retire_fire[1] && (head_plus_one == ROB_INDEX_WIDTH'(entry))))
+            entries_q[entry].valid <= 1'b0;
+
+          for (int unsigned lane = 0; lane < 2; lane++) begin
+            if ((accepted_alloc_count != 0) && alloc_valid_i[lane] &&
+                (alloc_index_o[lane] == ROB_INDEX_WIDTH'(entry))) begin
+            entries_q[entry].valid <= 1'b1;
+            entries_q[entry].complete <=
+              alloc_complete_i[lane] || alloc_exception_valid_i[lane];
+            entries_q[entry].sequence_id <=
+              alloc_sequence_o[lane];
+            entries_q[entry].pc <= alloc_pc_i[lane];
+            entries_q[entry].instruction <=
+              alloc_instruction_i[lane];
+            entries_q[entry].instruction_length <=
+              alloc_instruction_length_i[lane];
+            entries_q[entry].writes_destination <=
+              alloc_writes_destination_i[lane];
+            entries_q[entry].destination_class <=
+              alloc_destination_class_i[lane];
+            entries_q[entry].destination_arch <=
+              alloc_destination_arch_i[lane];
+            entries_q[entry].destination_phys <=
+              alloc_destination_phys_i[lane];
+            entries_q[entry].stale_phys <=
+              alloc_stale_phys_i[lane];
+            entries_q[entry].source0_phys <=
+              alloc_source0_phys_i[lane];
+            entries_q[entry].is_store <=
+              alloc_is_store_i[lane];
+            entries_q[entry].is_load <=
+              alloc_is_load_i[lane];
+            entries_q[entry].lq_index <=
+              alloc_lq_index_i[lane];
+            entries_q[entry].sq_index <= alloc_sq_index_i[lane];
+            entries_q[entry].is_branch <=
+              alloc_is_branch_i[lane];
+            entries_q[entry].serializing <=
+              alloc_serializing_i[lane];
+            entries_q[entry].exception_valid <=
+              alloc_exception_valid_i[lane];
+            entries_q[entry].exception_cause <=
+              alloc_exception_cause_i[lane];
+            entries_q[entry].exception_tval <=
+              alloc_exception_tval_i[lane];
+            entries_q[entry].fflags <= '0;
+            entries_q[entry].branch_mispredict <= 1'b0;
+            entries_q[entry].branch_target <= '0;
             end
           end
         end
       end
-
-      if (retire_fire[0])
-        entries_q[head_q].valid <= 1'b0;
-      if (retire_fire[1])
-        entries_q[head_plus_one].valid <= 1'b0;
-      if (retire_count != 0)
-        head_q <= increment_index(head_q, retire_count);
-
-      if (accepted_alloc_count != 0) begin
-        for (int unsigned lane = 0; lane < 2; lane++) begin
-          if (alloc_valid_i[lane]) begin
-            entries_q[alloc_index_o[lane]].valid <= 1'b1;
-            entries_q[alloc_index_o[lane]].complete <=
-              alloc_complete_i[lane] || alloc_exception_valid_i[lane];
-            entries_q[alloc_index_o[lane]].sequence_id <=
-              alloc_sequence_o[lane];
-            entries_q[alloc_index_o[lane]].pc <= alloc_pc_i[lane];
-            entries_q[alloc_index_o[lane]].instruction <=
-              alloc_instruction_i[lane];
-            entries_q[alloc_index_o[lane]].instruction_length <=
-              alloc_instruction_length_i[lane];
-            entries_q[alloc_index_o[lane]].writes_destination <=
-              alloc_writes_destination_i[lane];
-            entries_q[alloc_index_o[lane]].destination_class <=
-              alloc_destination_class_i[lane];
-            entries_q[alloc_index_o[lane]].destination_arch <=
-              alloc_destination_arch_i[lane];
-            entries_q[alloc_index_o[lane]].destination_phys <=
-              alloc_destination_phys_i[lane];
-            entries_q[alloc_index_o[lane]].stale_phys <=
-              alloc_stale_phys_i[lane];
-            entries_q[alloc_index_o[lane]].source0_phys <=
-              alloc_source0_phys_i[lane];
-            entries_q[alloc_index_o[lane]].is_store <=
-              alloc_is_store_i[lane];
-            entries_q[alloc_index_o[lane]].is_load <=
-              alloc_is_load_i[lane];
-            entries_q[alloc_index_o[lane]].lq_index <=
-              alloc_lq_index_i[lane];
-            entries_q[alloc_index_o[lane]].sq_index <= alloc_sq_index_i[lane];
-            entries_q[alloc_index_o[lane]].is_branch <=
-              alloc_is_branch_i[lane];
-            entries_q[alloc_index_o[lane]].serializing <=
-              alloc_serializing_i[lane];
-            entries_q[alloc_index_o[lane]].exception_valid <=
-              alloc_exception_valid_i[lane];
-            entries_q[alloc_index_o[lane]].exception_cause <=
-              alloc_exception_cause_i[lane];
-            entries_q[alloc_index_o[lane]].exception_tval <=
-              alloc_exception_tval_i[lane];
-            entries_q[alloc_index_o[lane]].fflags <= '0;
-            entries_q[alloc_index_o[lane]].branch_mispredict <= 1'b0;
-            entries_q[alloc_index_o[lane]].branch_target <= '0;
-          end
-        end
-        tail_q <= increment_index(tail_q, accepted_alloc_count);
-        next_sequence_q <= next_sequence_q +
-                           SEQ_WIDTH'(accepted_alloc_count);
-      end
-
-      count_q <= count_q + ROB_COUNT_WIDTH'(accepted_alloc_count) -
-                 ROB_COUNT_WIDTH'(retire_count);
     end
   end
 
@@ -487,6 +472,21 @@ module rv_rob #(
   assign full_o  = (count_q == ROB_ENTRIES);
 
 `ifndef SYNTHESIS
+  // Independent linear CAM oracle. This deliberately keeps the old algorithm
+  // in assertions only, checking the tree across reset, sequence wrap, retire,
+  // allocation and recovery without changing synthesized state or latency.
+  function automatic logic live_cam_reference(input logic [SEQ_WIDTH-1:0] sequence_id);
+    logic resident;
+    resident = 1'b0;
+    for (int entry = 0; entry < ROB_ENTRIES; entry++)
+      resident |= entries_q[entry].valid &&
+                  (entries_q[entry].sequence_id == sequence_id);
+    return resident;
+  endfunction
+  for (genvar query = 0; query < LIVE_QUERY_PORTS; query++) begin : g_live_oracle
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      live_query_valid_o[query] == live_cam_reference(live_query_sequence_i[query]));
+  end
   property p_lane1_allocation_requires_lane0;
     @(posedge clk_i) disable iff (!rst_ni)
       alloc_valid_i[1] |-> alloc_valid_i[0];

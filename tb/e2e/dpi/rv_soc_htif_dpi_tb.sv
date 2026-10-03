@@ -10,7 +10,9 @@ module rv_soc_htif_dpi_tb #(
   parameter bit CoreAguLoadBypass = 1'b0,
 `endif
   parameter bit CoreEarlyLoadSelect = 1'b1,
-  parameter bit CoreCompatiblePairSelect = 1'b0
+  parameter bit CoreCompatiblePairSelect = 1'b0,
+  parameter bit CoreBranchTagPipeline = 1'b0,
+  parameter bit CoreDivTagPipeline = 1'b0
 );
   import rv_soc_pkg::*;
 
@@ -265,6 +267,8 @@ module rv_soc_htif_dpi_tb #(
     .BR_CHECKPOINTS(CoreBranchCheckpoints),
     .EARLY_LOAD_SELECT(CoreEarlyLoadSelect), .AGU_LOAD_BYPASS(CoreAguLoadBypass),
     .COMPATIBLE_PAIR_SELECT(CoreCompatiblePairSelect),
+    .BRANCH_TAG_PIPELINE(CoreBranchTagPipeline),
+    .DIV_TAG_PIPELINE(CoreDivTagPipeline),
     // This ROM wakes on MSIP, clears CLINT.msip, reads HOSTIF.BOOT_ENTRY and
     // jumps there. Consequently the ELF entry need not contain a trap stub.
     .BOOTROM_INIT_FILE ("tb/fixtures/bootrom/bootrom_host_jump.hex")

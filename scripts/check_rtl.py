@@ -158,7 +158,7 @@ def main() -> int:
 
     print(
         "RTL parse/elaboration passed: rv32_default, rv32_paddr34, "
-        "rv64_smoke, soc_default_map, soc_relocated_map, soc_top, soc_leafs, "
+        "rv64_smoke, rv_tag_pipeline_smoke (XLEN32/64 x branch/div flags), soc_default_map, soc_relocated_map, soc_top, soc_leafs, "
         "d_fabric_tb, i_fabric_tb, axi_bridges, axi_xbar, peripherals, "
         "axi_bridge_tbs, soc_top_tb, rename2_tb, rob_tb, issue_queue_tb, "
         "issue_arbiter_tb, phys_regfile_tb, execute_units_tb, multiplier_tb, "

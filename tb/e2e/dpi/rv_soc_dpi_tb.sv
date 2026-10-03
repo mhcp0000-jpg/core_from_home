@@ -2,7 +2,9 @@ module rv_soc_dpi_tb #(
   parameter int unsigned CoreBranchCheckpoints = 8,
   parameter bit CoreAguLoadBypass = 1'b0,
   parameter bit CoreEarlyLoadSelect = 1'b1,
-  parameter bit CoreCompatiblePairSelect = 1'b0
+  parameter bit CoreCompatiblePairSelect = 1'b0,
+  parameter bit CoreBranchTagPipeline = 1'b0,
+  parameter bit CoreDivTagPipeline = 1'b0
 );
   import rv_soc_pkg::*;
 
@@ -39,6 +41,8 @@ module rv_soc_dpi_tb #(
   rv_soc_top #(
     .BR_CHECKPOINTS(CoreBranchCheckpoints),
     .EARLY_LOAD_SELECT(CoreEarlyLoadSelect), .AGU_LOAD_BYPASS(CoreAguLoadBypass),
+    .BRANCH_TAG_PIPELINE(CoreBranchTagPipeline),
+    .DIV_TAG_PIPELINE(CoreDivTagPipeline),
     .COMPATIBLE_PAIR_SELECT(CoreCompatiblePairSelect),
     .BOOTROM_INIT_FILE("tb/fixtures/bootrom/bootrom_wait.hex")
   ) u_dut (

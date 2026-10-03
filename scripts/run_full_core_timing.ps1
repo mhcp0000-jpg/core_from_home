@@ -2,6 +2,13 @@ param(
   [string]$ToolRoot = "C:\rv_toolchains\oss-cad-suite",
   [string]$Liberty = "C:\rv_toolchains\libs\nangate45\NangateOpenCellLibrary_typical.lib",
   [string]$BuildRoot = "",
+  [ValidateSet("rv_ooo_core", "rv_issue_queue", "rv_rob", "rv_writeback_arbiter", "rv_exec_result_buffer", "rv_lsq")]
+  [string]$TopModule = "rv_ooo_core",
+  # Optional immutable source snapshot for a matched A/B leaf run.
+  # Input identities are still hashed; gitCommit alone is not source identity.
+  [string]$SourceRoot = "",
+  [switch]$BranchTagPipeline,
+  [switch]$DivTagPipeline,
   [ValidateSet("DirectFlops", "Inferred")]
   [string]$ArrayLowering = "DirectFlops",
   [ValidateSet("Coarse", "Map", "Fine", "Flatten", "Abc")]
@@ -18,6 +25,21 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if (!$SourceRoot) { $SourceRoot = $repoRoot }
+$sourceFull = (Resolve-Path -LiteralPath $SourceRoot).Path
+$parameterArgs = if ($TopModule -eq "rv_ooo_core") {
+  "-G EARLY_LOAD_SELECT=1 -G AGU_LOAD_BYPASS=1 -G COMPATIBLE_PAIR_SELECT=0 -G BR_CHECKPOINTS=8 -G BRANCH_TAG_PIPELINE=$(if ($BranchTagPipeline) { 1 } else { 0 })" + $(if ($DivTagPipeline) { " -G DIV_TAG_PIPELINE=1" } else { "" })
+} elseif ($TopModule -eq "rv_lsq") {
+  "-G EARLY_LOAD_SELECT=1 -G AGU_LOAD_BYPASS=1"
+} elseif ($TopModule -eq "rv_issue_queue") {
+  "-G ENTRIES=56 -G WRITEBACK_PORTS=8 -G COMPATIBLE_PAIR_SELECT=0"
+} elseif ($TopModule -eq "rv_rob") {
+  "-G ROB_ENTRIES=48 -G LIVE_QUERY_PORTS=11 -G COMPLETE_PORTS=4"
+} elseif ($TopModule -eq "rv_writeback_arbiter") {
+  "-G SOURCE_COUNT=11 -G INT_WRITE_PORTS=2 -G FP_WRITE_PORTS=2 -G ROB_COMPLETE_PORTS=4"
+} else {
+  "-G DEPTH=2 -G XLEN=32 -G ROB_SEQ_WIDTH=8 -G PHYS_TAG_WIDTH=7"
+}
 if (!$BuildRoot) { $BuildRoot = Join-Path $repoRoot "out/full_core_timing" }
 $buildFull = [IO.Path]::GetFullPath($BuildRoot)
 $yosys = Join-Path $ToolRoot "bin/yosys.exe"
@@ -89,7 +111,7 @@ try {
       $inputName = $inputName.Trim()
       $destination = "$run/snapshot/$inputName"
       New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
-      Copy-Item -LiteralPath $inputName -Destination $destination
+      Copy-Item -LiteralPath (Join-Path $sourceFull $inputName) -Destination $destination
       $identities += @{ Path = $inputName; Sha256 = (Get-FileHash $destination).Hash }
     }
     $inputs | Set-Content "$run/snapshot/sources.f" -Encoding ASCII
@@ -102,7 +124,8 @@ try {
       constraintSha256 = (Get-FileHash "$run/abc.constr").Hash
       yosysSha256 = (Get-FileHash $yosys).Hash; abcSha256 = (Get-FileHash $abc).Hash
       runnerSha256 = (Get-FileHash $PSCommandPath).Hash
-      parameters = "EARLY_LOAD_SELECT=1 AGU_LOAD_BYPASS=1 COMPATIBLE_PAIR_SELECT=0 BR_CHECKPOINTS=8"
+      topModule = $TopModule; sourceRoot = $sourceFull
+      parameters = $parameterArgs
       resetModel = "retained"; arrayModel = "all mapped to flops and muxes"
       arrayLowering = $ArrayLowering
       physicalRamGiB = $memory.totalPhysical / 1GB; commitLimitGiB = $memory.totalPageFile / 1GB
@@ -110,6 +133,9 @@ try {
     } | ConvertTo-Json -Depth 6 | Set-Content $manifestPath -Encoding UTF8
   } elseif (!(Test-Path -LiteralPath $manifestPath)) { throw "No checkpoint manifest" }
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  if ($manifest.PSObject.Properties.Name -contains "topModule") {
+    if ($manifest.topModule -ne $TopModule) { throw "Resume top differs from frozen top" }
+  } elseif ($TopModule -ne "rv_ooo_core") { throw "Legacy checkpoint is a core run, not an IQ run" }
   foreach ($source in $manifest.sources) {
     if ((Get-FileHash "$run/snapshot/$($source.Path)").Hash -ne $source.Sha256) {
       throw "Frozen input changed: $($source.Path)"
@@ -125,7 +151,7 @@ try {
     "buffer", "upsize -D $TargetDelayPs", "dnsize -D $TargetDelayPs", "stime -p") |
     Set-Content "$run/abc_trim.scr" -Encoding ASCII
   $commands = @{
-    Coarse = "read_slang --std 1800-2017 --single-unit --best-effort-hierarchy --ignore-assertions --ignore-initial --top rv_ooo_core -G EARLY_LOAD_SELECT=1 -G AGU_LOAD_BYPASS=1 -G COMPATIBLE_PAIR_SELECT=0 -G BR_CHECKPOINTS=8 -f sources.f; hierarchy -check -top rv_ooo_core; proc; opt -fast; memory -nomap; opt_clean; stat; write_rtlil $run/coarse.il"
+    Coarse = "read_slang --std 1800-2017 --single-unit --best-effort-hierarchy --ignore-assertions --ignore-initial --top $TopModule $parameterArgs -f sources.f; hierarchy -check -top $TopModule; proc; opt -fast; memory -nomap; opt_clean; stat; write_rtlil $run/coarse.il"
     Map = "read_rtlil $run/coarse.il; memory_map; opt_clean; select -assert-none t:`$mem*; stat; write_rtlil $run/mapped_arrays.il"
     Fine = ""
     Flatten = "read_rtlil $run/fine_hierarchy.il; flatten; opt -fast; dfflibmap -liberty $lib; select -assert-none t:`$mem* m:*; select -assert-none t:`$* t:`$_* %d t:`$scopeinfo %d; stat; write_rtlil $run/pre_abc.il"

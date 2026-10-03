@@ -14,6 +14,8 @@ param(
   [switch]$CoreAguLoadBypass,
   [switch]$CoreEarlyLoadSelect = $true,
   [switch]$CoreCompatiblePairSelect,
+  [switch]$CoreBranchTagPipeline,
+  [switch]$CoreDivTagPipeline,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
   [ValidateRange(1, 1000000000)]
@@ -54,6 +56,28 @@ $sources += "tb/e2e/dpi/elf_loader.cpp"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 $stagedElf = Join-Path $BuildRoot "payload.elf"
 Copy-Item -LiteralPath $resolvedElf -Destination $stagedElf -Force
+# Build identity is the actual source hashes, not only HEAD in a dirty tree.
+# Keep these generated records beside the executable, never in a source list.
+@{
+  topModule = $topModule; gitCommit = (& git -C $repoRoot rev-parse HEAD).ToString().Trim()
+  startedUtc = [DateTime]::UtcNow.ToString("o")
+  elfSha256 = (Get-FileHash -LiteralPath $stagedElf).Hash
+  verilatorSha256 = (Get-FileHash -LiteralPath $verilator).Hash
+  assertions = [bool]$RtlAssertions
+  parameters = @{
+    BR_CHECKPOINTS = $CoreBranchCheckpoints; AGU_LOAD_BYPASS = [bool]$CoreAguLoadBypass
+    EARLY_LOAD_SELECT = [bool]$CoreEarlyLoadSelect
+    COMPATIBLE_PAIR_SELECT = [bool]$CoreCompatiblePairSelect
+    BRANCH_TAG_PIPELINE = [bool]$CoreBranchTagPipeline
+    DIV_TAG_PIPELINE = [bool]$CoreDivTagPipeline
+  }
+  sources = @($sources | ForEach-Object {
+    # Get-Content strings carry PowerShell provider metadata. Use a NEW plain
+    # string or ConvertTo-Json serializes an ETS object rather than the path.
+    $sourceName = $_.ToString().Trim()
+    @{ Path = $sourceName; Sha256 = (Get-FileHash -LiteralPath (Join-Path $repoRoot $sourceName)).Hash }
+  })
+} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $BuildRoot "run_manifest.json") -Encoding UTF8
 
 try {
   & subst $drive $repoRoot
@@ -75,6 +99,8 @@ try {
     $verilatorArgs += "-GCoreEarlyLoadSelect=$(if ($CoreEarlyLoadSelect) { 1 } else { 0 })"
     $verilatorArgs += "-GCoreAguLoadBypass=$(if ($CoreAguLoadBypass) { 1 } else { 0 })"
     $verilatorArgs += "-GCoreCompatiblePairSelect=$(if ($CoreCompatiblePairSelect) { 1 } else { 0 })"
+    $verilatorArgs += "-GCoreBranchTagPipeline=$(if ($CoreBranchTagPipeline) { 1 } else { 0 })"
+    $verilatorArgs += "-GCoreDivTagPipeline=$(if ($CoreDivTagPipeline) { 1 } else { 0 })"
     $verilatorArgs += $mappedSources
     & $verilator @verilatorArgs
     if ($LASTEXITCODE -ne 0) { throw "DPI SoC code generation failed." }

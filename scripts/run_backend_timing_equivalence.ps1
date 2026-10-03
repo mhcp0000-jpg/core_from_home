@@ -2,7 +2,10 @@ param(
   [string]$Baseline = "8f1c6ba",
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
-  [int]$BuildJobs = 4
+  [int]$BuildJobs = 4,
+  [ValidateSet("alu", "divider", "multiplier", "wb", "iq")]
+  [string[]]$OnlyCases = @("alu", "divider", "multiplier", "wb", "iq"),
+  [string]$BuildRoot = "out/timing_equivalence"
 )
 # Compare interfaces and cycle timing against an immutable git checkpoint.
 # Generated reference RTL and build artifacts remain under ignored out/.
@@ -22,7 +25,8 @@ try {
   $cases = @(@("alu", "rv_int_alu"), @("divider", "rv_divider"), @("multiplier", "rv_multiplier"), @("wb", "rv_writeback_arbiter"), @("iq", "rv_issue_queue"))
   foreach ($case in $cases) {
     $name, $module = $case
-    $build = "${root}out/timing_equivalence/$name"
+    if ($name -notin $OnlyCases) { continue }
+    $build = "${root}$($BuildRoot.Replace('\','/').TrimEnd('/'))/$name"
     New-Item -ItemType Directory -Force $build | Out-Null
     $reference = & git -C $repoRoot show "${Baseline}:rtl/backend/$module.sv"
     if ($LASTEXITCODE) { throw "Cannot read baseline $Baseline/$module" }

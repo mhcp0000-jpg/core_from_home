@@ -125,6 +125,24 @@ rv_writeback_arbiter_timing_ref #(.SOURCE_COUNT(SOURCE_COUNT)) u1 (
 .complete_fflags_o(complete_fflags_o_1));
 logic [7:0] base;
 initial begin
+// Exhaust the bounded counter's 11-source input space before testing the
+// complete arbiter interface, including its saturation at rank four.
+for (int mask = 0; mask < (1 << SOURCE_COUNT); mask++) begin
+  logic [3:0] unary;
+  int count;
+  unary = u0.bounded_age_count(SOURCE_COUNT'(mask));
+  count = $countones(SOURCE_COUNT'(mask));
+  for (int bit_index = 0; bit_index < 4; bit_index++) begin
+    if (unary[bit_index] != (count >= bit_index+1))
+      $fatal(1,"Unary age count failed mask=%0h bit=%0d",mask,bit_index);
+    if (u0.rank_equals(unary,bit_index) != (count == bit_index))
+      $fatal(1,"Unary rank equality failed mask=%0h rank=%0d",mask,bit_index);
+  end
+  if (u0.rank_fits(unary,2) != (count < 2) ||
+      u0.rank_fits(unary,4) != (count < 4))
+    $fatal(1,"Unary resource limit failed mask=%0h",mask);
+end
+$display("WB unary rank oracle PASS 2048 masks");
 source_valid_i='0;
 source_live_i='0;
 source_sequence_i='0;

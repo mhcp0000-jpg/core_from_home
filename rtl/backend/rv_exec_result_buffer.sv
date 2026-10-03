@@ -107,68 +107,72 @@ module rv_exec_result_buffer #(
         end
       end
     end else begin : g_depth2
-      // Entry 0 is the presented head.  Entries are in issue order, which is
-      // not necessarily age order, so each is flush-checked independently.
-      logic valid1_q;
-      result_payload_t payload1_q;
-      logic pop, push, kill0, kill1;
+      // Circular storage: WB pop changes only occupancy/pointer FFs, never
+      // copies the wide payload into a head register. Capacity, full-cycle
+      // backpressure and insertion order are unchanged (no extra cycle).
+      result_payload_t slots_q [0:1];
+      logic head_q, tail_q;
+      logic [1:0] count_q;
+      logic pop, push, keep_head, keep_second;
 
-      assign request_ready_o = !(valid_q && valid1_q) && !flush_valid_i;
-      assign pop  = valid_q && result_ready_i;
+      assign valid_q = count_q != 0;
+      assign payload_q = slots_q[head_q];
+      assign request_ready_o = (count_q < 2) && !flush_valid_i;
+      assign pop = valid_q && result_ready_i;
       assign push = request_valid_i && request_ready_o;
-      assign kill0 = valid_q &&
-        (flush_all_i || sequence_is_younger(payload_q.sequence_id,
-                                            flush_sequence_i));
-      assign kill1 = valid1_q &&
-        (flush_all_i || sequence_is_younger(payload1_q.sequence_id,
-                                            flush_sequence_i));
+      // FIFO order is issue order, not ROB age. Independently test both
+      // entries: a younger head may die while its older second survives.
+      assign keep_head = (count_q != 0) && !flush_all_i &&
+        !sequence_is_younger(slots_q[head_q].sequence_id, flush_sequence_i);
+      assign keep_second = (count_q == 2) && !flush_all_i &&
+        !sequence_is_younger(slots_q[!head_q].sequence_id, flush_sequence_i);
 
       always_ff @(posedge clk_i) begin
         if (!rst_ni) begin
-          valid_q <= 1'b0;
-          valid1_q <= 1'b0;
-          payload_q <= '0;
-          payload1_q <= '0;
+          head_q <= 1'b0;
+          tail_q <= 1'b0;
+          count_q <= '0;
+          slots_q[0] <= '0;
+          slots_q[1] <= '0;
         end else if (flush_valid_i) begin
-          // Same policy as DEPTH=1: a flush cycle only removes squashed work.
-          if (kill0 && !kill1 && valid1_q) begin
-            payload_q <= payload1_q;
-            valid1_q <= 1'b0;
-          end else begin
-            if (kill0)
-              valid_q <= 1'b0;
-            if (kill1)
-              valid1_q <= 1'b0;
-          end
-        end else begin
-          case ({push, pop})
+          // No transfer on a flush edge. Rebuild pointers around surviving
+          // entries without copying data. Every new FF has an explicit reset.
+          case ({keep_head, keep_second})
+            2'b00: begin
+              count_q <= '0;
+              head_q <= 1'b0;
+              tail_q <= 1'b0;
+            end
             2'b01: begin
-              valid_q <= valid1_q;
-              payload_q <= payload1_q;
-              valid1_q <= 1'b0;
+              count_q <= 2'd1;
+              head_q <= !head_q;
+              tail_q <= head_q;
             end
             2'b10: begin
-              if (!valid_q) begin
-                valid_q <= 1'b1;
-                payload_q <= request_payload;
-              end else begin
-                valid1_q <= 1'b1;
-                payload1_q <= request_payload;
-              end
+              count_q <= 2'd1;
+              tail_q <= !head_q;
             end
             2'b11: begin
-              if (valid1_q) begin
-                payload_q <= payload1_q;
-                payload1_q <= request_payload;
-              end else begin
-                payload_q <= request_payload;
-              end
-            end
-            default: begin
+              count_q <= 2'd2;
+              tail_q <= head_q;
             end
           endcase
+        end else begin
+          if (push) begin
+            slots_q[tail_q] <= request_payload;
+            tail_q <= !tail_q;
+          end
+          if (pop) head_q <= !head_q;
+          count_q <= count_q + {1'b0,push} - {1'b0,pop};
         end
       end
+`ifndef SYNTHESIS
+      assert property (@(posedge clk_i) disable iff (!rst_ni) count_q <= 2);
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+        (count_q == 1) == (head_q != tail_q));
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
+        push && valid_q |-> head_q != tail_q);
+`endif
     end
   endgenerate
 

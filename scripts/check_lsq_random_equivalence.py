@@ -31,7 +31,16 @@ def fixture(actual, reference, args):
                 assignments.append(f"{name}=type_{name}'({{8{{$urandom}}}});")
         else:
             declarations.append(f"type_{name} dut_{name},ref_{name};")
-            checks.append(f'if(dut_{name} !== ref_{name}) $fatal(1,"{name} differs cycle=%0d",cycle);')
+            if getattr(args, "qualified_commit_ready", False) and name in (
+                "load_commit_ready_o", "store_commit_ready_o"
+            ):
+                valid = name.replace("ready_o", "valid_i")
+                checks.append(
+                    f'if((dut_{name} & {valid}) !== (ref_{name} & {valid})) '
+                    f'$fatal(1,"qualified {name} differs cycle=%0d",cycle);'
+                )
+            else:
+                checks.append(f'if(dut_{name} !== ref_{name}) $fatal(1,"{name} differs cycle=%0d",cycle);')
     def instance(module, prefix):
         connections = ",".join(f".{name}({name if direction == 'input' else prefix+'_'+name})" for direction, _, name in interface)
         return f"{module} #(.EARLY_LOAD_SELECT({args.early}),.AGU_LOAD_BYPASS({args.bypass}),.LQ_ENTRIES(LQ_ENTRIES),.SQ_ENTRIES(SQ_ENTRIES),.PADDR_WIDTH(PADDR_WIDTH)) {prefix}_i({connections});"
@@ -175,6 +184,11 @@ def main():
     parser.add_argument("--early", type=int, choices=(0, 1), default=1)
     parser.add_argument("--bypass", type=int, choices=(0, 1), default=1)
     parser.add_argument("--cycles", type=int, default=60000)
+    parser.add_argument(
+        "--qualified-commit-ready", action="store_true",
+        help="Compare only valid-qualified commit-ready; compare every other output/state exactly. "
+             "Use only for an intentional idle-ready availability contract change.",
+    )
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--verilator", default="verilator_bin.exe" if os.name == "nt" else "verilator")
     parser.add_argument("--make", default="make")
@@ -203,7 +217,11 @@ def main():
                   parameters=dict(loads=args.loads, stores=args.stores, width=args.width, early=args.early, bypass=args.bypass, cycles=args.cycles),
                   rtl_sha256=hashlib.sha256(actual_path.read_bytes()).hexdigest(),
                   fixture_sha256={name: hashlib.sha256(contents.encode()).hexdigest() for name, contents in copies.items()},
-                  scope="Seeded two-state random all-output/original-state differential test; protocol SVA disabled; not formal/ISA proof")
+                  qualified_commit_ready=args.qualified_commit_ready,
+                  scope=("Seeded two-state random differential test; "
+                         + ("commit-ready observed only while valid, all other outputs/original state exact; "
+                            if args.qualified_commit_ready else "all-output/original-state exact; ")
+                         + "protocol SVA disabled; not formal/ISA proof"))
     report_path = output/"report.json"
     report_path.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     commands = [[verilator,"--cc","--exe","--main","--timing","-DSYNTHESIS","-Wno-fatal","-Werror-UNOPTFLAT","--top-module","lsq_random_equiv_tb","--Mdir","build",*copies],

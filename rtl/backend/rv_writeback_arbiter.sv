@@ -54,24 +54,53 @@ module rv_writeback_arbiter #(
 
   import rv_ooo_pkg::*;
 
-  localparam int unsigned RANK_WIDTH = $clog2(SOURCE_COUNT + 1);
   localparam int unsigned POPCOUNT_LEAVES = 1 << $clog2(SOURCE_COUNT);
+  localparam int unsigned MAX_PORTS =
+    (ROB_COMPLETE_PORTS > INT_WRITE_PORTS) ?
+      ((ROB_COMPLETE_PORTS > FP_WRITE_PORTS) ? ROB_COMPLETE_PORTS : FP_WRITE_PORTS) :
+      ((INT_WRITE_PORTS > FP_WRITE_PORTS) ? INT_WRITE_PORTS : FP_WRITE_PORTS);
+  localparam int unsigned RANK_LIMIT = (MAX_PORTS < SOURCE_COUNT) ? MAX_PORTS : SOURCE_COUNT;
   logic [ROB_COMPLETE_PORTS-1:0][2:0] wakeup_class_bits;
   logic [ROB_COMPLETE_PORTS-1:0][5:0] complete_cause_bits;
   assign wakeup_class_o = wakeup_class_bits;
   assign complete_exception_cause_o = complete_cause_bits;
 
-  function automatic logic [RANK_WIDTH-1:0] balanced_popcount(
+  // Unary, saturated age rank: bit k means at least k+1 older contenders.
+  // Arbitration only needs ranks below the available 2/2/4 ports; a binary
+  // population count computes unnecessary high bits and inserts carry/compare
+  // chains on late source_live -> ready.  This balanced AND/OR merge has no
+  // carry propagation and preserves every age/tie-break/grant decision.
+  function automatic logic [RANK_LIMIT-1:0] bounded_age_count(
     input logic [SOURCE_COUNT-1:0] mask
   );
-    logic [RANK_WIDTH-1:0] tree [0:2*POPCOUNT_LEAVES-1];
+    logic [RANK_LIMIT-1:0] tree [0:2*POPCOUNT_LEAVES-1];
     tree[0] = '0;
-    for (int leaf = 0; leaf < POPCOUNT_LEAVES; leaf++)
-      tree[POPCOUNT_LEAVES+leaf] = (leaf < SOURCE_COUNT) ?
-        RANK_WIDTH'(mask[leaf]) : '0;
-    for (int node = POPCOUNT_LEAVES-1; node > 0; node--)
-      tree[node] = tree[node*2] + tree[node*2+1];
+    for (int leaf = 0; leaf < POPCOUNT_LEAVES; leaf++) begin
+      tree[POPCOUNT_LEAVES+leaf] = '0;
+      if (leaf < SOURCE_COUNT)
+        tree[POPCOUNT_LEAVES+leaf][0] = mask[leaf];
+    end
+    for (int node = POPCOUNT_LEAVES-1; node > 0; node--) begin
+      tree[node] = tree[node*2] | tree[node*2+1];
+      for (int rank = 1; rank < RANK_LIMIT; rank++)
+        for (int left = 1; left <= rank; left++)
+          tree[node][rank] |= tree[node*2][left-1] &
+                              tree[node*2+1][rank-left];
+    end
     return tree[1];
+  endfunction
+  function automatic logic rank_fits(
+    input logic [RANK_LIMIT-1:0] rank, input int unsigned ports
+  );
+    if (ports > RANK_LIMIT) return 1'b1;
+    return !rank[ports-1];
+  endfunction
+  function automatic logic rank_equals(
+    input logic [RANK_LIMIT-1:0] rank, input int unsigned slot
+  );
+    if (slot >= RANK_LIMIT) return 1'b0;
+    if (slot == 0) return !rank[0];
+    return rank[slot-1] && !rank[slot];
   endfunction
   function automatic logic sequence_before(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
@@ -98,9 +127,9 @@ module rv_writeback_arbiter #(
     logic [SOURCE_COUNT-1:0] needs_fp_work;
     logic [SOURCE_COUNT-1:0] resource_eligible_work;
     logic [SOURCE_COUNT-1:0] selected_work;
-    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] int_rank_work;
-    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] fp_rank_work;
-    logic [SOURCE_COUNT-1:0][RANK_WIDTH-1:0] complete_rank_work;
+    logic [SOURCE_COUNT-1:0][RANK_LIMIT-1:0] int_rank_work;
+    logic [SOURCE_COUNT-1:0][RANK_LIMIT-1:0] fp_rank_work;
+    logic [SOURCE_COUNT-1:0][RANK_LIMIT-1:0] complete_rank_work;
 
     source_ready_o = '0;
     eligible_work = '0;
@@ -154,13 +183,13 @@ module rv_writeback_arbiter #(
         older_fp[other] = eligible_work[other] && other_precedes &&
                           needs_fp_work[other];
       end
-      int_rank_work[source] = balanced_popcount(older_int);
-      fp_rank_work[source] = balanced_popcount(older_fp);
+      int_rank_work[source] = bounded_age_count(older_int);
+      fp_rank_work[source] = bounded_age_count(older_fp);
       resource_eligible_work[source] = eligible_work[source] &&
         (!needs_int_work[source] ||
-         (int_rank_work[source] < RANK_WIDTH'(INT_WRITE_PORTS))) &&
+         rank_fits(int_rank_work[source], INT_WRITE_PORTS)) &&
         (!needs_fp_work[source] ||
-         (fp_rank_work[source] < RANK_WIDTH'(FP_WRITE_PORTS)));
+         rank_fits(fp_rank_work[source], FP_WRITE_PORTS));
     end
 
     // Rank the resource-eligible union once.  This replaces four serial
@@ -178,9 +207,9 @@ module rv_writeback_arbiter #(
            (other < source));
         older_complete[other] = resource_eligible_work[other] && other_precedes;
       end
-      complete_rank_work[source] = balanced_popcount(older_complete);
+      complete_rank_work[source] = bounded_age_count(older_complete);
       selected_work[source] = resource_eligible_work[source] &&
-        (complete_rank_work[source] < RANK_WIDTH'(ROB_COMPLETE_PORTS));
+        rank_fits(complete_rank_work[source], ROB_COMPLETE_PORTS);
     end
 
     int_wb_valid_o = '0;
@@ -218,7 +247,7 @@ module rv_writeback_arbiter #(
       for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
         logic wake_hit;
         slot_hit[source] = selected_work[source] &&
-          (complete_rank_work[source] == RANK_WIDTH'(slot));
+          rank_equals(complete_rank_work[source], slot);
         wake_hit = slot_hit[source] && source_destination_valid_i[source] &&
           !source_exception_valid_i[source] &&
           (source_destination_class_i[source] != REG_NONE);
@@ -251,7 +280,7 @@ module rv_writeback_arbiter #(
       for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
         logic hit;
         hit = selected_work[source] && needs_int_work[source] &&
-          (int_rank_work[source] == RANK_WIDTH'(port));
+          rank_equals(int_rank_work[source], port);
         int_wb_valid_o[port] |= hit;
         int_wb_phys_o[port] |= source_destination_phys_i[source] &
           {PHYS_TAG_WIDTH{hit}};
@@ -263,7 +292,7 @@ module rv_writeback_arbiter #(
       for (int unsigned source = 0; source < SOURCE_COUNT; source++) begin
         logic hit;
         hit = selected_work[source] && needs_fp_work[source] &&
-          (fp_rank_work[source] == RANK_WIDTH'(port));
+          rank_equals(fp_rank_work[source], port);
         fp_wb_valid_o[port] |= hit;
         fp_wb_phys_o[port] |= source_destination_phys_i[source] &
           {PHYS_TAG_WIDTH{hit}};

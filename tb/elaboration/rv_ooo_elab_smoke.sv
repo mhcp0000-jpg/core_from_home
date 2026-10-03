@@ -1,6 +1,8 @@
 module rv_ooo_elab_smoke #(
   parameter int unsigned XLEN        = 32,
-  parameter int unsigned PADDR_WIDTH = 32
+  parameter int unsigned PADDR_WIDTH = 32,
+  parameter bit BRANCH_TAG_PIPELINE = 1'b0,
+  parameter bit DIV_TAG_PIPELINE = 1'b0
 );
 
   localparam int unsigned FETCH_BYTES = 16;
@@ -66,6 +68,8 @@ module rv_ooo_elab_smoke #(
   rv_ooo_core #(
     .XLEN        (XLEN),
     .PADDR_WIDTH (PADDR_WIDTH),
+    .BRANCH_TAG_PIPELINE(BRANCH_TAG_PIPELINE),
+    .DIV_TAG_PIPELINE(DIV_TAG_PIPELINE),
     .MEM_DATA_WIDTH (MEM_DATA_WIDTH),
     .FETCH_BYTES (FETCH_BYTES)
   ) u_dut (
@@ -126,4 +130,17 @@ endmodule
 
 module rv64_smoke;
   rv_ooo_elab_smoke #(.XLEN(64), .PADDR_WIDTH(56)) u_smoke ();
+endmodule
+
+// Verify independent parameter combinations and read-port offsets for both
+// XLEN frames. Elaboration is not an RV64 ISA/functionality sign-off.
+module rv_tag_pipeline_smoke;
+  for (genvar x64 = 0; x64 < 2; x64++) begin : g_xlen
+    for (genvar branch_pipe = 0; branch_pipe < 2; branch_pipe++) begin : g_branch
+      for (genvar div_pipe = 0; div_pipe < 2; div_pipe++) begin : g_div
+        rv_ooo_elab_smoke #(.XLEN(x64 ? 64 : 32), .PADDR_WIDTH(x64 ? 56 : 32),
+          .BRANCH_TAG_PIPELINE(branch_pipe), .DIV_TAG_PIPELINE(div_pipe)) u_smoke ();
+      end
+    end
+  end
 endmodule
