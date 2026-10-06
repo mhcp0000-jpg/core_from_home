@@ -1,7 +1,7 @@
 $ErrorActionPreference='Stop'
 $repo=Split-Path -Parent $PSScriptRoot
 $cfg=& "$PSScriptRoot/read_core_config.ps1" -PackagePath "$repo/rtl/rv_ooo_pkg.sv"
-$expected=@{AGU_LOAD_BYPASS=1;EARLY_LOAD_SELECT=1;COMPATIBLE_PAIR_SELECT=0;BRANCH_TAG_PIPELINE=1;DIV_TAG_PIPELINE=1;BR_CHECKPOINTS=8}
+$expected=@{AGU_LOAD_BYPASS=1;EARLY_LOAD_SELECT=1;COMPATIBLE_PAIR_SELECT=0;BRANCH_TAG_PIPELINE=1;DIV_TAG_PIPELINE=1;INT_ISSUE_PIPELINE=1;BR_CHECKPOINTS=8}
 foreach($name in $expected.Keys) {
   if($cfg.$name -ne $expected[$name]) {throw "Published profile changed: $name; update the expected profile only after matched regressions"}
 }

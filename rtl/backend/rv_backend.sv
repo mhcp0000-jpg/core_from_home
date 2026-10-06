@@ -6,6 +6,7 @@ module rv_backend #(
   parameter bit BRANCH_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_BRANCH_TAG_PIPELINE,
   // Optional DIV-only raw-tag boundary; leaves normal ALU/load latency alone.
   parameter bit DIV_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
+  parameter bit INT_ISSUE_PIPELINE = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
@@ -548,6 +549,11 @@ module rv_backend #(
     logic [1:0][PHYS_TAG_WIDTH-1:0] src_phys;
     reg_class_e [1:0] src_class;
     branch_op_e operation;
+    // INT pipeline mode captures any in-flight forwarding value at issue.
+    // A source already in the PRF remains a registered tag/read afterwards.
+    // In particular no combinational ALU preview may feed the BRU in execute.
+    logic [1:0] read_prf;
+    logic [1:0][XLEN-1:0] forwarded_operand;
     logic [XLEN-1:0] pc, immediate;
     inst_len_e inst_len;
     prediction_meta_t prediction;
@@ -570,7 +576,9 @@ module rv_backend #(
   div_issue_t div_issue_q;
   logic div_issue_valid_q, div_slot_ready, div_execute_valid;
   localparam int unsigned DIV_READ_BASE = 8 + (BRANCH_TAG_PIPELINE ? 2 : 0);
-  localparam int unsigned INT_READ_PORTS = DIV_READ_BASE + (DIV_TAG_PIPELINE ? 2 : 0);
+  localparam int unsigned INT_ALU_READ_BASE = DIV_READ_BASE + (DIV_TAG_PIPELINE ? 2 : 0);
+  localparam int unsigned INT_READ_PORTS = INT_ALU_READ_BASE + (INT_ISSUE_PIPELINE ? 4 : 0);
+  logic [3:0][PHYS_TAG_WIDTH-1:0] int_exec_read_addr;
   logic [7:0][PHYS_TAG_WIDTH-1:0] int_read_addr, fp_read_addr;
   logic [INT_READ_PORTS-1:0][PHYS_TAG_WIDTH-1:0] int_prf_read_addr;
   logic [INT_READ_PORTS-1:0][XLEN-1:0] int_read_data;
@@ -586,6 +594,9 @@ module rv_backend #(
   logic [1:0][2:0] dispatch_src_ready;
 
   assign int_prf_read_addr[7:0] = int_read_addr;
+  if(INT_ISSUE_PIPELINE) begin:g_int_exec_read_ports
+    assign int_prf_read_addr[INT_ALU_READ_BASE+:4]=int_exec_read_addr;
+  end
   if (BRANCH_TAG_PIPELINE) begin : g_branch_read_addresses
     assign int_prf_read_addr[8+:2] = branch_issue_q.src_phys;
   end
@@ -768,8 +779,10 @@ module rv_backend #(
   // and waking directly from it would put that control chain in front of
   // IQ selection.  CSR results are serialized at the head, so the extra
   // cycle is not on any throughput path.
-  localparam int unsigned DIRECT_WAKE_PORTS = 8;
   localparam int unsigned DIRECT_SOURCE_PORTS = 7;
+  localparam int unsigned DIRECT_BYPASS_PORTS = DIRECT_SOURCE_PORTS +
+                                                (INT_ISSUE_PIPELINE ? 4 : 0);
+  localparam int unsigned DIRECT_WAKE_PORTS = DIRECT_BYPASS_PORTS + 1;
   localparam int unsigned DIRECT_WAKE_SOURCE [DIRECT_SOURCE_PORTS] =
     '{0, 1, 2, 3, 4, 7, 8};
   localparam int unsigned SYSTEM_SOURCE = 10;
@@ -777,6 +790,22 @@ module rv_backend #(
   reg_class_e [DIRECT_WAKE_PORTS-1:0] direct_wake_class;
   logic [DIRECT_WAKE_PORTS-1:0][PHYS_TAG_WIDTH-1:0] direct_wake_phys;
   logic [DIRECT_WAKE_PORTS-1:0][XLEN-1:0] direct_wake_data;
+  typedef struct packed {
+    logic [ROB_SEQ_WIDTH-1:0] sequence_id;
+    logic [XLEN-1:0] operand_a,operand_b;
+    logic read_prf_a,read_prf_b;
+    logic [PHYS_TAG_WIDTH-1:0] src_phys_a,src_phys_b;
+    logic [3:0] operation;
+    logic word_operation,dst_valid;
+    reg_class_e dst_class;
+    logic [PHYS_TAG_WIDTH-1:0] dst_phys;
+  } int_issue_payload_t;
+  int_issue_payload_t [1:0] int_issue_q;
+  logic [1:0] int_issue_valid_q,int_issue_ready,int_issue_take;
+  for(genvar lane=0;lane<2;lane++) begin:g_int_exec_read_address
+    assign int_exec_read_addr[lane*2]=int_issue_q[lane].src_phys_a;
+    assign int_exec_read_addr[lane*2+1]=int_issue_q[lane].src_phys_b;
+  end
   logic [1:0] cand_valid, cand_accept;
   logic [1:0][ROB_SEQ_WIDTH-1:0] cand_sequence;
   fu_class_e [1:0] cand_fu;
@@ -872,6 +901,8 @@ module rv_backend #(
     input logic [31:0] fp_value
   );
     logic [XLEN-1:0] value;
+    logic [XLEN-1:0] forwarded;
+    logic hit,match;
     case (cls)
       REG_INT: value = int_value;
       REG_FP:  value = {{(XLEN-32){1'b0}}, fp_value};
@@ -879,11 +910,14 @@ module rv_backend #(
     endcase
     // At most one live producer owns a physical tag, so the hits are
     // mutually exclusive and the loop order is irrelevant.
-    for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
-      if (direct_wake_valid[w] && (direct_wake_class[w] == cls) &&
-          (cls != REG_NONE) && (direct_wake_phys[w] == tag))
-        value = direct_wake_data[w];
-    return value;
+    forwarded='0;hit=1'b0;
+    for (int unsigned w = 0; w < DIRECT_BYPASS_PORTS; w++) begin
+      match=direct_wake_valid[w] && (direct_wake_class[w] == cls) &&
+            (cls != REG_NONE) && (direct_wake_phys[w] == tag);
+      hit |= match;
+      forwarded |= direct_wake_data[w] & {XLEN{match}};
+    end
+    return hit ? forwarded : value;
   endfunction
   always_comb begin
     for (int unsigned candidate=0; candidate<2; candidate++) begin
@@ -930,12 +964,15 @@ module rv_backend #(
       // Class decode runs from registered IQ entries in parallel with wakeup
       // and age selection, not after selecting/encoding the class payload.
       effective_mask[candidate][0] = cand_port_mask[candidate][0] &&
-        ((cand_fu_onehot[candidate][FU_INT] && fast_req_ready[0] &&
-          (!BRANCH_TAG_PIPELINE || !branch_issue_valid_q)) ||
+        ((cand_fu_onehot[candidate][FU_INT] &&
+          (INT_ISSUE_PIPELINE ? int_issue_ready[0] :
+            (fast_req_ready[0] && (!BRANCH_TAG_PIPELINE || !branch_issue_valid_q)))) ||
          (cand_fu_onehot[candidate][FU_BRANCH] &&
-          (BRANCH_TAG_PIPELINE ? branch_slot_ready : fast_req_ready[0])));
+          (BRANCH_TAG_PIPELINE ? branch_slot_ready :
+            (fast_req_ready[0] && (!INT_ISSUE_PIPELINE || !int_issue_valid_q[0])))));
       effective_mask[candidate][1] = cand_port_mask[candidate][1] &&
-        ((cand_fu_onehot[candidate][FU_INT] && fast_req_ready[1]) ||
+        ((cand_fu_onehot[candidate][FU_INT] &&
+          (INT_ISSUE_PIPELINE ? int_issue_ready[1] : fast_req_ready[1])) ||
          (cand_fu_onehot[candidate][FU_MUL] && mul_req_ready) ||
          (cand_fu_onehot[candidate][FU_DIV] &&
           (DIV_TAG_PIPELINE ? div_slot_ready : div_req_ready)));
@@ -959,7 +996,8 @@ module rv_backend #(
   end
 `ifndef SYNTHESIS
   // Clocked equality avoids comparing old/new upstream bundles during a
-  // simulator delta-cycle settle. The production mask must match legacy.
+  // simulator delta-cycle settle. The one-hot mask must match the independent
+  // class-based resource model for the selected RTL pipeline configuration.
   function automatic logic [4:0] legacy_resource_mask(
     input fu_class_e fu, input logic [4:0] static_mask
   );
@@ -967,10 +1005,14 @@ module rv_backend #(
     resource = '0;
     case (fu)
       FU_INT: begin
-        resource[1:0] = fast_req_ready;
-        resource[0] &= !BRANCH_TAG_PIPELINE || !branch_issue_valid_q;
+        if (INT_ISSUE_PIPELINE) resource[1:0] = int_issue_ready;
+        else begin
+          resource[1:0] = fast_req_ready;
+          resource[0] &= !BRANCH_TAG_PIPELINE || !branch_issue_valid_q;
+        end
       end
-      FU_BRANCH: resource[0] = BRANCH_TAG_PIPELINE ? branch_slot_ready : fast_req_ready[0];
+      FU_BRANCH: resource[0] = BRANCH_TAG_PIPELINE ? branch_slot_ready :
+        (fast_req_ready[0] && (!INT_ISSUE_PIPELINE || !int_issue_valid_q[0]));
       FU_MUL: resource[1] = mul_req_ready;
       FU_DIV: resource[1] = DIV_TAG_PIPELINE ? div_slot_ready : div_req_ready;
       FU_LOAD, FU_STORE: resource[3:2] = lsu_issue_ready;
@@ -1113,17 +1155,139 @@ module rv_backend #(
     end
   end
 
+  // Prepare PC/immediate selection per IQ candidate, before late port
+  // arbitration. Invalid payloads are don't-care ONLY here: fast_req_valid,
+  // flush and result-buffer push still exclusively authorize side effects.
+  // In particular, do not put selected_port_valid/flush gating before the
+  // XLEN-wide ALU datapath. This retains two ALUs and the existing latency.
+  logic [1:0][XLEN-1:0] cand_alu_a,cand_alu_b;
+  logic [1:0][1:0] cand_int_forward_hit;
+  logic [1:0][1:0][XLEN-1:0] cand_int_forward_data;
   logic [1:0][XLEN-1:0] alu_a,alu_b,alu_result;
-  always_comb for(int unsigned port=0;port<2;port++) begin
-    alu_a[port]=port_use_pc[port]?port_pc[port]:port_operand0[port];
-    alu_b[port]=port_use_immediate[port]?port_immediate[port]:port_operand1[port];
+  logic [1:0][3:0] alu_operation;
+  logic [1:0] alu_word;
+  always_comb begin
+    for(int unsigned candidate=0;candidate<2;candidate++) begin
+      for(int source=0;source<2;source++) begin
+        cand_int_forward_hit[candidate][source]=1'b0;
+        for(int w=0;w<DIRECT_BYPASS_PORTS;w++)
+          cand_int_forward_hit[candidate][source] |= direct_wake_valid[w] &&
+            (direct_wake_class[w]==cand_src_class[candidate][source]) &&
+            (cand_src_class[candidate][source]!=REG_NONE) &&
+            (direct_wake_phys[w]==cand_src_phys[candidate][source]);
+        // Only forwarded values are captured here. Ready PRF values are read
+        // AFTER tag capture, removing IQ select -> PRF -> stage-D timing.
+        cand_int_forward_data[candidate][source]=bypass_or_prf(
+          cand_src_class[candidate][source],cand_src_phys[candidate][source],'0,'0);
+      end
+      cand_alu_a[candidate]=cand_use_pc[candidate] ?
+        cand_pc[candidate] : cand_operand0[candidate];
+      cand_alu_b[candidate]=cand_use_immediate[candidate] ?
+        cand_immediate[candidate] : cand_operand1[candidate];
+    end
+    for(int unsigned port=0;port<2;port++) begin
+      alu_a[port]=INT_ISSUE_PIPELINE ?
+          (int_issue_q[port].read_prf_a ? int_read_data[INT_ALU_READ_BASE+port*2] : int_issue_q[port].operand_a) :
+                                    cand_alu_a[port_candidate[port]];
+      alu_b[port]=INT_ISSUE_PIPELINE ?
+          (int_issue_q[port].read_prf_b ? int_read_data[INT_ALU_READ_BASE+port*2+1] : int_issue_q[port].operand_b) :
+                                    cand_alu_b[port_candidate[port]];
+      alu_operation[port]=INT_ISSUE_PIPELINE ? int_issue_q[port].operation :
+                                      cand_operation[port_candidate[port]][3:0];
+      alu_word[port]=INT_ISSUE_PIPELINE ? int_issue_q[port].word_operation :
+                                       cand_word[port_candidate[port]];
+    end
   end
   rv_int_alu #(.XLEN(XLEN)) u_alu0(.operand_a_i(alu_a[0]),.operand_b_i(alu_b[0]),
-    .operation_i(int_alu_op_e'(port_operation[0][3:0])),
-    .word_operation_i(port_word[0]),.result_o(alu_result[0]));
+    .operation_i(int_alu_op_e'(alu_operation[0])),
+    .word_operation_i(alu_word[0]),.result_o(alu_result[0]));
   rv_int_alu #(.XLEN(XLEN)) u_alu1(.operand_a_i(alu_a[1]),.operand_b_i(alu_b[1]),
-    .operation_i(int_alu_op_e'(port_operation[1][3:0])),
-    .word_operation_i(port_word[1]),.result_o(alu_result[1]));
+    .operation_i(int_alu_op_e'(alu_operation[1])),
+    .word_operation_i(alu_word[1]),.result_o(alu_result[1]));
+
+`ifndef SYNTHESIS
+  if (!INT_ISSUE_PIPELINE) for(genvar port=0;port<2;port++) begin : g_alu_route_check
+    // Check against the original gated port routing at the sampling edge,
+    // not during combinational delta-cycle settling. No comparison is needed
+    // for invalid ports or branch-link results that do not consume the ALU.
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      (port_valid[port] && (port_fu[port]==FU_INT)) |->
+        ((alu_a[port] == (port_use_pc[port] ? port_pc[port] : port_operand0[port])) &&
+         (alu_b[port] == (port_use_immediate[port] ? port_immediate[port] : port_operand1[port])) &&
+         (alu_operation[port] == port_operation[port][3:0]) &&
+         (alu_word[port] == port_word[port])))
+      else $error("ALU input routing differs on a valid integer issue");
+  end
+`endif
+
+  if (INT_ISSUE_PIPELINE) begin : g_int_operand_pipeline
+    for(genvar lane=0;lane<2;lane++) begin : g_lane
+      assign int_issue_take[lane]=int_issue_valid_q[lane] && fast_req_ready[lane] &&
+        !flush_valid && ((lane==1) || !BRANCH_TAG_PIPELINE || !branch_issue_valid_q);
+      assign int_issue_ready[lane]=!int_issue_valid_q[lane] || int_issue_take[lane];
+      always_ff @(posedge clk_i) begin
+        if (!rst_ni) begin
+          int_issue_valid_q[lane]<=1'b0;
+          int_issue_q[lane]<='0;
+        end else if (flush_valid) begin
+          if (flush_all || (int_issue_valid_q[lane] &&
+              sequence_after_backend(int_issue_q[lane].sequence_id,flush_sequence)))
+            int_issue_valid_q[lane]<=1'b0;
+        end else if (selected_port_valid[lane] &&
+                     cand_fu_onehot[port_candidate[lane]][FU_INT]) begin
+          int_issue_valid_q[lane]<=1'b1;
+          int_issue_q[lane].sequence_id<=cand_sequence[port_candidate[lane]];
+          int_issue_q[lane].operand_a<=cand_use_pc[port_candidate[lane]] ?
+            cand_pc[port_candidate[lane]] : cand_int_forward_data[port_candidate[lane]][0];
+          int_issue_q[lane].operand_b<=cand_use_immediate[port_candidate[lane]] ?
+            cand_immediate[port_candidate[lane]] : cand_int_forward_data[port_candidate[lane]][1];
+          int_issue_q[lane].read_prf_a<=!cand_use_pc[port_candidate[lane]] &&
+            cand_src_class[port_candidate[lane]][0]==REG_INT && !cand_int_forward_hit[port_candidate[lane]][0];
+          int_issue_q[lane].read_prf_b<=!cand_use_immediate[port_candidate[lane]] &&
+            cand_src_class[port_candidate[lane]][1]==REG_INT && !cand_int_forward_hit[port_candidate[lane]][1];
+          int_issue_q[lane].src_phys_a<=cand_src_phys[port_candidate[lane]][0];
+          int_issue_q[lane].src_phys_b<=cand_src_phys[port_candidate[lane]][1];
+          int_issue_q[lane].operation<=cand_operation[port_candidate[lane]][3:0];
+          int_issue_q[lane].word_operation<=cand_word[port_candidate[lane]];
+          int_issue_q[lane].dst_valid<=cand_dst_valid[port_candidate[lane]];
+          int_issue_q[lane].dst_class<=cand_dst_class[port_candidate[lane]];
+          int_issue_q[lane].dst_phys<=cand_dst_phys[port_candidate[lane]];
+        end else if (int_issue_take[lane]) begin
+          int_issue_valid_q[lane]<=1'b0;
+        end
+      end
+`ifndef SYNTHESIS
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        selected_port_valid[lane] && cand_fu_onehot[port_candidate[lane]][FU_INT] |->
+          cand_src_class[port_candidate[lane]][0]!=REG_FP &&
+          cand_src_class[port_candidate[lane]][1]!=REG_FP);
+      // Projection to the original same-cycle operand values checks both
+      // forwarded-data capture and post-tag PRF reads (without ISA shortcuts).
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        selected_port_valid[lane] && cand_fu_onehot[port_candidate[lane]][FU_INT] |=>
+          int_issue_valid_q[lane] &&
+          alu_a[lane]==$past(cand_alu_a[port_candidate[lane]]) &&
+          alu_b[lane]==$past(cand_alu_b[port_candidate[lane]]));
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        int_issue_valid_q[lane] && int_issue_q[lane].read_prf_a |->
+          int_read_ready[INT_ALU_READ_BASE+lane*2]);
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        int_issue_valid_q[lane] && int_issue_q[lane].read_prf_b |->
+          int_read_ready[INT_ALU_READ_BASE+lane*2+1]);
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        selected_port_valid[lane] && cand_fu_onehot[port_candidate[lane]][FU_INT]
+          |-> int_issue_ready[lane]);
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        int_issue_valid_q[lane] && !int_issue_take[lane]
+          |=> int_issue_valid_q[lane] && $stable(int_issue_q[lane]));
+`endif
+    end
+  end else begin : g_int_operand_fallthrough
+    assign int_issue_q='0;
+    assign int_issue_valid_q='0;
+    assign int_issue_ready='0;
+    assign int_issue_take='0;
+  end
 
   logic branch_taken,branch_mispredict,branch_misaligned;
   logic [XLEN-1:0] branch_target,branch_next_pc,branch_link;
@@ -1163,10 +1327,17 @@ module rv_backend #(
   assign branch_mispredict = candidate_branch_mispredict[port_candidate[0]];
   end else begin : g_branch_tag_pipeline
     logic [XLEN-1:0] operand0, operand1;
-    assign operand0 = bypass_or_prf(branch_issue_q.src_class[0],
-      branch_issue_q.src_phys[0], int_read_data[8], 32'b0);
-    assign operand1 = bypass_or_prf(branch_issue_q.src_class[1],
-      branch_issue_q.src_phys[1], int_read_data[9], 32'b0);
+    if (INT_ISSUE_PIPELINE) begin : g_captured_forward
+      assign operand0 = branch_issue_q.read_prf[0] ? int_read_data[8] :
+                        branch_issue_q.forwarded_operand[0];
+      assign operand1 = branch_issue_q.read_prf[1] ? int_read_data[9] :
+                        branch_issue_q.forwarded_operand[1];
+    end else begin : g_legacy_forward
+      assign operand0 = bypass_or_prf(branch_issue_q.src_class[0],
+        branch_issue_q.src_phys[0], int_read_data[8], 32'b0);
+      assign operand1 = bypass_or_prf(branch_issue_q.src_class[1],
+        branch_issue_q.src_phys[1], int_read_data[9], 32'b0);
+    end
     rv_branch_unit #(.XLEN(XLEN)) u_branch(
       .valid_i(branch_execute_valid), .operation_i(branch_issue_q.operation),
       .pc_i(branch_issue_q.pc), .operand_a_i(operand0), .operand_b_i(operand1),
@@ -1194,6 +1365,13 @@ module rv_backend #(
         branch_issue_q.sequence_id <= port_sequence[0];
         branch_issue_q.src_phys <= cand_src_phys[port_candidate[0]][1:0];
         branch_issue_q.src_class <= cand_src_class[port_candidate[0]][1:0];
+        for (int source=0;source<2;source++) begin
+          branch_issue_q.read_prf[source] <= INT_ISSUE_PIPELINE &&
+            cand_src_class[port_candidate[0]][source]==REG_INT &&
+            !cand_int_forward_hit[port_candidate[0]][source];
+          branch_issue_q.forwarded_operand[source] <= INT_ISSUE_PIPELINE ?
+            cand_int_forward_data[port_candidate[0]][source] : '0;
+        end
         branch_issue_q.operation <= branch_op_e'(port_operation[0][3:0]);
         branch_issue_q.pc <= port_pc[0];
         branch_issue_q.immediate <= port_immediate[0];
@@ -1209,14 +1387,27 @@ module rv_backend #(
 `ifndef SYNTHESIS
     function automatic logic source_available(input int unsigned source);
       logic available;
+      if (INT_ISSUE_PIPELINE)
+        return !branch_issue_q.read_prf[source] || int_read_ready[8+source];
       available = branch_issue_q.src_class[source] == REG_NONE ||
                   (branch_issue_q.src_class[source] == REG_INT && int_read_ready[8+source]);
-      for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+      for (int unsigned w = 0; w < DIRECT_BYPASS_PORTS; w++)
         available |= branch_issue_q.src_class[source] == REG_INT && direct_wake_valid[w] &&
           (direct_wake_class[w] == branch_issue_q.src_class[source]) &&
           (direct_wake_phys[w] == branch_issue_q.src_phys[source]);
       return available;
     endfunction
+    if (INT_ISSUE_PIPELINE) begin : g_operand_projection
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        selected_port_valid[0] && cand_fu_onehot[port_candidate[0]][FU_BRANCH] |->
+          cand_src_class[port_candidate[0]][0]!=REG_FP &&
+          cand_src_class[port_candidate[0]][1]!=REG_FP);
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        selected_port_valid[0] && cand_fu_onehot[port_candidate[0]][FU_BRANCH] |=>
+          branch_issue_valid_q &&
+          operand0==$past(cand_operand0[port_candidate[0]]) &&
+          operand1==$past(cand_operand1[port_candidate[0]]));
+    end
     // Tags cannot be recycled before their live consumer retires. If the
     // original wake came from a held producer not yet granted PRF writeback,
     // that producer must still provide the value through direct bypass.
@@ -1228,7 +1419,11 @@ module rv_backend #(
         flush_valid || (branch_issue_valid_q && $stable(branch_issue_q)));
     assert property (@(posedge clk_i) disable iff (!rst_ni)
       branch_issue_valid_q && !flush_valid |->
-        !(port_valid[0] && (port_fu[0] == FU_INT)));
+        (!(port_valid[0] && (port_fu[0] == FU_INT)) ||
+         (INT_ISSUE_PIPELINE && !int_issue_valid_q[0])));
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      INT_ISSUE_PIPELINE && branch_issue_valid_q && !flush_valid |->
+        !int_issue_take[0]);
 `endif
   end
   assign branch_execute_valid = !flush_valid &&
@@ -1265,6 +1460,12 @@ module rv_backend #(
 
   // One elastic result buffer per single-cycle integer port.
   logic [1:0] fast_req_valid,fast_result_valid,fast_result_ready;
+  logic [1:0] fast_req_at_head_next;
+  logic [1:0] fast_pending_valid,fast_pending_dst_valid,fast_pending_exception;
+  logic [1:0][ROB_SEQ_WIDTH-1:0] fast_pending_sequence;
+  reg_class_e [1:0] fast_pending_dst_class;
+  logic [1:0][PHYS_TAG_WIDTH-1:0] fast_pending_dst_phys;
+  logic [1:0][XLEN-1:0] fast_pending_data;
   logic [1:0][XLEN-1:0] fast_req_data;
   logic [1:0] fast_req_exception,fast_req_mispredict;
   logic [1:0][XLEN-1:0] fast_req_tval,fast_req_target;
@@ -1292,6 +1493,24 @@ module rv_backend #(
     fast_req_mispredict[0]=!BRANCH_TAG_PIPELINE &&
       (port_fu[0]==FU_BRANCH)&&branch_mispredict;
     fast_req_target='0;fast_req_target[0]=branch_next_pc;
+    if (INT_ISSUE_PIPELINE) begin
+      for(int lane=0;lane<2;lane++) begin
+        fast_req_valid[lane]=int_issue_valid_q[lane] && !flush_valid;
+        fast_req_sequence[lane]=int_issue_q[lane].sequence_id;
+        fast_req_dst_valid[lane]=int_issue_q[lane].dst_valid;
+        fast_req_dst_class[lane]=int_issue_q[lane].dst_class;
+        fast_req_dst_phys[lane]=int_issue_q[lane].dst_phys;
+        fast_req_data[lane]=alu_result[lane];
+      end
+      if (!BRANCH_TAG_PIPELINE && port_valid[0] && (port_fu[0]==FU_BRANCH)) begin
+        fast_req_valid[0]=1'b1;
+        fast_req_sequence[0]=port_sequence[0];
+        fast_req_dst_valid[0]=port_dst_valid[0];
+        fast_req_dst_class[0]=port_dst_class[0];
+        fast_req_dst_phys[0]=port_dst_phys[0];
+        fast_req_data[0]=branch_link;
+      end
+    end
     if (BRANCH_TAG_PIPELINE && branch_issue_valid_q) begin
       fast_req_valid[0]=branch_execute_valid;
       fast_req_sequence[0]=branch_issue_q.sequence_id;
@@ -1315,6 +1534,14 @@ module rv_backend #(
       .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH)) u_buffer(
       .clk_i,.rst_ni,.request_valid_i(fast_req_valid[fast]),
       .request_ready_o(fast_req_ready[fast]),.request_sequence_i(fast_req_sequence[fast]),
+      .request_at_head_next_o(fast_req_at_head_next[fast]),
+      .pending_valid_o(fast_pending_valid[fast]),
+      .pending_sequence_o(fast_pending_sequence[fast]),
+      .pending_destination_valid_o(fast_pending_dst_valid[fast]),
+      .pending_destination_class_o(fast_pending_dst_class[fast]),
+      .pending_destination_phys_o(fast_pending_dst_phys[fast]),
+      .pending_data_o(fast_pending_data[fast]),
+      .pending_exception_valid_o(fast_pending_exception[fast]),
       .request_destination_valid_i(fast_req_dst_valid[fast]),
       .request_destination_class_i(fast_req_dst_class[fast]),
       .request_destination_phys_i(fast_req_dst_phys[fast]),
@@ -1420,7 +1647,7 @@ module rv_backend #(
       logic available;
       available = div_issue_q.src_class[source] == REG_NONE ||
         (div_issue_q.src_class[source] == REG_INT && int_read_ready[DIV_READ_BASE+source]);
-      for (int unsigned w = 0; w < DIRECT_SOURCE_PORTS; w++)
+      for (int unsigned w = 0; w < DIRECT_BYPASS_PORTS; w++)
         available |= div_issue_q.src_class[source] == REG_INT && direct_wake_valid[w] &&
           (direct_wake_class[w] == div_issue_q.src_class[source]) &&
           (direct_wake_phys[w] == div_issue_q.src_phys[source]);
@@ -2053,15 +2280,50 @@ module rv_backend #(
     end
     // The system result is already in the PRF when this wakeup is seen, so
     // it never needs to act as a bypass source.
-    direct_wake_valid[DIRECT_SOURCE_PORTS] = system_wake_valid_q;
-    direct_wake_class[DIRECT_SOURCE_PORTS] = system_wake_class_q;
-    direct_wake_phys[DIRECT_SOURCE_PORTS]  = system_wake_phys_q;
-    direct_wake_data[DIRECT_SOURCE_PORTS]  = '0;
+    if (INT_ISSUE_PIPELINE) begin
+      for(int lane=0;lane<2;lane++) begin
+        // Operand-stage -> FIFO head OR tail -> PRF has continuous bypass.
+        // Never put this cycle's WB grant/ROB CAM in front of IQ wakeup.
+        direct_wake_valid[DIRECT_SOURCE_PORTS+lane]=int_issue_valid_q[lane] &&
+          !flush_valid && int_issue_q[lane].dst_valid &&
+          (int_issue_q[lane].dst_class != REG_NONE);
+        direct_wake_class[DIRECT_SOURCE_PORTS+lane]=int_issue_q[lane].dst_class;
+        direct_wake_phys[DIRECT_SOURCE_PORTS+lane]=int_issue_q[lane].dst_phys;
+        direct_wake_data[DIRECT_SOURCE_PORTS+lane]=alu_result[lane];
+        direct_wake_valid[DIRECT_SOURCE_PORTS+2+lane]=fast_pending_valid[lane] &&
+          fast_pending_dst_valid[lane] && !fast_pending_exception[lane] &&
+          (fast_pending_dst_class[lane]!=REG_NONE);
+        direct_wake_class[DIRECT_SOURCE_PORTS+2+lane]=fast_pending_dst_class[lane];
+        direct_wake_phys[DIRECT_SOURCE_PORTS+2+lane]=fast_pending_dst_phys[lane];
+        direct_wake_data[DIRECT_SOURCE_PORTS+2+lane]=fast_pending_data[lane];
+      end
+    end
+    direct_wake_valid[DIRECT_BYPASS_PORTS] = system_wake_valid_q;
+    direct_wake_class[DIRECT_BYPASS_PORTS] = system_wake_class_q;
+    direct_wake_phys[DIRECT_BYPASS_PORTS]  = system_wake_phys_q;
+    direct_wake_data[DIRECT_BYPASS_PORTS]  = '0;
   end
 
 `ifndef SYNTHESIS
-  for (genvar lhs = 0; lhs < DIRECT_SOURCE_PORTS; lhs++) begin : g_direct_unique_lhs
-    for (genvar rhs = lhs + 1; rhs < DIRECT_SOURCE_PORTS; rhs++) begin : g_direct_unique_rhs
+  if (INT_ISSUE_PIPELINE) begin : g_preview_persistence
+    for (genvar lane=0;lane<2;lane++) begin : g_lane
+      // If the stage holds, preview persists; otherwise its result remains
+      // at the head or tail. Flush invalidates the promise only for killed work.
+      assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+        direct_wake_valid[DIRECT_SOURCE_PORTS+lane] |=>
+          (direct_wake_valid[lane] &&
+           direct_wake_phys[lane] == $past(direct_wake_phys[DIRECT_SOURCE_PORTS+lane]) &&
+           direct_wake_data[lane] == $past(direct_wake_data[DIRECT_SOURCE_PORTS+lane])) ||
+          (direct_wake_valid[DIRECT_SOURCE_PORTS+lane] &&
+           direct_wake_phys[DIRECT_SOURCE_PORTS+lane] == $past(direct_wake_phys[DIRECT_SOURCE_PORTS+lane]) &&
+           direct_wake_data[DIRECT_SOURCE_PORTS+lane] == $past(direct_wake_data[DIRECT_SOURCE_PORTS+lane])) ||
+          (direct_wake_valid[DIRECT_SOURCE_PORTS+2+lane] &&
+           direct_wake_phys[DIRECT_SOURCE_PORTS+2+lane] == $past(direct_wake_phys[DIRECT_SOURCE_PORTS+lane]) &&
+           direct_wake_data[DIRECT_SOURCE_PORTS+2+lane] == $past(direct_wake_data[DIRECT_SOURCE_PORTS+lane])));
+    end
+  end
+  for (genvar lhs = 0; lhs < DIRECT_BYPASS_PORTS; lhs++) begin : g_direct_unique_lhs
+    for (genvar rhs = lhs + 1; rhs < DIRECT_BYPASS_PORTS; rhs++) begin : g_direct_unique_rhs
       property p_direct_unique_tag;
         @(posedge clk_i) disable iff (!rst_ni || flush_valid)
           direct_wake_valid[lhs] && direct_wake_valid[rhs] &&

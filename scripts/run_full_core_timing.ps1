@@ -33,8 +33,12 @@ $coreConfig = if ($TopModule -eq 'rv_ooo_core' -and $StartStage -eq 'Coarse') {
 # A checkpoint resume does not re-elaborate or change its historical config.
 $parameterArgs = ''
 if (!$BuildRoot) { $BuildRoot = Join-Path $repoRoot "out/full_core_timing" }
-Write-Host "ELABORATION_CONFIG top=$TopModule source=$sourceFull (RTL defaults only; no tool overrides)"
-if ($coreConfig) { Write-Host "CORE_CONFIG $($coreConfig | ConvertTo-Json -Compress)" }
+if ($StartStage -eq 'Coarse') {
+  Write-Host "ELABORATION_CONFIG top=$TopModule source=$sourceFull (RTL defaults only; no tool overrides)"
+  if ($coreConfig) { Write-Host "CORE_CONFIG $($coreConfig | ConvertTo-Json -Compress)" }
+} else {
+  Write-Host "CHECKPOINT_RESUME top=$TopModule stage=$StartStage (frozen inputs; no re-elaboration)"
+}
 $buildFull = [IO.Path]::GetFullPath($BuildRoot)
 $yosys = Join-Path $ToolRoot "bin/yosys.exe"
 $abc = Join-Path $ToolRoot "bin/yosys-abc.exe"
@@ -129,6 +133,12 @@ try {
     } | ConvertTo-Json -Depth 6 | Set-Content $manifestPath -Encoding UTF8
   } elseif (!(Test-Path -LiteralPath $manifestPath)) { throw "No checkpoint manifest" }
   $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  if ($StartStage -ne 'Coarse') {
+    Write-Host "FROZEN_SOURCE $($manifest.sourceRoot)"
+    if ($manifest.PSObject.Properties.Name -contains 'coreDefaults') {
+      Write-Host "FROZEN_CORE_CONFIG $($manifest.coreDefaults | ConvertTo-Json -Compress)"
+    }
+  }
   if ($manifest.PSObject.Properties.Name -contains "topModule") {
     if ($manifest.topModule -ne $TopModule) { throw "Resume top differs from frozen top" }
   } elseif ($TopModule -ne "rv_ooo_core") { throw "Legacy checkpoint is a core run, not an IQ run" }
@@ -186,7 +196,22 @@ try {
     $command = $commands[$stage]
     $command | Set-Content "$run/$stage.ys" -Encoding ASCII
     $working = if ($stage -eq "Coarse") { "$run/snapshot" } else { "$drive`:/" }
-    $process = Start-Process -FilePath $yosys -ArgumentList @("-T", "-l", "$run/$stage.log", "-s", "$run/$stage.ys") -WorkingDirectory $working -WindowStyle Hidden -PassThru -RedirectStandardOutput "$run/$stage.stdout.log" -RedirectStandardError "$run/$stage.stderr.log"
+    $launch = @{
+      FilePath = $yosys
+      ArgumentList = @("-T", "-l", "$run/$stage.log", "-s", "$run/$stage.ys")
+      WorkingDirectory = $working; WindowStyle = 'Hidden'; PassThru = $true
+      RedirectStandardOutput = "$run/$stage.stdout.log"
+      RedirectStandardError = "$run/$stage.stderr.log"
+    }
+    # On PowerShell 7, explicitly propagate the tool DLL search path. A plain
+    # Start-Process can otherwise retain the inherited PATH and show a native
+    # missing-libstdc++ dialog (0xc0000135) instead of starting Yosys. Windows
+    # PowerShell 5.1 inherits the PATH correctly and has no -Environment option.
+    # This is a runtime loader setting, NEVER a hardware parameter override.
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+      $launch.Environment = @{ PATH = $env:PATH; TEMP = $env:TEMP; TMP = $env:TMP }
+    }
+    $process = Start-Process @launch
     # Keep the native handle open before the child can exit; otherwise Windows
     # PowerShell Start-Process can return a null ExitCode for short-lived jobs.
     $null = $process.Handle
@@ -248,8 +273,12 @@ try {
       @{ delayPs = [double]$delays[$delays.Count-1].Groups[1].Value
         mappedAreaUm2 = $(if ($areas.Count) { [double]$areas[$areas.Count-1].Groups[1].Value } else { $null })
         targetDelayPs = $TargetDelayPs; memoryModel = "all arrays mapped; reset retained"
-        parameters = $manifest.parameters; scope = $manifest.scope } |
-        ConvertTo-Json | Set-Content "$run/timing_summary.json" -Encoding UTF8
+        parameters = $manifest.parameters; scope = $manifest.scope
+        coreDefaults = $manifest.coreDefaults; sourceRoot = $manifest.sourceRoot
+        sources = $manifest.sources; libertySha256 = $manifest.libertySha256
+        constraintSha256 = $manifest.constraintSha256; yosysSha256 = $manifest.yosysSha256
+        abcSha256 = $manifest.abcSha256; actualExitCode = $process.ExitCode } |
+        ConvertTo-Json -Depth 6 | Set-Content "$run/timing_summary.json" -Encoding UTF8
     }
   }
 } finally {

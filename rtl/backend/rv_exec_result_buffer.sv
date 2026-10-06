@@ -13,6 +13,17 @@ module rv_exec_result_buffer #(
 
   input  logic                               request_valid_i,
   output logic                               request_ready_o,
+  // With a successful push, the incoming value is at the head next cycle.
+  // This is a forwarding eligibility hint, never a request-ready input.
+  output logic                               request_at_head_next_o,
+  // Read-only forwarding tap for the non-head result. No WB/commit effect.
+  output logic                               pending_valid_o,
+  output logic [ROB_SEQ_WIDTH-1:0]           pending_sequence_o,
+  output logic                               pending_destination_valid_o,
+  output rv_ooo_pkg::reg_class_e             pending_destination_class_o,
+  output logic [PHYS_TAG_WIDTH-1:0]          pending_destination_phys_o,
+  output logic [XLEN-1:0]                    pending_data_o,
+  output logic                               pending_exception_valid_o,
   input  logic [ROB_SEQ_WIDTH-1:0]           request_sequence_i,
   input  logic                               request_destination_valid_i,
   input  rv_ooo_pkg::reg_class_e             request_destination_class_i,
@@ -86,9 +97,13 @@ module rv_exec_result_buffer #(
 
   logic valid_q;
   result_payload_t payload_q;
+  result_payload_t pending_payload;
 
   generate
     if (DEPTH == 1) begin : g_depth1
+      assign pending_valid_o=1'b0;
+      assign pending_payload='0;
+      assign request_at_head_next_o = 1'b1;
       assign request_ready_o = (!valid_q || result_ready_i) && !flush_valid_i;
 
       always_ff @(posedge clk_i) begin
@@ -113,12 +128,16 @@ module rv_exec_result_buffer #(
       result_payload_t slots_q [0:1];
       logic head_q, tail_q;
       logic [1:0] count_q;
+      assign pending_valid_o=(count_q==2);
+      assign pending_payload=slots_q[!head_q];
       logic pop, push, keep_head, keep_second;
 
       assign valid_q = count_q != 0;
       assign payload_q = slots_q[head_q];
       assign request_ready_o = (count_q < 2) && !flush_valid_i;
       assign pop = valid_q && result_ready_i;
+      assign request_at_head_next_o = (count_q == 0) ||
+                                      ((count_q == 1) && pop);
       assign push = request_valid_i && request_ready_o;
       // FIFO order is issue order, not ROB age. Independently test both
       // entries: a younger head may die while its older second survives.
@@ -127,13 +146,25 @@ module rv_exec_result_buffer #(
       assign keep_second = (count_q == 2) && !flush_all_i &&
         !sequence_is_younger(slots_q[!head_q].sequence_id, flush_sequence_i);
 
+      // Constant-address word writes. A variable array write here makes
+      // frontend lowering build temporary array versions/priority muxes on
+      // the late ALU-result -> payload-FF path. Decode the one-bit tail only
+      // in the write enable; each payload FF has a single data source.
+      // push includes !flush_valid_i, so a flush edge never changes a slot.
+      for (genvar slot = 0; slot < 2; slot++) begin : g_slot_write
+        always_ff @(posedge clk_i) begin
+          if (!rst_ni)
+            slots_q[slot] <= '0;
+          else if (push && (tail_q == 1'(slot)))
+            slots_q[slot] <= request_payload;
+        end
+      end
+
       always_ff @(posedge clk_i) begin
         if (!rst_ni) begin
           head_q <= 1'b0;
           tail_q <= 1'b0;
           count_q <= '0;
-          slots_q[0] <= '0;
-          slots_q[1] <= '0;
         end else if (flush_valid_i) begin
           // No transfer on a flush edge. Rebuild pointers around surviving
           // entries without copying data. Every new FF has an explicit reset.
@@ -159,7 +190,6 @@ module rv_exec_result_buffer #(
           endcase
         end else begin
           if (push) begin
-            slots_q[tail_q] <= request_payload;
             tail_q <= !tail_q;
           end
           if (pop) head_q <= !head_q;
@@ -177,6 +207,12 @@ module rv_exec_result_buffer #(
   endgenerate
 
   assign result_valid_o = valid_q;
+  assign pending_sequence_o=pending_payload.sequence_id;
+  assign pending_destination_valid_o=pending_payload.destination_valid;
+  assign pending_destination_class_o=pending_payload.destination_class;
+  assign pending_destination_phys_o=pending_payload.destination_phys;
+  assign pending_data_o=pending_payload.data;
+  assign pending_exception_valid_o=pending_payload.exception_valid;
   assign result_sequence_o = payload_q.sequence_id;
   assign result_destination_valid_o = payload_q.destination_valid;
   assign result_destination_class_o = payload_q.destination_class;
@@ -190,6 +226,10 @@ module rv_exec_result_buffer #(
   assign result_fflags_o = payload_q.fflags;
 
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
+    request_valid_i && request_ready_o && request_at_head_next_o |=>
+      result_valid_o && result_sequence_o == $past(request_sequence_i) &&
+      result_data_o == $past(request_data_i));
   property p_result_stable_when_stalled;
     @(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
       result_valid_o && !result_ready_i |=> result_valid_o &&

@@ -6,9 +6,14 @@ $text=Get-Content -LiteralPath $PackagePath -Raw
 $text=[regex]::Replace($text,'(?s)/\*.*?\*/|//[^\r\n]*','')
 $names=@('AGU_LOAD_BYPASS','EARLY_LOAD_SELECT','COMPATIBLE_PAIR_SELECT',
          'BRANCH_TAG_PIPELINE','DIV_TAG_PIPELINE','BR_CHECKPOINTS')
+# Include every additional declared CORE_CFG default in the manifest/banner.
+# A new PKG hardware option must never become an unreported local setting.
+$declared=[regex]::Matches($text,'\blocalparam\s+(?:bit|int\s+unsigned)\s+CORE_CFG_([A-Z][A-Z0-9_]*)\s*=') |
+  ForEach-Object {$_.Groups[1].Value}
+foreach($name in $declared) {if($name -notin $names){$names+=$name}}
 $values=[ordered]@{}
 foreach($name in $names) {
-    $pattern=if($name -eq 'BR_CHECKPOINTS') {
+    $pattern=if($text -match ('\blocalparam\s+int\s+unsigned\s+CORE_CFG_'+$name+'\s*=')) {
       '\blocalparam\s+int\s+unsigned\s+CORE_CFG_'+$name+'\s*=\s*([0-9]+)\s*;'
     } else {
       "\blocalparam\s+bit\s+CORE_CFG_"+$name+"\s*=\s*1'b([01])\s*;"

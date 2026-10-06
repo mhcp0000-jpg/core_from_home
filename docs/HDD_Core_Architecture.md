@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 문서 ID | HDD-SOC-CORE-001 |
-| 상태 | v1.18.22 RTL-default configuration centralized; no-tool-override CoreMark/backend/elaboration PASS, server STA pending (2026-10-03) |
+| 상태 | v1.18.23 INT/branch operand capture server synthesis candidate; functional regression PASS, whole timing/server STA pending (2026-10-06) |
 | 1차 ISA | RV32IMFC_Zicsr_Zifencei |
 | 확장 타깃 | RV64IMFC_Zicsr_Zifencei |
 | 마이크로아키텍처 | 2-wide superscalar, out-of-order execute, in-order retire |
@@ -15,6 +15,43 @@
 ## 0. Executive Summary
 
 최신 성능 채택 기준(2026-10-02 사용자 결정): 동일 CoreMark 입력·설정에서 **IPC ≥ 1.25**를 유지하고 클럭 개선을 확인한 후보는 중간 단계로 채택할 수 있다. timing pipeline의 선택 폭을 넓힌 결정이며, 최종 활성 목표 **실제 2nm 환경의 1.2GHz + 동일 CoreMark IPC1.3**는 그대로다. 로컬 Nangate45 delay는 후보 screening용이고 실제 서버 Fmax로 환산하지 않는다.
+
+### 0-D. 서버 합성용 RTL 반영 (2026-10-06, 아래 실험 기록보다 최신)
+
+사용자의 즉시 업로드 요청에 따라 최종 branch-forward-capture 후보를 `rtl/`에 반영한다. `CORE_CFG_INT_ISSUE_PIPELINE=1`은 PKG에 명시된 기본값이며 Core/backend/SoC/DPI TB가 이를 전달한다. Top은 `rv_ooo_core`, 합성 filelist는 기존 `sim/xcelium/sources_core.f` 그대로다. 소스 추가나 tool parameter override가 없다. 기존 0-B의 여섯 기본값도 유지한다.
+
+데이터 경로는 IQ 선택 → tag/forwarded-data capture → registered-tag PRF read → ALU → result FIFO → WB/ROB다. PC/immediate와 당시에 forwarding 중인 값은 저장하고, 이미 PRF에 있는 값은 tag와 read flag만 저장한다. 두 resettable elastic INT slot은 downstream stall에서 유지하며 selective flush는 younger만 제거한다. FIFO head/tail read-only forwarding이 PRF write 전까지 값의 연속성을 보장하고, preview/tail tap은 architectural commit을 만들지 않는다. Branch도 issue 시 forwarding 값 또는 PRF read tag를 저장하여 같은 cycle ALU preview → BRU → FIFO 경로를 분리한다. BRANCH_TAG_PIPELINE 기본값1의 branch latency는 유지된다. INT PRF read-port는12→16으로 증가하므로 서버 area 확인이 필요하다.
+
+동일 CoreMark iter2 timed440023/576450=IPC1.310045, 기준439557/576450 대비466cycle(+0.106%) 증가다. Profiler440082/576462=IPC1.309897는 별도 계측 구간이며 혼합하지 않는다. C/FP signature009e00b9/exit0, backend 및 DIV flush stress, RV32/RV64 structural elaboration PASS. 전체 ISA 인증 또는 RV64 program 통과를 뜻하지 않는다. 정식 core source31개는 이 기능 검증 및 Fine 합성 후보와 byte-identical이다. SoC/TB의 추가 변경은 PKG 기본값 전달 및 설정 banner다.
+
+최종 후보 로컬 whole synthesis는 Fine까지 완료했으나 최종 ABC timing A/B는 미완료다. 선행 후보 ABC 실행은 종료 기록 없이 중단되어 현재 process가 없다. 실제2nm 1.2GHz 달성을 주장하지 않으며 **서버 합성 확인용 후보**로 배포한다. 기존 LSU forward→IQ→ALU0→FIFO 경로뿐 아니라 새 INT/branch issue register 전후의 path와 추가 PRF read-port area도 확인한다.
+
+### 0-C. 진행 중인 ALU0 timing 후보 (2026-10-06, 아래는 배포 이전 실험 기록)
+
+현재 공개 서버 기준은 `8e2e255`/§0-B이며 filelist는 변하지 않았다. 아래 새 INT stage는 아직 실험 source에만 있고, 기능 통과와 clock 채택을 구분한다. 실제 2nm 1.2GHz 완료판이라는 뜻이 아니다.
+
+**최신 실험 분기:** head-next qualified preview는 `head_pop`을 통해 WB grant가 IQ wakeup에 들어갈 수 있다. 후속 후보는 FIFO의 **non-head slot도 read-only bypass**하여 stage→FIFO head 또는 tail→PRF 전 구간에서 값을 제공한다. Pending tap은 count2일 때만 valid이고 exception/destination-invalid 결과는 wakeup하지 않는다. 이 tap은 ROB complete/retire나 PRF write를 만들지 않는다. Stage를 떠난 preview 값이 다음 cycle stage/head/tail 중 하나에서 같은 tag/data로 유지되는지 assertion으로 확인한다. FIFO tail에 들어가는 값을 지원했으므로 preview validity에 WB grant를 넣지 않는다.
+
+더 나아가 INT stage는 **tag와 forwarding 값만 capture**하고 이미 PRF에 저장된 값은 다음 cycle 등록된 tag로 읽는 hybrid 구조를 시험 중이다. PC/immediate 및 당시 forwarding 중인 operand는 data를 보관하고, 나머지 operand는 `read_prf` flag/physical tag를 보관한다. 이것은 같은 cycle의 IQ→PRF→ALU 경로를 IQ→capture / registered tag→PRF→ALU로 분리하지만 INT PRF read4개가 늘어 실제 총16포트가 되므로 면적도 확인해야 한다. Same-edge operand 값과 다음-cycle execute operand가 동일하다는 projection 및 PRF-ready assertion을 켰다. Tail/hybrid+parallel bypass 후보는 동일 CoreMark profiler440082/576462(IPC1.309897), CFP009e00b9/exit0 및 normal backend 회귀 PASS; tail/hybrid 두 후보의 profiler 전체 SHA도 같다. Parallel OR bypass의 helper equivalence는 at-most-one producer-hit 계약 아래 XLEN32/64·ports7/11 전체 입력/negative-control PASS이며, 이 계약 자체를 whole-core formal로 증명했다는 뜻은 아니다.
+
+단순 ALU factoring 후보의 actual no-override full synthesis가 exit0으로 완료되어 N45 **3157.25ps / 1614065.655999µm²**를 얻었다. 이 수치는 아직 위 hybrid 후보의 결과도, matching reference 대비 개선율도, 실제2nm Fmax도 아니다. 전체 reference/hybrid 비교가 진행 중이다.
+
+Hybrid 후보의 **전체 pre-ABC register-cone 분석**에서는 원래 LSU→IQ→PRF→ALU0→FIFO가 더 이상 한 경로로 이어지지 않는다. 기준 해당 source/endpoint 최장 경로는 heuristic129.07/101gates, 후보는 branch execute bypass를 통해 heuristic69.02/53gates이다. 별도로 LSU→INT issue FF는93.52/72gates, INT issue FF→FIFO는100.44/83gates다. 마지막 경로는 PRF→ALU preview→branch operand bypass→BRU를 지나며, **새 병목**이므로 원래 경로만 짧아졌다고 clock 목표를 완료 처리하지 않는다. 이 숫자는 ns/STA가 아니고 gate의 실제 sensitization도 증명하지 않는다.
+
+후속 branch-forward-capture 후보는 INT pipeline이 켜진 경우 branch issue edge에서 (1) matching in-flight producer가 있으면 forwarded operand를 저장하고 (2) 이미 PRF에 있는 source는 physical tag와 `read_prf` flag만 저장한다. 다음 cycle BRU는 saved operand 또는 registered-tag PRF data만 읽어, 현재 cycle ALU preview를 BRU 입력으로 직접 받지 않는다. 기존 branch issue/execute cycle 수, branch buffer priority, precise completion 경로는 유지한다. Branch slot에 RV32 기준66bit/RV64 기준130bit의 상태가 추가되며 전체 payload reset/hold/selective squash 규칙을 따른다. 실제 추가 면적·clock은 합성으로 확인해야 한다. Original issue operand와 next-cycle BRU operand의 projection assertion을 포함하며, `INT_ISSUE_PIPELINE=0`은 기존 branch bypass 경로를 사용한다. 이 후속 후보는 별도 회귀·합성 중이며 아직 배포 RTL이 아니다.
+
+서버의 `LSU forward_valid → IQ → select → ALU0 → fast buffer payload` 경로를 분리하려는 후보는 **IQ 선택/PRF operand read → INT operand register → ALU → result FIFO → WB/ROB** 순서다. 두 INT register는 operand A/B, operation, RV64 word flag, ROB sequence, destination-valid/class/physical tag를 보관한다. Reset은 valid와 모든 payload를 0으로 초기화한다. Empty 또는 기존 결과 배출 시 새 INT를 capture할 수 있고, downstream stall이면 전체 payload를 유지한다. Fast0는 branch 결과를 우선 처리하므로 INT 결과가 기다릴 수 있다. Flush-all은 전부 제거하고 branch flush는 sequence 기준 younger만 제거하며 older payload는 그대로 보관한다. ROB 완료/PRF write/architectural retire는 기존 WB 경로를 사용하고 preview 자체가 commit을 만들지 않는다.
+
+추가 INT latency를 숨기는 **qualified preview**의 불변조건은 “IQ를 깨운 값이 PRF에 기록될 때까지 매 cycle forwarding 가능해야 한다”다. Preview를 무조건 허용하면 FIFO의 두 번째 slot에 들어간 결과가 다음 cycle head에 보이지 않아, 이미 ready인 consumer가 stale PRF를 읽을 수 있다. 실제 최초 실패는 `8000150e C.MV`에서 관측했다. 따라서 `INT result transfer && next-cycle FIFO head`일 때만 preview한다. FIFO hint는 `count==0 || (count==1 && head_pop)`이며 request-ready를 바꾸지 않는다. Hint가 false이면 정상 FIFO head/WB wakeup을 기다린다. 예: FIFO에 older B가 있고 B가 pop하지 않으면 새 A preview 금지; B가 같은 edge pop하여 A가 head가 되면 허용한다. `preview |=> same-tag/same-data normal bypass` assertion으로 이 연속성을 검사한다.
+
+| 실제 확인 | 결과 / 범위 |
+|---|---|
+| 동일 asserted SoC CoreMark iter2 | profiler439780cycles/576462retire = IPC 약1.3108, CRC/host exit0. Baseline profiler439613/576462와 같은 구간끼리 비교하며 timed counters와 혼합하지 않는다. |
+| Backpressure/flush 실행 coverage | INT hold6380, same-edge drain/refill154741, tail-preview 금지557, younger kill5271, older keep810. Preview persistence assertion PASS. |
+| C/FP 및 trap 회귀 | 현재 memory map의 C/FP ELF signature009e00b9/exit0, normal backend trap/interrupt/CSR/PMP/unmapped/server08c8, DIV stress younger/older/global flush·sequence wrap PASS. 전체 ISA formal 인증은 아니다. |
+| Result FIFO forwarding hint | RV32/RV64 각각200000 cycle random reference-model/SVA PASS. |
+| 탈락 후보 | 모든 wakeup 지연 IPC 약1.09, LSU wakeup만 지연 약1.15; IPC1.25 미달. Empty-FIFO-only preview는 약1.256으로 최종1.3 미달. |
+| Clock 판단 | Actual Top/PKG/no-tool-override whole synthesis A/B 진행 중. Static slot-write의 target data mux8→4만으로 clock 향상을 주장하지 않는다(actual isolated FIFO worst534.94→571.39ps). 서버 STA/최종 채택은 아직 미확인. |
 
 ### 0-B. 현재 RTL 설정 계약: Top/PKG만 사용 (2026-10-03)
 

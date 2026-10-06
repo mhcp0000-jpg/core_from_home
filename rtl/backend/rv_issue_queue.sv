@@ -498,9 +498,12 @@ module rv_issue_queue #(
     // front of the candidate's PRF read address and operand path.
     begin
       for (int unsigned slot = 0; slot < SELECT_WIDTH; slot++) begin
-        if (am_found[slot]) begin
+        // Empty one-hot selection already zeroes every payload field. Do not
+        // re-gate the wide payload with the late all-entry found reduction.
+        // Only validity and the nonzero default final-phase predicate need it.
+        begin
           candidate_index_o[slot]        = am_index[slot];
-          candidate_valid_o[slot]        = !flush_all_i && !flush_younger_i;
+          candidate_valid_o[slot]        = am_found[slot] && !flush_all_i && !flush_younger_i;
           candidate_sequence_o[slot]     = sel_pl[slot].sequence_id;
           candidate_fu_o[slot]           = sel_pl[slot].fu;
           candidate_fu_onehot_o[slot]    = sel_fu_onehot[slot];
@@ -534,8 +537,8 @@ module rv_issue_queue #(
           // signal.
           candidate_store_data_valid_o[slot] =
             (sel_pl[slot].fu == FU_STORE) && sel_store_data_ready[slot];
-          candidate_final_phase[slot] =
-            (sel_pl[slot].fu != FU_STORE) || sel_store_data_ready[slot];
+          candidate_final_phase[slot] = am_found[slot] &&
+            ((sel_pl[slot].fu != FU_STORE) || sel_store_data_ready[slot]);
         end
       end
     end

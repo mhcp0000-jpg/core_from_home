@@ -24,6 +24,8 @@ package rv_ooo_pkg;
   localparam bit CORE_CFG_COMPATIBLE_PAIR_SELECT = 1'b0;
   localparam bit CORE_CFG_BRANCH_TAG_PIPELINE    = 1'b1;
   localparam bit CORE_CFG_DIV_TAG_PIPELINE       = 1'b1;
+  // EXPERIMENT: operand-registered ALUs with execution-result preview wakeup.
+  localparam bit CORE_CFG_INT_ISSUE_PIPELINE     = 1'b1;
   localparam int unsigned CORE_CFG_BR_CHECKPOINTS = 8;
 
   localparam int unsigned ARCH_INT_REGS = 32;
