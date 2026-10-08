@@ -8,14 +8,15 @@ module rv_soc_htif_dpi_tb #(
   parameter bit CoreCompatiblePairSelect = rv_ooo_pkg::CORE_CFG_COMPATIBLE_PAIR_SELECT,
   parameter bit CoreBranchTagPipeline = rv_ooo_pkg::CORE_CFG_BRANCH_TAG_PIPELINE,
   parameter bit CoreDivTagPipeline = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
-  parameter bit CoreIntIssuePipeline = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE
+  parameter bit CoreIntIssuePipeline = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE,
+  parameter int unsigned CoreFpuLatency = rv_ooo_pkg::CORE_CFG_FPU_LATENCY
 );
   import rv_soc_pkg::*;
 
   initial begin : p_core_config_banner
-    $display("[CORE_CONFIG] AGU_LOAD_BYPASS=%0d EARLY_LOAD_SELECT=%0d BRANCH_TAG_PIPELINE=%0d DIV_TAG_PIPELINE=%0d COMPATIBLE_PAIR_SELECT=%0d BR_CHECKPOINTS=%0d INT_ISSUE_PIPELINE=%0d",
+    $display("[CORE_CONFIG] AGU_LOAD_BYPASS=%0d EARLY_LOAD_SELECT=%0d BRANCH_TAG_PIPELINE=%0d DIV_TAG_PIPELINE=%0d COMPATIBLE_PAIR_SELECT=%0d BR_CHECKPOINTS=%0d INT_ISSUE_PIPELINE=%0d FPU_LATENCY=%0d",
       CoreAguLoadBypass, CoreEarlyLoadSelect, CoreBranchTagPipeline,
-      CoreDivTagPipeline, CoreCompatiblePairSelect, CoreBranchCheckpoints, CoreIntIssuePipeline);
+      CoreDivTagPipeline, CoreCompatiblePairSelect, CoreBranchCheckpoints, CoreIntIssuePipeline, CoreFpuLatency);
   end
 
   localparam int unsigned IFU_PMP_PORTS = 8;
@@ -272,6 +273,7 @@ module rv_soc_htif_dpi_tb #(
     .BRANCH_TAG_PIPELINE(CoreBranchTagPipeline),
     .DIV_TAG_PIPELINE(CoreDivTagPipeline),
     .INT_ISSUE_PIPELINE(CoreIntIssuePipeline),
+    .FPU_LATENCY(CoreFpuLatency),
     // This ROM wakes on MSIP, clears CLINT.msip, reads HOSTIF.BOOT_ENTRY and
     // jumps there. Consequently the ELF entry need not contain a trap stub.
     .BOOTROM_INIT_FILE ("tb/fixtures/bootrom/bootrom_host_jump.hex")

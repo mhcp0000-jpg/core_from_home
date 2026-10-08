@@ -141,6 +141,7 @@ class Graph:
         self.fanout = array.array("I", [0]) * size
         self.ff_d = array.array("i")
         self.ff_q = array.array("i")
+        self.ff_peer = array.array("i", [-1]) * size
         self.kinds = {name: i+1 for i, name in enumerate(COSTS)}
         self.delays = [0.0] + list(COSTS.values())
         ctype = None
@@ -172,19 +173,36 @@ class Graph:
                     if x >= 0:
                         self.fanout[x] += 1
             elif ctype in ("\\DFF_X1", "$_DFF_P_", "$_DFF_N_"):
-                qs = self.bits(ports["Q"])
                 ds = self.bits(ports["D"])
-                if len(qs) != len(ds):
-                    raise ValueError("FF width mismatch")
-                for q, d in zip(qs, ds):
-                    q, d = self.root(q), self.root(d)
-                    if q >= 0:
-                        if self.kind[q] or self.register[q]:
-                            raise ValueError(f"Multiple FF/logic drivers: {q}")
-                        self.register[q] = 1
-                    if q >= 0 and d >= 0:
-                        self.ff_q.append(q)
-                        self.ff_d.append(d)
+                # Liberty DFF_X1 may expose QN as a separate mapped ABC PI.
+                # Both pins are register-output boundaries of the SAME D:
+                # do not treat QN as an undriven combinational wire or omit
+                # its fanout. This graph is structural, not a state proof.
+                outputs = [pin for pin in ("Q", "QN") if pin in ports]
+                if not outputs:
+                    raise ValueError("FF has no recognized output pin")
+                if "Q" in ports and "QN" in ports:
+                    positive, negative = self.bits(ports["Q"]), self.bits(ports["QN"])
+                    if len(positive) != len(ds) or len(negative) != len(ds):
+                        raise ValueError("FF width mismatch")
+                    for positive_bit, negative_bit in zip(positive, negative):
+                        positive_bit, negative_bit = self.root(positive_bit), self.root(negative_bit)
+                        if positive_bit >= 0 and negative_bit >= 0:
+                            self.ff_peer[positive_bit] = negative_bit
+                            self.ff_peer[negative_bit] = positive_bit
+                for pin in outputs:
+                    qs = self.bits(ports[pin])
+                    if len(qs) != len(ds):
+                        raise ValueError("FF width mismatch")
+                    for q, d in zip(qs, ds):
+                        q, d = self.root(q), self.root(d)
+                        if q >= 0:
+                            if self.kind[q] or self.register[q]:
+                                raise ValueError(f"Multiple FF/logic drivers: {q}")
+                            self.register[q] = 1
+                        if q >= 0 and d >= 0:
+                            self.ff_q.append(q)
+                            self.ff_d.append(d)
             else:
                 raise ValueError(f"Unsupported cell type; refusing omitted path: {ctype}")
 
@@ -200,7 +218,7 @@ class Graph:
                 elif text == "end" and ctype is not None:
                     finish()
                     ctype = None
-        self.progress(f"graph: {len(self.ff_q)} FF boundaries; all cells recognized")
+        self.progress(f"graph: {len(self.ff_q)} FF output boundaries (Q/QN); all cells recognized")
 
     def matched(self, pattern):
         if pattern is None:
@@ -226,10 +244,15 @@ class Graph:
     def trace(self, source_pattern, end_pattern, top, source_bit=None,
               target_node=None, source_kind="ff", target_bit=None, details=False):
         qualified = {self.exact(source_bit)} if source_bit else self.matched(source_pattern)
+        # A logical-register regex selects a physical FF, including both
+        # mapped output polarities. An exact ABC PI/pin request stays exact.
+        if not source_bit:
+            qualified.update(self.ff_peer[n] for n in tuple(qualified)
+                             if n >= 0 and self.ff_peer[n] >= 0)
         inputs = {self.root(base+i) for base, width in self.input_ranges for i in range(width)}
-        qualified = {n for n in qualified if
+        qualified = {n for n in qualified if n >= 0 and (
           (source_kind in ("ff", "ff_or_input") and self.register[n]) or
-          (source_kind in ("input", "ff_or_input") and n in inputs)}
+          (source_kind in ("input", "ff_or_input") and n in inputs))}
         endpoints = {self.exact(target_bit)} if target_bit else self.matched(end_pattern)
         targets = [(d, q) for d, q in zip(self.ff_d, self.ff_q) if q in endpoints]
         if target_node:
@@ -357,7 +380,8 @@ def main():
     end.add_argument("--tonode", help="exact endpoint D/internal signal alias from ABC")
     parser.add_argument("--source-kind", choices=("ff", "input", "ff_or_input"), default="ff",
                         help="Require FF sources by default; inputs must be explicitly enabled")
-    parser.add_argument("--top", type=int, default=3)
+    parser.add_argument("--top", type=int, default=3,
+                        help="Maximum number of reported paths, NOT an RTL module name")
     parser.add_argument("--json", type=Path)
     parser.add_argument("--details", action="store_true",
                         help="Include primitive types, predecessor pins and fanout; still NOT STA")
@@ -373,6 +397,8 @@ def main():
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps({"netlist_sha256": graph.sha256,
+          "tracer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+          "ff_output_model": "Q and QN both register-output boundaries; structural pin paths, not a state proof",
           "scope": "Full-array structural path; heuristic units, NOT STA/ns or sensitization proof",
           "cells_checked": graph.cell_count, "bits": len(graph.parent),
           "source_regex": args.src, "source_bit": args.srcbit, "source_kind": args.source_kind,

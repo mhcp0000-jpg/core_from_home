@@ -115,30 +115,23 @@ module rv_csr_file #(
   logic [XLEN-1:0] enabled_interrupts;
   logic interrupt_global_enable;
 
-  // Parallel byte increments with a propagate prefix. Counter writes below
-  // retain priority; this only replaces the modulo-64 autonomous increment.
+  // Only the low two sum bits depend on the late 0..3 increment. Upper-bit
+  // all-ones prefixes are prepared from stored value before that carry.
+  // Counter writes retain priority; no state, latency or interface change.
   function automatic logic [63:0] increment_counter(
     input logic [63:0] value,
     input logic [1:0] increment
   );
-    logic [8:0] low_sum;
-    logic [7:0] propagate, carry;
-    logic [7:0] plus_one [0:7];
-    low_sum = {1'b0, value[7:0]} + {7'b0, increment};
-    increment_counter[7:0] = low_sum[7:0];
-    carry = '0; propagate = '0;
-    for (int group = 1; group < 8; group++) begin
-      propagate[group] = &value[group*8 +: 8];
-      plus_one[group] = value[group*8 +: 8] + 8'd1;
-    end
-    plus_one[0] = '0;
-    for (int group = 1; group < 8; group++) begin
-      carry[group] = low_sum[8];
-      for (int earlier = 1; earlier < group; earlier++)
-        carry[group] &= propagate[earlier];
-      increment_counter[group*8 +: 8] = carry[group] ?
-        plus_one[group] : value[group*8 +: 8];
-    end
+    logic [2:0] lower_two_sum;
+    logic [61:0] upper_ones_prefix;
+    lower_two_sum = {1'b0,value[1:0]} + {1'b0,increment};
+    upper_ones_prefix = value[63:2];
+    for (int stride = 1; stride < 62; stride *= 2)
+      upper_ones_prefix &= (upper_ones_prefix << stride) |
+                           ((62'd1 << stride) - 62'd1);
+    increment_counter[1:0] = lower_two_sum[1:0];
+    increment_counter[63:2] = value[63:2] ^
+      ({62{lower_two_sum[2]}} & {upper_ones_prefix[60:0],1'b1});
   endfunction
 
   function automatic logic [XLEN-1:0] build_misa;
@@ -354,6 +347,41 @@ module rv_csr_file #(
                     mstatus_q[MSTATUS_TW];
   end
 
+  // Scalar trap CSR storage is independent of the unrelated large PMP case
+  // write network. No FF/stage/port change. Preserve the exact priority:
+  // reset > trap > legal committed MRET (hold) > matching pending CSR write.
+  logic trap_state_csr_write;
+  assign trap_state_csr_write =
+    csr_commit_i && csr_pending_q && csr_pending_write_q;
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni)
+      mepc_q <= '0;
+    else if (trap_valid_i && trap_ready_o)
+      mepc_q <= trap_is_interrupt_i ?
+        {trap_next_pc_i[XLEN-1:1], 1'b0} : {trap_pc_i[XLEN-1:1], 1'b0};
+    else if (mret_valid_i && mret_commit_i && !mret_illegal_o) begin
+    end else if (trap_state_csr_write && (csr_pending_addr_q == 12'h341))
+      mepc_q <= {csr_pending_wdata_q[XLEN-1:1], 1'b0};
+  end
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni)
+      mcause_q <= '0;
+    else if (trap_valid_i && trap_ready_o)
+      mcause_q <= {trap_is_interrupt_i, {(XLEN-7){1'b0}}, trap_cause_i};
+    else if (mret_valid_i && mret_commit_i && !mret_illegal_o) begin
+    end else if (trap_state_csr_write && (csr_pending_addr_q == 12'h342))
+      mcause_q <= csr_pending_wdata_q;
+  end
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni)
+      mtval_q <= '0;
+    else if (trap_valid_i && trap_ready_o)
+      mtval_q <= trap_tval_i;
+    else if (mret_valid_i && mret_commit_i && !mret_illegal_o) begin
+    end else if (trap_state_csr_write && (csr_pending_addr_q == 12'h343))
+      mtval_q <= csr_pending_wdata_q;
+  end
+
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       current_priv_q <= PRIV_M;
@@ -361,9 +389,6 @@ module rv_csr_file #(
       mie_q <= '0;
       mtvec_q <= {RESET_MTVEC[XLEN-1:2], 2'b00};
       mscratch_q <= '0;
-      mepc_q <= '0;
-      mcause_q <= '0;
-      mtval_q <= '0;
       mcounteren_q <= '0;
       mcycle_q <= '0;
       minstret_q <= '0;
@@ -393,12 +418,6 @@ module rv_csr_file #(
       end
 
       if (trap_valid_i && trap_ready_o) begin
-        mepc_q <= trap_is_interrupt_i ?
-                  {trap_next_pc_i[XLEN-1:1], 1'b0} :
-                  {trap_pc_i[XLEN-1:1], 1'b0};
-        mcause_q <= {{(XLEN-6){1'b0}}, trap_cause_i};
-        mcause_q[XLEN-1] <= trap_is_interrupt_i;
-        mtval_q <= trap_tval_i;
         mstatus_q[MSTATUS_MPIE] <= mstatus_q[MSTATUS_MIE];
         mstatus_q[MSTATUS_MIE] <= 1'b0;
         mstatus_q[MSTATUS_MPP_LO +: 2] <= current_priv_q;
@@ -433,9 +452,6 @@ module rv_csr_file #(
           end
           12'h306: mcounteren_q <= csr_pending_wdata_q & XLEN'(3'b111);
           12'h340: mscratch_q <= csr_pending_wdata_q;
-          12'h341: mepc_q <= {csr_pending_wdata_q[XLEN-1:1], 1'b0};
-          12'h342: mcause_q <= csr_pending_wdata_q;
-          12'h343: mtval_q <= csr_pending_wdata_q;
           12'hB00: mcycle_q <= (XLEN == 32) ?
             {mcycle_q[63:32], csr_pending_wdata_q[31:0]} :
             csr_pending_wdata_q;

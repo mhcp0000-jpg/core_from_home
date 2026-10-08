@@ -5,12 +5,18 @@ param(
   [int]$BuildJobs = 4,
   [ValidateSet("alu", "divider", "multiplier", "wb", "iq")]
   [string[]]$OnlyCases = @("alu", "divider", "multiplier", "wb", "iq"),
-  [string]$BuildRoot = "out/timing_equivalence"
+  [string]$BuildRoot = "out/timing_equivalence",
+  [string]$SourceRoot = ""
 )
 # Compare interfaces and cycle timing against an immutable git checkpoint.
 # Generated reference RTL and build artifacts remain under ignored out/.
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if (!$SourceRoot) { $SourceRoot = $repoRoot }
+$candidateRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
+if ($candidateRoot -ne $repoRoot -and !$candidateRoot.StartsWith($repoRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Saved candidate must be inside workspace'
+}
 $drive = (@("R", "S", "T", "U", "W", "X", "Y", "Z") | Where-Object { !(Test-Path "$_`:\") } | Select-Object -First 1)
 if (!$drive) { throw "No unused drive letter available" }
 $oldPath = $env:PATH
@@ -21,6 +27,7 @@ try {
   $env:PATH = "$W64DevkitRoot\bin;" + $oldPath
   $env:VERILATOR_ROOT = $VerilatorRoot
   $root = "$drive`:/"
+  $sourceAlias = ($root+$candidateRoot.Substring($repoRoot.Length).TrimStart('\').Replace('\','/')).TrimEnd('/')
   Push-Location $root
   $cases = @(@("alu", "rv_int_alu"), @("divider", "rv_divider"), @("multiplier", "rv_multiplier"), @("wb", "rv_writeback_arbiter"), @("iq", "rv_issue_queue"))
   foreach ($case in $cases) {
@@ -38,7 +45,7 @@ try {
     # Baseline MUL's stall SVA lacks a flush exception: arbitrary flush fuzzing
     # trips it in BOTH designs. This run uses explicit all-output equality
     # checks; normal block/integration/SoC regressions separately enable SVA.
-    & "$VerilatorRoot\bin\verilator_bin.exe" --cc --exe --main --timing -DSYNTHESIS --output-split 2000 -Wno-fatal --top-module $top --Mdir $build "${root}rtl/rv_ooo_pkg.sv" $refPath "${root}rtl/backend/$module.sv" "${root}tb/unit/backend/rv_${name}_timing_equiv_tb.sv" *> "$build/compile.log"
+    & "$VerilatorRoot\bin\verilator_bin.exe" --cc --exe --main --timing -DSYNTHESIS --output-split 2000 -Wno-fatal --top-module $top --Mdir $build "$sourceAlias/rtl/rv_ooo_pkg.sv" $refPath "$sourceAlias/rtl/backend/$module.sv" "${root}tb/unit/backend/rv_${name}_timing_equiv_tb.sv" *> "$build/compile.log"
     $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE) { throw "$name generation failed: $build/compile.log" }
     $ErrorActionPreference = "Continue"

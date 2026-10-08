@@ -23,4 +23,5 @@ foreach($name in $names) {
     $values[$name]=[int]$matches[0].Groups[1].Value
 }
 if($values.BR_CHECKPOINTS -lt 2 -or $values.BR_CHECKPOINTS -gt 32){throw 'CORE_CFG_BR_CHECKPOINTS must be 2..32'}
+if($values.Contains('FPU_LATENCY') -and ($values.FPU_LATENCY -lt 1 -or $values.FPU_LATENCY -gt 16)){throw 'CORE_CFG_FPU_LATENCY must be 1..16'}
 [pscustomobject]$values

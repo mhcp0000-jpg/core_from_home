@@ -365,7 +365,13 @@ module rv_lsq #(
 
   always_comb begin
     logic [LQ_ENTRIES-1:0] eligible_work;
+    // Loop-local decisions are combinational scratch, never retained state.
+    // Initialize outside the conditional tournament nodes so four-state
+    // simulators/lint do not infer a latch on a skipped/padded node.
+    logic choose_first_left, choose_second_left;
     eligible_work = '0;
+    choose_first_left = 1'b0;
+    choose_second_left = 1'b0;
     selected_candidate_found = '0;
     selected_candidate_index = '0;
     selected_candidate_sequence = '0;
@@ -420,7 +426,6 @@ module rv_lsq #(
     for (int unsigned level = 1; level <= LQ_SELECT_TREE_LEVELS; level++)
       for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
         if (node < (LQ_SELECT_TREE_LEAVES >> level)) begin
-          logic choose_first_left, choose_second_left;
           choose_first_left = onehot_select_before(
             lq_select_valid[level-1][node*2][0],
             lq_select_onehot[level-1][node*2][0],

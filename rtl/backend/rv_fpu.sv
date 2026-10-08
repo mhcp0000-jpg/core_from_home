@@ -40,7 +40,8 @@ module rv_fpu #(
 
   // LATENCY>=3 uses an explicit arithmetic/pre-normalization stage.  The
   // default LATENCY=4 also separates leading-bit normalization/barrel shift
-  // from rounding/packing. Backend uses LATENCY=5; clock sign-off needs STA.
+  // from rounding/packing. Backend latency comes from Top/PKG (default 6);
+  // clock sign-off still needs whole-core STA with the target library.
   // LATENCY 1/2 keeps the compact unsplit datapath.
   // float32 exact FMA/add 에 실제로 필요한 누산 폭.  product 48-bit +
   // ALIGN_SH 만큼의 하위 여유 + carry.  128-bit 은 과했다.
@@ -120,6 +121,8 @@ module rv_fpu #(
     fp_align_t align;
     logic signed [EXPW-1:0] shift_x;
     logic signed [EXPW-1:0] shift_y;
+    logic product_pending;
+    logic product_precalc;
   } fp_align_seed_t;
 
   typedef struct packed {
@@ -1164,8 +1167,12 @@ module rv_fpu #(
   );
     fp_calc_t result;
     logic destination_unsigned, sign, guard_bit, sticky_bit, increment;
-    logic [127:0] magnitude, retained, rounded_magnitude;
+    // FP32 has only 24 significant bits. Detect large positive exponents
+    // before the shifter; they always saturate the 32/64-bit destination.
+    logic [63:0] magnitude, retained, rounded_magnitude;
     logic [63:0] maximum_value;
+    logic [24:0] fractional_rounded;
+    logic too_large;
     integer destination_width, exponent_value, shift_amount;
     result = '0;
     destination_unsigned = integer_kind[0];
@@ -1175,51 +1182,56 @@ module rv_fpu #(
       result.flags = FFLAG_NV;
       if (fp_is_nan(a) || !sign)
         magnitude = destination_unsigned ?
-          ((destination_width == 64) ? {64'b0, 64'hffff_ffff_ffff_ffff} :
-                                       {96'b0, 32'hffff_ffff}) :
-          ((destination_width == 64) ? {65'b0, 63'h7fff_ffff_ffff_ffff} :
-                                       {97'b0, 31'h7fff_ffff});
+          ((destination_width == 64) ? 64'hffff_ffff_ffff_ffff :
+                                       {32'b0, 32'hffff_ffff}) :
+          ((destination_width == 64) ? {1'b0, 63'h7fff_ffff_ffff_ffff} :
+                                       {33'b0, 31'h7fff_ffff});
       else
         magnitude = destination_unsigned ? '0 :
-          ((destination_width == 64) ? (128'b1 << 63) : (128'b1 << 31));
+          ((destination_width == 64) ? (64'b1 << 63) : (64'b1 << 31));
     end else begin
-      magnitude = {104'b0, fp_mantissa(a)};
+      magnitude = {40'b0, fp_mantissa(a)};
       exponent_value = fp_lsb_exponent(a);
       retained = '0;
       guard_bit = 1'b0;
       sticky_bit = 1'b0;
+      too_large = 1'b0;
       if (exponent_value >= 0) begin
-        if (exponent_value < 104)
+        // In this branch the FP operand is normal, so bit23 is always one.
+        // exp>=width-23 implies an integer magnitude >=2**width.
+        too_large = exponent_value >= (destination_width-23);
+        if (!too_large)
           retained = magnitude << exponent_value;
-        else
-          retained = {128{1'b1}};
       end else begin
         shift_amount = -exponent_value;
-        if (shift_amount < 128) begin
+        if (shift_amount <= 24) begin
           retained = magnitude >> shift_amount;
           guard_bit = magnitude[shift_amount-1];
-          for (integer bit_index = 0; bit_index < 128; bit_index++)
+          for (integer bit_index = 0; bit_index < 24; bit_index++)
             if (bit_index < (shift_amount-1)) sticky_bit |= magnitude[bit_index];
         end else begin
           sticky_bit = |magnitude;
         end
       end
       increment = round_up(sign, rm, retained[0], guard_bit, sticky_bit);
-      rounded_magnitude = retained + increment;
+      // A nonnegative exponent is already an exact integer, increment=0.
+      // Fractional values can round at most a 24-bit retained significand.
+      fractional_rounded = {1'b0,retained[23:0]} + 25'(increment);
+      rounded_magnitude = (exponent_value >= 0) ? retained :
+                            {39'b0,fractional_rounded};
       if (guard_bit || sticky_bit) result.flags |= FFLAG_NX;
       maximum_value = destination_unsigned ?
         ((destination_width == 64) ? 64'hffff_ffff_ffff_ffff : 64'hffff_ffff) :
         ((destination_width == 64) ? 64'h7fff_ffff_ffff_ffff : 64'h7fff_ffff);
-      if ((sign && destination_unsigned && (rounded_magnitude != 0)) ||
+      if (too_large || (sign && destination_unsigned && (rounded_magnitude != 0)) ||
           (!sign && (rounded_magnitude > maximum_value)) ||
           (sign && !destination_unsigned &&
-           (rounded_magnitude > (128'b1 << (destination_width-1))))) begin
+           (rounded_magnitude > (64'b1 << (destination_width-1))))) begin
         result.flags = FFLAG_NV;
         if (destination_unsigned)
-          magnitude = sign ? '0 : {64'b0, maximum_value};
+          magnitude = sign ? '0 : maximum_value;
         else
-          magnitude = sign ? (128'b1 << (destination_width-1)) :
-                             {64'b0, maximum_value};
+          magnitude = sign ? (64'b1 << (destination_width-1)) : maximum_value;
       end else begin
         magnitude = sign ? -rounded_magnitude : rounded_magnitude;
       end
@@ -1596,6 +1608,7 @@ module rv_fpu #(
   );
     fp_align_seed_t seed;
     logic signed [EXPW-1:0] exponent_x, exponent_y;
+    logic [23:0] ma, mb, pp00, pp01, pp10, pp11;
     seed = '0;
     seed.align = execute_fp_align(instruction, a, b, c, rm);
     seed.align.mag_x = '0;
@@ -1610,25 +1623,63 @@ module rv_fpu #(
         seed.align.mag_x = {{(MAGW-24){1'b0}}, fp_mantissa(a[31:0])} << ALIGN_SH;
         seed.align.mag_y = {{(MAGW-24){1'b0}}, fp_mantissa(b[31:0])} << ALIGN_SH;
       end else begin
-        logic [47:0] product;
-        product = fp_mantissa(a[31:0]) * fp_mantissa(b[31:0]);
         exponent_x = fp_lsb_exponent_n(a[31:0]) + fp_lsb_exponent_n(b[31:0]);
         exponent_y = fp_lsb_exponent_n(c[31:0]);
-        seed.align.mag_x = {{(MAGW-48){1'b0}}, product} << ALIGN_SH;
-        seed.align.mag_y = {{(MAGW-24){1'b0}}, fp_mantissa(c[31:0])} << ALIGN_SH;
+        seed.product_pending = 1'b1;
       end
       seed.shift_x = seed.align.common_exponent - exponent_x;
       seed.shift_y = seed.align.common_exponent - exponent_y;
+    end
+    if ((instruction[6:0] == 7'b1010011) &&
+        (instruction[31:25] == 7'b0001000) && seed.align.pre.needs_pack) begin
+      seed.product_pending = 1'b1;
+      seed.product_precalc = 1'b1;
+      // FMUL's finite magnitude is completed at the next existing boundary.
+      // Clear it unconditionally in this branch so the full product is not
+      // kept alongside the tiled multiplier by synthesis.
+      seed.align.pre.magnitude = '0;
+    end
+    ma = fp_mantissa(a[31:0]);
+    mb = fp_mantissa(b[31:0]);
+    pp00 = ma[11:0] * mb[11:0];
+    pp01 = ma[11:0] * mb[23:12];
+    pp10 = ma[23:12] * mb[11:0];
+    pp11 = ma[23:12] * mb[23:12];
+    if (seed.product_pending) begin
+      // Reuse otherwise unused seed magnitude bits, not four new payloads.
+      seed.align.mag_x = '0;
+      seed.align.mag_y = '0;
+      seed.align.mag_x[71:0] = {pp10, pp01, pp00};
+      seed.align.mag_y[23:0] = pp11;
+      if (!seed.product_precalc)
+        seed.align.mag_y[47:24] = fp_mantissa(c[31:0]);
     end
     return seed;
   endfunction
 
   function automatic fp_align_t finish_align_seed(input fp_align_seed_t seed);
     fp_align_t aligned;
+    logic [47:0] row0, row1, row2, carry_save_sum, carry_save_carry, product;
     aligned = seed.align;
+    row0 = {seed.align.mag_y[23:0], seed.align.mag_x[23:0]};
+    row1 = {12'b0, seed.align.mag_x[47:24], 12'b0};
+    row2 = {12'b0, seed.align.mag_x[71:48], 12'b0};
+    carry_save_sum = row0 ^ row1 ^ row2;
+    carry_save_carry = ((row0 & row1) | (row0 & row2) | (row1 & row2)) << 1;
+    product = carry_save_sum + carry_save_carry;
+    if (seed.product_pending) begin
+      aligned.mag_x = '0;
+      aligned.mag_y = '0;
+      if (seed.product_precalc)
+        aligned.pre.magnitude = {{(MAGW-48){1'b0}}, product};
+      else begin
+        aligned.mag_x = {{(MAGW-48){1'b0}}, product} << ALIGN_SH;
+        aligned.mag_y = {{(MAGW-24){1'b0}}, seed.align.mag_y[47:24]} << ALIGN_SH;
+      end
+    end
     if (aligned.sum_pending) begin
-      aligned.mag_x = right_shift_sticky(seed.align.mag_x, seed.shift_x);
-      aligned.mag_y = right_shift_sticky(seed.align.mag_y, seed.shift_y);
+      aligned.mag_x = right_shift_sticky(aligned.mag_x, seed.shift_x);
+      aligned.mag_y = right_shift_sticky(aligned.mag_y, seed.shift_y);
       aligned.sticky = aligned.mag_x[0] || aligned.mag_y[0];
     end
     return aligned;

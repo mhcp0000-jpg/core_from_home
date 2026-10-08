@@ -19,6 +19,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--yosys', default='yosys')
     parser.add_argument('--reference', default='bd11890')
+    parser.add_argument('--rtl', type=Path,
+                        help='Optional saved candidate; default is production RTL')
     parser.add_argument('--width', type=int, choices=(4, 8, 16, 32, 64), default=32)
     parser.add_argument('--entries', type=int, default=1)
     parser.add_argument('--priority-only', action='store_true',
@@ -41,7 +43,10 @@ def main():
     reference = subprocess.check_output(
         ['git', 'show', reference_commit + ':rtl/backend/rv_pmp.sv'],
         cwd=root, text=True)
-    source = (root / 'rtl/backend/rv_pmp.sv').read_text(encoding='utf-8')
+    source_path = args.rtl.absolute() if args.rtl else root / 'rtl/backend/rv_pmp.sv'
+    if source_path != root / 'rtl/backend/rv_pmp.sv' and not source_path.is_relative_to(root):
+        parser.error('Saved candidate must be below the workspace')
+    source = source_path.read_text(encoding='utf-8')
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=True)
     width, entries = args.width, args.entries
@@ -124,6 +129,7 @@ endmodule
     report = {
         'passed': False, 'status': 'running', 'paddr_width': width,
         'entries': entries, 'reference_commit': reference_commit,
+        'rtl_path': str(source_path),
         'rtl_sha256': hashlib.sha256(source.encode()).hexdigest(),
         'scope': 'all unconstrained two-state combinational inputs; one check port; not a spec proof',
         'earlier_entries_disabled': args.isolate_last_entry,

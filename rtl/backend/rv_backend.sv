@@ -7,6 +7,7 @@ module rv_backend #(
   // Optional DIV-only raw-tag boundary; leaves normal ALU/load latency alone.
   parameter bit DIV_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
   parameter bit INT_ISSUE_PIPELINE = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE,
+  parameter int unsigned FPU_LATENCY = rv_ooo_pkg::CORE_CFG_FPU_LATENCY,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
   parameter int unsigned MEM_DATA_WIDTH = 64,
@@ -1695,7 +1696,7 @@ module rv_backend #(
   exception_code_e fpu_result_cause;
   rv_fpu #(
     .XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
-    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(5)
+    .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .LATENCY(FPU_LATENCY)
   ) u_fpu (
     .clk_i, .rst_ni,
     .request_valid_i(port_valid[4] && (port_fu[4] == FU_FP)),
@@ -1760,12 +1761,24 @@ module rv_backend #(
       lsu_issue_lq_index[lane] = port_lq_index[2+lane];
       lsu_issue_sq_valid[lane] = port_fu[2+lane] == FU_STORE;
       lsu_issue_sq_index[lane] = port_sq_index[2+lane];
-      lsu_issue_base[lane] = port_operand0[2+lane];
-      lsu_issue_immediate[lane] = port_immediate[2+lane];
+      // Data is don't-care until issue_valid && issue_ready. Keep the late
+      // selected-port-valid/flush reduction out of the XLEN-wide AGU adder.
+      // Metadata and all side effects retain the original gated port bundle.
+      lsu_issue_base[lane] = cand_operand0[port_candidate[2+lane]];
+      lsu_issue_immediate[lane] = cand_immediate[port_candidate[2+lane]];
       lsu_issue_store_data[lane] = port_operand1[2+lane];
       lsu_issue_size[lane] = port_mem_size[2+lane];
     end
   end
+
+`ifndef SYNTHESIS
+  for (genvar lane=0; lane<2; lane++) begin : g_lsu_route_check
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      lsu_issue_valid[lane] |->
+        (lsu_issue_base[lane] == port_operand0[2+lane]) &&
+        (lsu_issue_immediate[lane] == port_immediate[2+lane]));
+  end
+`endif
 
   rv_lsu_cluster #(
     .XLEN(XLEN), .PADDR_WIDTH(PADDR_WIDTH),
@@ -2284,8 +2297,13 @@ module rv_backend #(
       for(int lane=0;lane<2;lane++) begin
         // Operand-stage -> FIFO head OR tail -> PRF has continuous bypass.
         // Never put this cycle's WB grant/ROB CAM in front of IQ wakeup.
+        // This is an availability hint, NOT execution/commit permission.
+        // IQ candidate-valid and sequential flush priority suppress all
+        // acceptance during recovery. Putting flush_valid here serialized
+        // FIFO -> branch recovery -> wakeup -> IQ -> PRF -> AGU in one cycle.
+        // Keep availability independent of recovery, like raw-result wakeup.
         direct_wake_valid[DIRECT_SOURCE_PORTS+lane]=int_issue_valid_q[lane] &&
-          !flush_valid && int_issue_q[lane].dst_valid &&
+          int_issue_q[lane].dst_valid &&
           (int_issue_q[lane].dst_class != REG_NONE);
         direct_wake_class[DIRECT_SOURCE_PORTS+lane]=int_issue_q[lane].dst_class;
         direct_wake_phys[DIRECT_SOURCE_PORTS+lane]=int_issue_q[lane].dst_phys;
@@ -2306,6 +2324,11 @@ module rv_backend #(
 
 `ifndef SYNTHESIS
   if (INT_ISSUE_PIPELINE) begin : g_preview_persistence
+    // A preview can be visible on a recovery cycle, but no IQ issue, AGU
+    // push or INT result transfer is authorized by that availability hint.
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      flush_valid |-> (cand_accept=='0 && lsu_issue_valid=='0 &&
+                       int_issue_take=='0 && fast_req_valid=='0));
     for (genvar lane=0;lane<2;lane++) begin : g_lane
       // If the stage holds, preview persists; otherwise its result remains
       // at the head or tail. Flush invalidates the promise only for killed work.

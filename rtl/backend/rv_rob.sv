@@ -144,6 +144,26 @@ module rv_rob #(
   logic [ROB_INDEX_WIDTH-1:0] flush_tail;
   logic [ROB_COUNT_WIDTH-1:0] flush_kept_count;
   localparam logic [ROB_COUNT_WIDTH:0] ROB_CAPACITY = ROB_ENTRIES;
+  localparam int unsigned HEAD_READ_LEAVES = 1 << $clog2(ROB_ENTRIES);
+  localparam int unsigned ENTRY_BITS = $bits(rob_entry_t);
+  rob_entry_t head_read [0:1];
+  for (genvar port = 0; port < 2; port++) begin : g_head_read
+    wire [ROB_INDEX_WIDTH-1:0] index = port == 0 ? head_q : head_plus_one;
+    wire [ENTRY_BITS-1:0] tree [0:2*HEAD_READ_LEAVES-1];
+    assign tree[0] = '0;
+    for (genvar row = 0; row < HEAD_READ_LEAVES; row++) begin : g_leaf
+      if (row < ROB_ENTRIES) begin : g_present
+        wire hit = index == ROB_INDEX_WIDTH'(row);
+        assign tree[HEAD_READ_LEAVES+row] = entries_q[row] & {ENTRY_BITS{hit}};
+      end else begin : g_pad
+        assign tree[HEAD_READ_LEAVES+row] = '0;
+      end
+    end
+    for (genvar node = 1; node < HEAD_READ_LEAVES; node++) begin : g_merge
+      assign tree[node] = tree[2*node] | tree[2*node+1];
+    end
+    assign head_read[port] = ($unsigned(index) < ROB_ENTRIES) ? tree[1] : 'x;
+  end
 
   function automatic logic [ROB_INDEX_WIDTH-1:0] increment_index(
     input logic [ROB_INDEX_WIDTH-1:0] index,
@@ -165,20 +185,20 @@ module rv_rob #(
     return difference > 0;
   endfunction
 
+  assign head_plus_one = increment_index(head_q, 1);
   always_comb begin
-    head_plus_one = increment_index(head_q, 1);
     retire_valid_o = '0;
-    if ((count_q != 0) && entries_q[head_q].valid &&
-        entries_q[head_q].complete &&
-        !entries_q[head_q].exception_valid)
+    if ((count_q != 0) && head_read[0].valid &&
+        head_read[0].complete &&
+        !head_read[0].exception_valid)
       retire_valid_o[0] = 1'b1;
 
     if ((count_q > 1) && retire_valid_o[0] &&
-        !entries_q[head_q].serializing &&
-        entries_q[head_plus_one].valid &&
-        entries_q[head_plus_one].complete &&
-        !entries_q[head_plus_one].exception_valid &&
-        !entries_q[head_plus_one].serializing)
+        !head_read[0].serializing &&
+        head_read[1].valid &&
+        head_read[1].complete &&
+        !head_read[1].exception_valid &&
+        !head_read[1].serializing)
       retire_valid_o[1] = 1'b1;
 
     retire_fire[0] = retire_valid_o[0] && retire_ready_i[0];
@@ -239,76 +259,76 @@ module rv_rob #(
     retire_fflags_o              = '0;
 
     if (count_q != 0) begin
-      retire_sequence_o[0]           = entries_q[head_q].sequence_id;
-      retire_pc_o[0]                 = entries_q[head_q].pc;
-      retire_instruction_o[0]        = entries_q[head_q].instruction;
-      retire_instruction_length_o[0] = entries_q[head_q].instruction_length;
-      retire_next_pc_o[0] = entries_q[head_q].is_branch ?
-        entries_q[head_q].branch_target :
-        (entries_q[head_q].pc +
-         ((entries_q[head_q].instruction_length == INST_LEN_16) ? 2 : 4));
+      retire_sequence_o[0]           = head_read[0].sequence_id;
+      retire_pc_o[0]                 = head_read[0].pc;
+      retire_instruction_o[0]        = head_read[0].instruction;
+      retire_instruction_length_o[0] = head_read[0].instruction_length;
+      retire_next_pc_o[0] = head_read[0].is_branch ?
+        head_read[0].branch_target :
+        (head_read[0].pc +
+         ((head_read[0].instruction_length == INST_LEN_16) ? 2 : 4));
       retire_writes_destination_o[0] =
-        entries_q[head_q].writes_destination;
-      retire_destination_class_o[0]  = entries_q[head_q].destination_class;
-      retire_destination_arch_o[0]   = entries_q[head_q].destination_arch;
-      retire_destination_phys_o[0]   = entries_q[head_q].destination_phys;
-      retire_stale_phys_o[0]         = entries_q[head_q].stale_phys;
-      retire_is_store_o[0]           = entries_q[head_q].is_store;
-      retire_is_load_o[0]            = entries_q[head_q].is_load;
-      retire_lq_index_o[0]           = entries_q[head_q].lq_index;
-      retire_sq_index_o[0]           = entries_q[head_q].sq_index;
-      retire_fflags_o[0]             = entries_q[head_q].fflags;
+        head_read[0].writes_destination;
+      retire_destination_class_o[0]  = head_read[0].destination_class;
+      retire_destination_arch_o[0]   = head_read[0].destination_arch;
+      retire_destination_phys_o[0]   = head_read[0].destination_phys;
+      retire_stale_phys_o[0]         = head_read[0].stale_phys;
+      retire_is_store_o[0]           = head_read[0].is_store;
+      retire_is_load_o[0]            = head_read[0].is_load;
+      retire_lq_index_o[0]           = head_read[0].lq_index;
+      retire_sq_index_o[0]           = head_read[0].sq_index;
+      retire_fflags_o[0]             = head_read[0].fflags;
     end
     if (count_q > 1) begin
-      retire_sequence_o[1]           = entries_q[head_plus_one].sequence_id;
-      retire_pc_o[1]                 = entries_q[head_plus_one].pc;
-      retire_instruction_o[1]        = entries_q[head_plus_one].instruction;
+      retire_sequence_o[1]           = head_read[1].sequence_id;
+      retire_pc_o[1]                 = head_read[1].pc;
+      retire_instruction_o[1]        = head_read[1].instruction;
       retire_instruction_length_o[1] =
-        entries_q[head_plus_one].instruction_length;
-      retire_next_pc_o[1] = entries_q[head_plus_one].is_branch ?
-        entries_q[head_plus_one].branch_target :
-        (entries_q[head_plus_one].pc +
-         ((entries_q[head_plus_one].instruction_length == INST_LEN_16) ? 2 : 4));
+        head_read[1].instruction_length;
+      retire_next_pc_o[1] = head_read[1].is_branch ?
+        head_read[1].branch_target :
+        (head_read[1].pc +
+         ((head_read[1].instruction_length == INST_LEN_16) ? 2 : 4));
       retire_writes_destination_o[1] =
-        entries_q[head_plus_one].writes_destination;
+        head_read[1].writes_destination;
       retire_destination_class_o[1]  =
-        entries_q[head_plus_one].destination_class;
+        head_read[1].destination_class;
       retire_destination_arch_o[1]   =
-        entries_q[head_plus_one].destination_arch;
+        head_read[1].destination_arch;
       retire_destination_phys_o[1]   =
-        entries_q[head_plus_one].destination_phys;
-      retire_stale_phys_o[1]         = entries_q[head_plus_one].stale_phys;
-      retire_is_store_o[1]           = entries_q[head_plus_one].is_store;
-      retire_is_load_o[1]            = entries_q[head_plus_one].is_load;
-      retire_lq_index_o[1]           = entries_q[head_plus_one].lq_index;
-      retire_sq_index_o[1]           = entries_q[head_plus_one].sq_index;
-      retire_fflags_o[1]             = entries_q[head_plus_one].fflags;
+        head_read[1].destination_phys;
+      retire_stale_phys_o[1]         = head_read[1].stale_phys;
+      retire_is_store_o[1]           = head_read[1].is_store;
+      retire_is_load_o[1]            = head_read[1].is_load;
+      retire_lq_index_o[1]           = head_read[1].lq_index;
+      retire_sq_index_o[1]           = head_read[1].sq_index;
+      retire_fflags_o[1]             = head_read[1].fflags;
     end
 
-    trap_valid_o    = (count_q != 0) && entries_q[head_q].valid &&
-                      entries_q[head_q].complete &&
-                      entries_q[head_q].exception_valid;
-    trap_sequence_o = (count_q != 0) ? entries_q[head_q].sequence_id : '0;
-    trap_pc_o       = (count_q != 0) ? entries_q[head_q].pc : '0;
-    trap_cause_o    = (count_q != 0) ? entries_q[head_q].exception_cause :
+    trap_valid_o    = (count_q != 0) && head_read[0].valid &&
+                      head_read[0].complete &&
+                      head_read[0].exception_valid;
+    trap_sequence_o = (count_q != 0) ? head_read[0].sequence_id : '0;
+    trap_pc_o       = (count_q != 0) ? head_read[0].pc : '0;
+    trap_cause_o    = (count_q != 0) ? head_read[0].exception_cause :
                                        EXC_ILLEGAL_INSTRUCTION;
-    trap_tval_o     = (count_q != 0) ? entries_q[head_q].exception_tval : '0;
-    head_valid_o    = (count_q != 0) && entries_q[head_q].valid;
-    head_complete_o = head_valid_o && entries_q[head_q].complete;
-    head_sequence_o = (count_q != 0) ? entries_q[head_q].sequence_id : '0;
-    head_pc_o = (count_q != 0) ? entries_q[head_q].pc : '0;
+    trap_tval_o     = (count_q != 0) ? head_read[0].exception_tval : '0;
+    head_valid_o    = (count_q != 0) && head_read[0].valid;
+    head_complete_o = head_valid_o && head_read[0].complete;
+    head_sequence_o = (count_q != 0) ? head_read[0].sequence_id : '0;
+    head_pc_o = (count_q != 0) ? head_read[0].pc : '0;
     head_instruction_o = (count_q != 0) ?
-      entries_q[head_q].instruction : '0;
+      head_read[0].instruction : '0;
     head_instruction_length_o = (count_q != 0) ?
-      entries_q[head_q].instruction_length : '0;
+      head_read[0].instruction_length : '0;
     head_writes_destination_o = (count_q != 0) &&
-      entries_q[head_q].writes_destination;
+      head_read[0].writes_destination;
     head_destination_class_o = (count_q != 0) ?
-      entries_q[head_q].destination_class : REG_NONE;
+      head_read[0].destination_class : REG_NONE;
     head_destination_phys_o = (count_q != 0) ?
-      entries_q[head_q].destination_phys : '0;
+      head_read[0].destination_phys : '0;
     head_source0_phys_o = (count_q != 0) ?
-      entries_q[head_q].source0_phys : '0;
+      head_read[0].source0_phys : '0;
   end
 
   localparam int unsigned KEEP_LEVELS = $clog2(ROB_ENTRIES);
@@ -378,6 +398,51 @@ module rv_rob #(
   end
 
   for (genvar entry = 0; entry < ROB_ENTRIES; entry++) begin : g_entry_storage
+    localparam int unsigned COMPLETE_LEAVES = 1 << $clog2(COMPLETE_PORTS);
+    localparam int unsigned COMPLETE_BITS = XLEN + 6;
+    localparam int unsigned EXCEPTION_BITS = XLEN + $bits(exception_code_e);
+    wire [COMPLETE_PORTS-1:0] complete_hit;
+    wire [COMPLETE_PORTS-1:0] exception_hit;
+    wire [COMPLETE_BITS-1:0] complete_tree [0:2*COMPLETE_LEAVES-1];
+    wire [EXCEPTION_BITS-1:0] exception_tree [0:2*COMPLETE_LEAVES-1];
+    assign complete_tree[0] = '0;
+    assign exception_tree[0] = '0;
+    for (genvar port = 0; port < COMPLETE_PORTS; port++) begin : g_complete_hit
+      assign complete_hit[port] = complete_valid_i[port] &&
+        entries_q[entry].valid &&
+        (entries_q[entry].sequence_id == complete_sequence_i[port]) &&
+        (!flush_younger_i ||
+         !sequence_after(complete_sequence_i[port], flush_sequence_i));
+      assign exception_hit[port] = complete_hit[port] && complete_exception_valid_i[port];
+    end
+    // Preserve highest-port priority even for duplicate generations. Exception
+    // payload has its OWN winner: a later non-exception completion updates
+    // fflags/branch but does not erase an earlier exception's cause/tval.
+    for (genvar leaf = 0; leaf < COMPLETE_LEAVES; leaf++) begin : g_complete_leaf
+      if (leaf < COMPLETE_PORTS) begin : g_present
+        wire complete_wins, exception_wins;
+        if (leaf == COMPLETE_PORTS-1) begin : g_last
+          assign complete_wins = complete_hit[leaf];
+          assign exception_wins = exception_hit[leaf];
+        end else begin : g_prioritized
+          assign complete_wins = complete_hit[leaf] && !(|complete_hit[COMPLETE_PORTS-1:leaf+1]);
+          assign exception_wins = exception_hit[leaf] && !(|exception_hit[COMPLETE_PORTS-1:leaf+1]);
+        end
+        assign complete_tree[COMPLETE_LEAVES+leaf] =
+          {complete_fflags_i[leaf], complete_branch_mispredict_i[leaf], complete_branch_target_i[leaf]} &
+          {COMPLETE_BITS{complete_wins}};
+        assign exception_tree[COMPLETE_LEAVES+leaf] =
+          {complete_exception_cause_i[leaf], complete_exception_tval_i[leaf]} &
+          {EXCEPTION_BITS{exception_wins}};
+      end else begin : g_pad
+        assign complete_tree[COMPLETE_LEAVES+leaf] = '0;
+        assign exception_tree[COMPLETE_LEAVES+leaf] = '0;
+      end
+    end
+    for (genvar node = 1; node < COMPLETE_LEAVES; node++) begin : g_complete_merge
+      assign complete_tree[node] = complete_tree[2*node] | complete_tree[2*node+1];
+      assign exception_tree[node] = exception_tree[2*node] | exception_tree[2*node+1];
+    end
     always_ff @(posedge clk_i) begin
       if (!rst_ni) begin
         entries_q[entry] <= '0;
@@ -391,23 +456,18 @@ module rv_rob #(
 
         // Selective flush preserves same-edge older/boundary completions.
         // Match uses pre-edge generation state, including slot reuse.
-        for (int unsigned port = 0; port < COMPLETE_PORTS; port++) begin
-          if (complete_valid_i[port] && entries_q[entry].valid &&
-              (entries_q[entry].sequence_id == complete_sequence_i[port]) &&
-              (!flush_younger_i ||
-               !sequence_after(complete_sequence_i[port], flush_sequence_i))) begin
-            entries_q[entry].complete <= 1'b1;
-            entries_q[entry].fflags <= complete_fflags_i[port];
-            if (complete_exception_valid_i[port]) begin
-              entries_q[entry].exception_valid <= 1'b1;
-              entries_q[entry].exception_cause <= complete_exception_cause_i[port];
-              entries_q[entry].exception_tval <= complete_exception_tval_i[port];
-            end
-            if (entries_q[entry].is_branch) begin
-              entries_q[entry].branch_mispredict <= complete_branch_mispredict_i[port];
-              entries_q[entry].branch_target <= complete_branch_target_i[port];
-            end
+        if (|complete_hit) begin
+          entries_q[entry].complete <= 1'b1;
+          entries_q[entry].fflags <= complete_tree[1][COMPLETE_BITS-1 -: 5];
+          if (entries_q[entry].is_branch) begin
+            entries_q[entry].branch_mispredict <= complete_tree[1][XLEN];
+            entries_q[entry].branch_target <= complete_tree[1][XLEN-1:0];
           end
+        end
+        if (|exception_hit) begin
+          entries_q[entry].exception_valid <= 1'b1;
+          entries_q[entry].exception_cause <= exception_code_e'(exception_tree[1][EXCEPTION_BITS-1:XLEN]);
+          entries_q[entry].exception_tval <= exception_tree[1][XLEN-1:0];
         end
 
         if (!flush_younger_i) begin

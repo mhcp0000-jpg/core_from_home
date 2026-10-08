@@ -1,4 +1,4 @@
-module rv_fpu_tb #(parameter int unsigned FpuLatency=2);
+module rv_fpu_tb #(parameter int unsigned FpuLatency=rv_ooo_pkg::CORE_CFG_FPU_LATENCY);
   import rv_ooo_pkg::*;
 
   logic clk, rst_n;

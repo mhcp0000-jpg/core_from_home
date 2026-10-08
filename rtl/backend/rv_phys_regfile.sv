@@ -42,6 +42,41 @@ module rv_phys_regfile #(
   logic [DATA_WIDTH-1:0] data_q [0:PHYS_REGS-1];
   logic [PHYS_REGS-1:0] ready_q;
 
+  // Decode a read tag once, then select data/readiness with the same balanced
+  // masked-OR tree. The decoder is shared by all DATA_WIDTH bits; there is no
+  // late binary address controlling a wide cascaded register-array mux.
+  localparam int READ_LEVELS = $clog2(PHYS_REGS);
+  localparam int READ_LEAVES = 1 << READ_LEVELS;
+  logic [READ_PORTS-1:0][DATA_WIDTH:0] stored_read;
+  for (genvar port = 0; port < READ_PORTS; port++) begin : g_read_tree
+    logic [PHYS_REGS-1:0] row_hit;
+    wire [DATA_WIDTH:0] tree [0:READ_LEVELS][0:READ_LEAVES-1] /* verilator split_var */;
+    for (genvar row = 0; row < READ_LEAVES; row++) begin : g_leaf
+      if (row < PHYS_REGS) begin : g_present
+        assign row_hit[row] = read_addr_i[port] == TAG_WIDTH'(row);
+        assign tree[0][row] = {ready_q[row], data_q[row]} &
+                             {(DATA_WIDTH+1){row_hit[row]}};
+      end else begin : g_padding
+        assign tree[0][row] = '0;
+      end
+    end
+    for (genvar level = 1; level <= READ_LEVELS; level++) begin : g_level
+      for (genvar node = 0; node < READ_LEAVES; node++) begin : g_node
+        if (node < (READ_LEAVES >> level)) begin : g_used
+          assign tree[level][node] = tree[level-1][2*node] |
+                                     tree[level-1][2*node+1];
+        end else begin : g_unused
+          assign tree[level][node] = '0;
+        end
+      end
+    end
+    // Retain the original native-array undefined result for an invalid tag.
+    // This is a combinational don't-care, NOT unreset storage. Legal tags
+    // select exactly one row; allocation/write-bypass/x0 priority stays below.
+    assign stored_read[port] = ($unsigned(read_addr_i[port]) < PHYS_REGS) ?
+                                tree[READ_LEVELS][0] : 'x;
+  end
+
   function automatic logic tag_is_allocated_this_cycle(
     input logic [TAG_WIDTH-1:0] tag
   );
@@ -55,8 +90,8 @@ module rv_phys_regfile #(
   always_comb begin
     for (int unsigned read_port = 0;
          read_port < READ_PORTS; read_port++) begin
-      read_data_o[read_port]  = data_q[read_addr_i[read_port]];
-      read_ready_o[read_port] = ready_q[read_addr_i[read_port]];
+      read_data_o[read_port]  = stored_read[read_port][DATA_WIDTH-1:0];
+      read_ready_o[read_port] = stored_read[read_port][DATA_WIDTH];
 
       // Higher-numbered write port wins only if the producer arbitration
       // intentionally presents duplicate tags. An assertion rejects that case

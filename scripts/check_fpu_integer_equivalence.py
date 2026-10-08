@@ -54,6 +54,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--yosys", default="yosys")
     parser.add_argument("--reference", default="2b17093")
+    parser.add_argument("--rtl", type=Path, help="Optional saved candidate; never changes production RTL")
     parser.add_argument("--width", type=int, choices=(32, 64), default=32)
     parser.add_argument("--kind", type=int, choices=range(4), default=None,
                         help="Optional destination-kind partition; otherwise all kinds")
@@ -71,7 +72,8 @@ def main():
                                      cwd=root, text=True).strip()
     reference = subprocess.check_output(["git", "show", commit+":rtl/backend/rv_fpu.sv"],
                                         cwd=root, text=True, encoding="utf-8")
-    source = (root/"rtl/backend/rv_fpu.sv").read_text(encoding="utf-8")
+    source_path = args.rtl.absolute() if args.rtl else root/"rtl/backend/rv_fpu.sv"
+    source = source_path.read_text(encoding="utf-8")
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=True)
     fixture = wrapper("fcvt_current", source, args.width) + wrapper("fcvt_reference", reference, args.width)
@@ -90,7 +92,7 @@ endmodule
                f"sat -prove equal_o 1 -verify -show-inputs{partition}")
     report = dict(passed=False, status="running", width=args.width, kind=args.kind,
                   reference_commit=commit, command=command,
-                  rtl_sha256=hashlib.sha256((root/"rtl/backend/rv_fpu.sv").read_bytes()).hexdigest(),
+                  rtl_sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(), rtl_path=str(source_path),
                   fixture_sha256=hashlib.sha256(fixture.encode()).hexdigest(),
                   scope="Actual helper result/flags, all FP32 bits and RM0..7, two-state; not pipeline/ISA proof")
     (output/"report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")

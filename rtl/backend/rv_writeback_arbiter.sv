@@ -106,18 +106,20 @@ module rv_writeback_arbiter #(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
     input logic [ROB_SEQ_WIDTH-1:0] rhs
   );
-    logic signed [ROB_SEQ_WIDTH-1:0] distance;
-    distance = $signed(lhs - rhs);
-    return distance < 0;
+    // The MSB of modulo subtraction is sign XOR low-bit borrow.  Age only
+    // needs that bit: do not build a full subtractor and signed comparator.
+    // Preserve the exact half-range boundary (including wrap), not unsigned
+    // numerical ordering.  No ROB cohort assumption is needed for equality.
+    if (ROB_SEQ_WIDTH == 1) return lhs != rhs;
+    return (lhs[ROB_SEQ_WIDTH-1] ^ rhs[ROB_SEQ_WIDTH-1]) ^
+           ($unsigned(lhs[ROB_SEQ_WIDTH-2:0]) < $unsigned(rhs[ROB_SEQ_WIDTH-2:0]));
   endfunction
 
   function automatic logic sequence_after(
     input logic [ROB_SEQ_WIDTH-1:0] lhs,
     input logic [ROB_SEQ_WIDTH-1:0] rhs
   );
-    logic signed [ROB_SEQ_WIDTH-1:0] distance;
-    distance = $signed(lhs - rhs);
-    return distance > 0;
+    return !sequence_before(lhs, rhs) && (lhs != rhs);
   endfunction
 
   always_comb begin

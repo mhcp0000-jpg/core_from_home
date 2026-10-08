@@ -27,6 +27,10 @@ package rv_ooo_pkg;
   // EXPERIMENT: operand-registered ALUs with execution-result preview wakeup.
   localparam bit CORE_CFG_INT_ISSUE_PIPELINE     = 1'b1;
   localparam int unsigned CORE_CFG_BR_CHECKPOINTS = 8;
+  // Fast FPU arithmetic stages. 6 places a register between mantissa-product/
+  // exponent preparation and sticky alignment. FDIV/FSQRT remain iterative.
+  // This is a real hardware boundary, not a synthesis-script-only override.
+  localparam int unsigned CORE_CFG_FPU_LATENCY = 6;
 
   localparam int unsigned ARCH_INT_REGS = 32;
   localparam int unsigned ARCH_FP_REGS  = 32;

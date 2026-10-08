@@ -23,10 +23,25 @@ module rv_pmp #(
   logic [PADDR_WIDTH:0] region_low_decoded [0:PMP_ENTRIES-1];
   logic [PADDR_WIDTH:0] region_high_decoded [0:PMP_ENTRIES-1];
   logic [PMP_ADDR_WIDTH-1:0] napot_prefix_ones [0:PMP_ENTRIES-1];
+  logic [PMP_ADDR_WIDTH-1:0] napot_high_base [0:PMP_ENTRIES-1];
+  logic [PMP_ADDR_WIDTH:0] napot_high_encoded [0:PMP_ENTRIES-1];
   for (genvar entry=0; entry<PMP_ENTRIES; entry++) begin : g_napot_prefix
+    assign napot_high_base[entry] =
+      pmpaddr_i[entry*PMP_ADDR_WIDTH +: PMP_ADDR_WIDTH] |
+      ((napot_prefix_ones[entry] << 1) | PMP_ADDR_WIDTH'(1));
+    // Exclusive high = encoded base + 1. Constant-width parallel reductions
+    // expose all increment carries directly, without a second adder prefix
+    // downstream of the trailing-one prefix. Keep the physical-space carry.
+    assign napot_high_encoded[entry][0] = ~napot_high_base[entry][0];
+    assign napot_high_encoded[entry][PMP_ADDR_WIDTH] = &napot_high_base[entry];
     for (genvar bit_index=0; bit_index<PMP_ADDR_WIDTH; bit_index++) begin : g_bit
       assign napot_prefix_ones[entry][bit_index] =
         &pmpaddr_i[entry*PMP_ADDR_WIDTH +: bit_index+1];
+      if (bit_index != 0) begin : g_high_increment
+        assign napot_high_encoded[entry][bit_index] =
+          napot_high_base[entry][bit_index] ^
+          (&napot_high_base[entry][bit_index-1:0]);
+      end
     end
   end
 
@@ -39,7 +54,6 @@ module rv_pmp #(
       logic [PMP_ADDR_WIDTH-1:0] entry_addr;
       logic [PMP_ADDR_WIDTH-1:0] previous_addr;
       logic [PMP_ADDR_WIDTH-1:0] napot_low_mask;
-      logic [PMP_ADDR_WIDTH:0] napot_encoded_high;
 
       entry_cfg_decoded[entry] = pmpcfg_i[entry*8 +: 8];
       entry_mode_decoded[entry] = entry_cfg_decoded[entry][4:3];
@@ -51,7 +65,6 @@ module rv_pmp #(
         previous_addr = pmpaddr_i[(entry-1)*PMP_ADDR_WIDTH +:
                                   PMP_ADDR_WIDTH];
       napot_low_mask = napot_prefix_ones[entry];
-      napot_encoded_high = '0;
 
       case (entry_mode_decoded[entry])
         2'b01: begin // TOR
@@ -74,10 +87,7 @@ module rv_pmp #(
               (entry_addr & ~napot_low_mask), 2'b00};
             // N trailing ones encode 2^(N+3) bytes. Preserve the exclusive
             // bound, including carry at the physical address-space end.
-            napot_encoded_high = {1'b0,
-              (entry_addr | ((napot_low_mask << 1) | PMP_ADDR_WIDTH'(1)))} +
-              (PMP_ADDR_WIDTH+1)'(1);
-            region_high_decoded[entry] = {napot_encoded_high, 2'b00};
+            region_high_decoded[entry] = {napot_high_encoded[entry], 2'b00};
           end
         end
         default: begin

@@ -175,10 +175,20 @@ try {
     if ($stageIndex -gt 0) {
       $priorStage = $stages[$stageIndex-1]
       $priorPath = "$run/$priorStage.result.json"
-      if (!(Test-Path -LiteralPath $priorPath) -or
-          (Get-Content -LiteralPath $priorPath -Raw | ConvertFrom-Json).exitCode -ne 0) {
-        throw "Cannot run ${stage}: $priorStage has no successful checkpoint result"
+      $priorOk=(Test-Path -LiteralPath $priorPath) -and
+        (Get-Content -LiteralPath $priorPath -Raw | ConvertFrom-Json).exitCode -eq 0
+      if(!$priorOk -and $priorStage -eq 'Fine' -and (Test-Path "$run/Fine.observed.result.json")){
+        # A guard can fail to stop an owned native process. Accept a later
+        # retained-handle observation ONLY after its actual exit0 and hash;
+        # preserve the original guard failure, never overwrite it with exit0.
+        $observed=Get-Content "$run/Fine.observed.result.json" -Raw | ConvertFrom-Json
+        $failed=Get-Content $priorPath -Raw | ConvertFrom-Json
+        $priorOk=$observed.stage -eq 'Fine' -and $observed.completedSuccessfully -and
+          $observed.actualNativeExitCode -eq 0 -and $observed.processId -eq $failed.processId -and
+          $observed.checkpointSha256 -eq (Get-FileHash "$run/fine_hierarchy.il").Hash
+        if($priorOk){Write-Host 'RECOVERED_CHECKPOINT Fine: actual native exit0; prior guard failure preserved'}
       }
+      if(!$priorOk){throw "Cannot run ${stage}: $priorStage has no successful checkpoint result"}
     }
     if ($stage -eq "Fine") {
       # Map and clean each module before flattening. Whole-design techmap can

@@ -98,7 +98,44 @@ module rv_lsu_pipe #(
     return (distance != 0) && !distance[ROB_SEQ_WIDTH-1];
   endfunction
 
-  assign effective_address = base_i + immediate_i;
+  // Four-bit carry-select groups with a logarithmic group-carry prefix.
+  // No extra state/latency: address and exception tval remain XLEN-bit
+  // modulo addition, including signed offsets and wraparound. An unbounded
+  // bit-ripple after late IQ/forwarding selection is especially expensive
+  // for the high exception_tval bits on the reported critical path.
+  function automatic logic [XLEN-1:0] address_add(
+    input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs
+  );
+    localparam int GROUPS = XLEN / 4;
+    localparam int LEVELS = $clog2(GROUPS);
+    logic [GROUPS-1:0] p [0:LEVELS], g [0:LEVELS];
+    logic [4:0] sum0 [0:GROUPS-1], sum1 [0:GROUPS-1];
+    logic carry_in;
+    for (int group=0; group<GROUPS; group++) begin
+      sum0[group] = {1'b0,lhs[group*4+:4]} + {1'b0,rhs[group*4+:4]};
+      sum1[group] = sum0[group] + 5'd1;
+      p[0][group] = &(lhs[group*4+:4] ^ rhs[group*4+:4]);
+      g[0][group] = sum0[group][4];
+    end
+    for (int level=0; level<LEVELS; level++) begin
+      for (int group=0; group<GROUPS; group++) begin
+        if (group >= (1<<level)) begin
+          g[level+1][group] = g[level][group] |
+            (p[level][group] & g[level][group-(1<<level)]);
+          p[level+1][group] = p[level][group] & p[level][group-(1<<level)];
+        end else begin
+          g[level+1][group] = g[level][group];
+          p[level+1][group] = p[level][group];
+        end
+      end
+    end
+    for (int group=0; group<GROUPS; group++) begin
+      carry_in = (group==0) ? 1'b0 : g[LEVELS][group-1];
+      address_add[group*4+:4] = carry_in ? sum1[group][3:0] : sum0[group][3:0];
+    end
+  endfunction
+
+  assign effective_address = address_add(base_i, immediate_i);
 
   if (PADDR_WIDTH >= XLEN) begin : g_address_extend
     assign physical_address =
@@ -116,18 +153,22 @@ module rv_lsu_pipe #(
     byte_offset = effective_address[BYTE_OFFSET_WIDTH-1:0];
     byte_offset_integer = byte_offset;
     access_bytes = 1 << memory_size_i;
-    alignment_mask = access_bytes - 1;
-    unsupported_size = (access_bytes > MEM_BYTES) ||
-                       (memory_size_i > BYTE_OFFSET_WIDTH);
+    // size is three bits: (2**size)-1 has at most seven low bits set.
+    // The beat width is a power of two (checked below), so this comparison
+    // also covers access_bytes > MEM_BYTES without a wide subtract/compare.
+    alignment_mask = '0;
+    for (int bit_index = 0; bit_index < XLEN; bit_index++)
+      if (bit_index < 7)
+        alignment_mask[bit_index] = memory_size_i > bit_index;
+    unsupported_size = memory_size_i > BYTE_OFFSET_WIDTH;
     misaligned = unsupported_size ||
                  ((effective_address & alignment_mask) != 0);
     generated_mask = '0;
-    for (int unsigned byte_index = 0; byte_index < MEM_BYTES; byte_index++) begin
-      if ((byte_index >= byte_offset_integer) &&
-          (byte_index < (byte_offset_integer + access_bytes))) begin
-        generated_mask[byte_index] = 1'b1;
-      end
-    end
+    // Decode a low contiguous mask then shift within the beat. Clipping at
+    // the beat end is intentional, INCLUDING invalid/misaligned requests.
+    for (int unsigned byte_index = 0; byte_index < MEM_BYTES; byte_index++)
+      generated_mask[byte_index] = memory_size_i >= $clog2(byte_index+1);
+    generated_mask = generated_mask << byte_offset;
     generated_store_data = store_data_extended << (byte_offset_integer * 8);
   end
 
@@ -319,6 +360,10 @@ module rv_lsu_pipe #(
   end
 
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    issue_valid_i && issue_ready_o |->
+      effective_address == (base_i + immediate_i));
+
   property p_update_stable_when_stalled;
     @(posedge clk_i) disable iff (!rst_ni || flush_valid_i)
       update_valid_o && !update_ready_i |=> update_valid_o &&

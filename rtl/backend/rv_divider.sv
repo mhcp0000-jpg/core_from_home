@@ -72,6 +72,19 @@ module rv_divider #(
   logic [XLEN-1:0] signed_remainder_next;
   logic [XLEN-1:0] selected_result_next;
 
+  // -value modulo 2**XLEN: bit zero is unchanged; bit k toggles when
+  // any lower bit is set. Independent prefix reductions avoid a serial
+  // increment carry on the signed-magnitude and final-sign paths.
+  function automatic logic [XLEN-1:0] prefix_negate(
+    input logic [XLEN-1:0] value
+  );
+    logic [XLEN-1:0] inclusive_prefix;
+    inclusive_prefix = value;
+    for (int stride = 1; stride < XLEN; stride *= 2)
+      inclusive_prefix |= inclusive_prefix << stride;
+    return value ^ (inclusive_prefix << 1);
+  endfunction
+
   function automatic logic sequence_is_younger(
     input logic [ROB_SEQ_WIDTH-1:0] candidate,
     input logic [ROB_SEQ_WIDTH-1:0] boundary
@@ -106,9 +119,9 @@ module rv_divider #(
     dividend_negative = signed_operation && operand_a_effective[XLEN-1];
     divisor_negative = signed_operation && operand_b_effective[XLEN-1];
     dividend_absolute = dividend_negative ?
-                        (~operand_a_effective + 1'b1) : operand_a_effective;
+                        prefix_negate(operand_a_effective) : operand_a_effective;
     divisor_absolute = divisor_negative ?
-                       (~operand_b_effective + 1'b1) : operand_b_effective;
+                       prefix_negate(operand_b_effective) : operand_b_effective;
     divide_by_zero = (operand_b_effective == 0);
     signed_overflow = signed_operation &&
                       (operand_a_effective == signed_minimum) &&
@@ -131,9 +144,9 @@ module rv_divider #(
     end
 
     signed_quotient_next = quotient_negative_q ?
-                           (~quotient_next + 1'b1) : quotient_next;
+                           prefix_negate(quotient_next) : quotient_next;
     signed_remainder_next = remainder_negative_q ?
-                            (~reduced_remainder[XLEN-1:0] + 1'b1) :
+                            prefix_negate(reduced_remainder[XLEN-1:0]) :
                             reduced_remainder[XLEN-1:0];
     selected_result_next = quotient_result_q ?
                            signed_quotient_next : signed_remainder_next;

@@ -1,12 +1,18 @@
 param(
   [string]$Baseline = "bd11890",
   [string]$BuildRoot = "",
+  [string]$SourceRoot = "",
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [int]$BuildJobs = 4
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+if (!$SourceRoot) { $SourceRoot=$repo }
+$sourceFull=(Resolve-Path -LiteralPath $SourceRoot).Path
+if ($sourceFull -ne $repo -and !$sourceFull.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+  throw 'SourceRoot must be inside workspace'
+}
 $drive = @("Z", "Y", "X", "W", "U", "T", "S", "R") |
   Where-Object { !(Test-Path "$_`:\") } | Select-Object -First 1
 if (!$drive) { throw "No unused ASCII drive letter" }
@@ -16,7 +22,11 @@ try {
   & subst "$drive`:" $repo
   if ($LASTEXITCODE) { throw "subst failed" }
   Push-Location "$drive`:/"
+  $sourceAlias="$drive`:/"+$sourceFull.Substring($repo.Length).TrimStart('\').Replace('\','/')
   if (!$BuildRoot) { $BuildRoot="$drive`:/out/fpu_align_equivalence" }
+  elseif ($BuildRoot.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    $BuildRoot="$drive`:/"+$BuildRoot.Substring($repo.Length+1).Replace('\','/')
+  }
   New-Item -ItemType Directory -Force $BuildRoot | Out-Null
   $ref = & git show "${Baseline}:rtl/backend/rv_fpu.sv"
   if ($LASTEXITCODE) { throw "Cannot read baseline $Baseline" }
@@ -29,7 +39,7 @@ try {
     $build="$BuildRoot/x$xlen"
     New-Item -ItemType Directory -Force $build | Out-Null
     $ErrorActionPreference="Continue"
-    & "$VerilatorRoot/bin/verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal --top-module rv_fpu_align_equiv_tb "-GXLEN=$xlen" --Mdir $build rtl/rv_ooo_pkg.sv $refPath rtl/backend/rv_fpu.sv tb/unit/backend/rv_fpu_align_equiv_tb.sv *> "$build/compile.log"
+    & "$VerilatorRoot/bin/verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal --top-module rv_fpu_align_equiv_tb "-GXLEN=$xlen" --Mdir $build "$sourceAlias/rtl/rv_ooo_pkg.sv" $refPath "$sourceAlias/rtl/backend/rv_fpu.sv" tb/unit/backend/rv_fpu_align_equiv_tb.sv *> "$build/compile.log"
     $code=$LASTEXITCODE
     $ErrorActionPreference="Stop"
     if ($code) { throw "Compile failed: $build/compile.log" }

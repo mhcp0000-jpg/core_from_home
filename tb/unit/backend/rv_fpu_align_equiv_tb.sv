@@ -42,6 +42,14 @@ module rv_fpu_align_equiv_tb #(parameter int XLEN=32);
         $fatal(1,"split add-align mismatch xlen=%0d a=%h b=%h sub=%0d rm=%0d",XLEN,a,b,subtract,rm);
       vectors++;
     end
+    // FMUL uses the same tiled product reconstruction as FMA but deposits
+    // it into precalc.magnitude, not the alignment operands.
+    instruction={7'h08,5'd2,5'd1,rm,5'd3,7'h53};
+    actual=dut.finish_align_seed(dut.prepare_align_seed(instruction,a,b,c,rm));
+    expected=reference.execute_fp_align(instruction,a,b,c,rm);
+    if(actual!==expected)
+      $fatal(1,"split multiply-pre mismatch xlen=%0d a=%h b=%h rm=%0d",XLEN,a,b,rm);
+    vectors++;
     for (int negate=0; negate<4; negate++) begin
       actual=dut.fp_fma_align(a,b,c,1'(negate>>1),1'(negate),rm);
       expected=reference.fp_fma_align(a,b,c,1'(negate>>1),1'(negate),rm);

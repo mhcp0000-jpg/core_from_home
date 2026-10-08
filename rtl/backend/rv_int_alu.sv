@@ -27,7 +27,7 @@ module rv_int_alu #(
     logic [GROUPS-1:0] propagate, generate_carry, carry;
     logic [4:0] sum0 [0:GROUPS-1];
     logic [4:0] sum1 [0:GROUPS-1];
-    logic term;
+    logic [GROUPS-1:0] prefix_p, prefix_g;
     for (int group = 0; group < GROUPS; group++) begin
       sum0[group] = {1'b0,lhs[group*4 +: 4]} +
                     {1'b0,rhs[group*4 +: 4]};
@@ -36,17 +36,18 @@ module rv_int_alu #(
       propagate[group] = &(lhs[group*4 +: 4] ^ rhs[group*4 +: 4]);
       generate_carry[group] = sum0[group][4];
     end
+    prefix_p = propagate;
+    prefix_g = generate_carry;
+    for (int stride = 1; stride < GROUPS; stride *= 2) begin
+      prefix_g = prefix_g | (prefix_p & (prefix_g << stride));
+      prefix_p = prefix_p & ((prefix_p << stride) |
+                            ((GROUPS'(1) << stride) - GROUPS'(1)));
+    end
     for (int group = 0; group < GROUPS; group++) begin
-      term = carry_in;
-      for (int earlier = 0; earlier < group; earlier++)
-        term &= propagate[earlier];
-      carry[group] = term;
-      for (int source = 0; source < group; source++) begin
-        term = generate_carry[source];
-        for (int between = source+1; between < group; between++)
-          term &= propagate[between];
-        carry[group] |= term;
-      end
+      if (group == 0)
+        carry[group] = carry_in;
+      else
+        carry[group] = prefix_g[group-1] | (prefix_p[group-1] & carry_in);
       sliced_add[group*4 +: 4] = carry[group] ?
         sum1[group][3:0] : sum0[group][3:0];
     end
