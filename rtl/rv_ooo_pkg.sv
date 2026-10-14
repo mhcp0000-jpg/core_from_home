@@ -26,6 +26,12 @@ package rv_ooo_pkg;
   localparam bit CORE_CFG_DIV_TAG_PIPELINE       = 1'b1;
   // EXPERIMENT: operand-registered ALUs with execution-result preview wakeup.
   localparam bit CORE_CFG_INT_ISSUE_PIPELINE     = 1'b1;
+  // Register head-only system results before WB. CSR writes still commit in
+  // ROB order; normal ALU/load result latency and ROB completion stay direct.
+  localparam bit CORE_CFG_SYSTEM_RESULT_PIPELINE = 1'b1;
+  // Compute each IQ candidate's EA before selecting its LSU port. No extra
+  // cycle; the unchanged AGU receives {base=selected EA, immediate=0}.
+  localparam bit CORE_CFG_AGU_EA_PRECOMPUTE = 1'b1;
   localparam int unsigned CORE_CFG_BR_CHECKPOINTS = 8;
   // Fast FPU arithmetic stages. 6 places a register between mantissa-product/
   // exponent preparation and sticky alignment. FDIV/FSQRT remain iterative.

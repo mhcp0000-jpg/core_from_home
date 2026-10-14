@@ -568,6 +568,69 @@ module rv_csr_file_tb;
     end
     $display("CSR corners: trap/MRET/CSR-write/FP-accrual edge priority PASS");
 
+    // Architectural counter writes overlap ordinary counting on this edge.
+    // Observe old state, never force it. Low-half writes retain OLD high bits;
+    // high-half writes retain INCREMENTED low bits. Trap/legal MRET suppress
+    // writes but counters still advance. Flush clears the pending flag, but a
+    // simultaneous commit consumes its OLD value, as for other pending CSRs.
+    for (int counter_address = 0; counter_address < 4; counter_address++) begin
+      for (int priority_case = 0; priority_case < 4; priority_case++) begin
+        for (int inc = 0; inc < 4; inc++) begin
+          logic [11:0] address;
+          logic [31:0] write_value;
+          logic [63:0] old_cycle, old_instret, expected_cycle, expected_instret;
+          case (counter_address)
+            0: address = 12'hb00;
+            1: address = 12'hb02;
+            2: address = 12'hb80;
+            default: address = 12'hb82;
+          endcase
+          write_value = 32'hffff_fffc | 32'(inc);
+          write_csr(12'h300, 32'h0000_1800); // MPP=M keeps MRET legal.
+          stage_csr_write(address, write_value);
+          csr_commit = 1;
+          retire_count = 2'(inc);
+          trap_valid = (priority_case == 0);
+          mret_valid = (priority_case == 1);
+          mret_commit = (priority_case == 1);
+          flush_all = (priority_case == 3);
+          #1;
+          if (mret_valid && mret_illegal)
+            $fatal(1, "Counter priority test requires legal MRET");
+          old_cycle = u_dut.mcycle_q;
+          old_instret = u_dut.minstret_q;
+          expected_cycle = old_cycle + 64'd1;
+          expected_instret = old_instret + 64'(inc);
+          if (priority_case >= 2) begin
+            case (address)
+              12'hb00: expected_cycle = {old_cycle[63:32], write_value};
+              12'hb02: expected_instret = {old_instret[63:32], write_value};
+              12'hb80: expected_cycle[63:32] = write_value;
+              12'hb82: expected_instret[63:32] = write_value;
+              default: $fatal(1, "Invalid counter test address");
+            endcase
+          end
+          @(posedge clk);
+          @(negedge clk);
+          if (u_dut.mcycle_q !== expected_cycle ||
+              u_dut.minstret_q !== expected_instret)
+            $fatal(1, "Counter %h priority=%0d inc=%0d cycle=%h/%h instret=%h/%h",
+                   address, priority_case, inc, u_dut.mcycle_q, expected_cycle,
+                   u_dut.minstret_q, expected_instret);
+          csr_commit = 0;
+          retire_count = 0;
+          trap_valid = 0;
+          mret_valid = 0;
+          mret_commit = 0;
+          flush_all = 1;
+          @(posedge clk);
+          @(negedge clk);
+          flush_all = 0;
+        end
+      end
+    end
+    $display("CSR counters: 64 low/high-write/count/trap/MRET/flush priority cases PASS");
+
     $display("rv_csr_file_tb PASS");
     $finish;
   end

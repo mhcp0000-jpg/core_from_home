@@ -60,6 +60,8 @@ module rv_frontend #(
   logic [PADDR_WIDTH-1:0] reset_vector_paddr;
   logic [PADDR_WIDTH-1:0] redirect_paddr;
   logic [PADDR_WIDTH-1:0] redirect_block_addr;
+  logic [PADDR_WIDTH-1:0] redirect_block_successor;
+  logic [PADDR_WIDTH-1:0] request_successor;
   logic [PADDR_WIDTH-1:0] next_request_addr_q;
   logic [3:0] epoch_q;
   logic [3:0] next_id_q;
@@ -90,6 +92,7 @@ module rv_frontend #(
   logic [3:0] request_hold_epoch_q;
   logic response_releases_slot;
   logic request_slot_available;
+  logic request_capacity_available, response_completes_for_request;
   logic memory_fill_valid;
   logic target_buffer_fill_valid;
   logic target_buffer_lookup_hit;
@@ -133,6 +136,14 @@ module rv_frontend #(
 
   assign redirect_block_addr =
     {redirect_paddr[PADDR_WIDTH-1:FETCH_ADDR_LSB], {FETCH_ADDR_LSB{1'b0}}};
+  // Constant-block successors are computed before late handshake/FTB-hit
+  // selection. Never turn a late one-bit hit into the input carry of an
+  // address adder. This is modulo PADDR_WIDTH, including address wrap.
+  assign redirect_block_successor = redirect_block_addr + FETCH_BYTES_VALUE;
+  assign request_successor = (request_hold_q && !frontend_redirect_valid) ?
+    (request_hold_addr_q + FETCH_BYTES_VALUE) :
+    (frontend_redirect_valid ? redirect_block_successor :
+      (next_request_addr_q + FETCH_BYTES_VALUE));
   assign response_id_matches = outstanding_q &&
                                (imem_rsp_id_i == outstanding_id_q);
   assign response_is_current = response_id_matches &&
@@ -148,7 +159,18 @@ module rv_frontend #(
   // fault; a stale response from an old epoch may release the slot normally.
   assign response_releases_slot = response_fire &&
     (!response_is_current || (imem_rsp_resp_i == 2'b00));
-  assign request_slot_available = !outstanding_q || response_releases_slot;
+  // Capacity is tested on pre-edge occupancy. With an aligned-block FIFO,
+  // byte_count <= QUEUE_BYTES-FETCH_BYTES implies block_count < QUEUE_BLOCKS:
+  // even a full FIFO with its maximum head offset still contains more bytes.
+  // Thus a current response is always accepted when a NEW request qualifies.
+  // Do not feed prediction -> consumption -> queue fill-ready back through
+  // the request slot calculation. The real response_fire/FTB fill/outstanding
+  // state still use the actual response handshake below.
+  assign request_capacity_available =
+    queue_byte_count <= (QUEUE_BYTES-FETCH_BYTES);
+  assign response_completes_for_request = imem_rsp_valid_i &&
+    response_id_matches && (!response_is_current || (imem_rsp_resp_i == 2'b00));
+  assign request_slot_available = !outstanding_q || response_completes_for_request;
   assign redirect_uses_target_buffer = predicted_redirect_fire &&
                                        target_buffer_lookup_hit &&
                                        !redirect_valid_i;
@@ -157,8 +179,7 @@ module rv_frontend #(
   assign request_candidate_valid = request_slot_available &&
                                    ((!fault_stop_q && !queue_fault_visible) ||
                                     frontend_redirect_valid) &&
-                                   (queue_byte_count <=
-                                    (QUEUE_BYTES-FETCH_BYTES)) &&
+                                   request_capacity_available &&
                                    (!frontend_redirect_valid ||
                                     !redirect_uses_target_buffer);
   // Once a request is visible, local ready/valid follows the same rule as AXI:
@@ -358,7 +379,7 @@ module rv_frontend #(
         outstanding_id_q <= imem_req_id_o;
         outstanding_epoch_q <= imem_req_epoch_o;
         outstanding_addr_q <= imem_req_addr_o;
-        next_request_addr_q <= imem_req_addr_o + FETCH_BYTES_VALUE;
+        next_request_addr_q <= request_successor;
         next_id_q <= next_id_q + 1'b1;
       end
 
@@ -375,14 +396,27 @@ module rv_frontend #(
       if (frontend_redirect_valid) begin
         epoch_q <= epoch_q + 1'b1;
         if (!request_fire)
-          next_request_addr_q <= redirect_block_addr +
-            (redirect_uses_target_buffer ? FETCH_BYTES_VALUE : '0);
+          next_request_addr_q <= redirect_uses_target_buffer ?
+            redirect_block_successor : redirect_block_addr;
         fault_stop_q <= 1'b0;
       end
     end
   end
 
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    request_successor == (imem_req_addr_o + FETCH_BYTES_VALUE));
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    (redirect_uses_target_buffer ? redirect_block_successor : redirect_block_addr)
+      == (redirect_block_addr +
+          (redirect_uses_target_buffer ? FETCH_BYTES_VALUE : '0)));
+  // Independent shadow contract: only masked availability is consumed by
+  // request_candidate_valid. Raw slot hint may differ when capacity is false.
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    request_capacity_available |-> queue_fill_ready);
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    request_capacity_available |->
+      (request_slot_available == (!outstanding_q || response_releases_slot)));
   property p_request_stable_when_stalled;
     @(posedge clk_i) disable iff (!rst_ni || frontend_redirect_valid)
       imem_req_valid_o && !imem_req_ready_i |=> imem_req_valid_o &&

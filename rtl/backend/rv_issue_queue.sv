@@ -238,6 +238,7 @@ module rv_issue_queue #(
   logic [2*CNT_LEAVES-1:1] alloc_any, alloc_ge2;
   logic [2*CNT_LEAVES-1:1] alloc_prefix_none, alloc_prefix_one;
   logic [1:0] allocation_found;
+  logic [1:0][2:0] dispatch_ready_for_write;
   logic [SELECT_WIDTH-1:0] candidate_final_phase;
   logic [2:0] requested_dispatch_count;
   logic dispatch_fire;
@@ -547,7 +548,7 @@ module rv_issue_queue #(
   // Lowest two free slots, independent of dispatch handshake. Upward
   // saturating counts and downward prefix counts avoid two serial priority
   // scans. Keep the winner one-hot through age-matrix row/column updates;
-  // binary indices are only an interface/payload-write representation.
+  // binary indices are only an interface representation, not a write decoder.
   for (genvar leaf = 0; leaf < CNT_LEAVES; leaf++) begin : g_alloc_leaf
     if (leaf < ENTRIES) begin : g_present
       assign available_slots[leaf] = !valid_q[leaf];
@@ -693,59 +694,51 @@ module rv_issue_queue #(
       end
 
       if (dispatch_fire) begin
+        // Keep the allocator's one-hot winner through every payload write.
+        // Binary dispatch_index_o remains an unchanged interface output.
         for (int unsigned lane = 0; lane < 2; lane++) begin
-          if (dispatch_valid_i[lane]) begin
-            valid_q[dispatch_index_o[lane]] <= 1'b1;
-            sequence_q[dispatch_index_o[lane]] <= dispatch_sequence_i[lane];
-            fu_q[dispatch_index_o[lane]] <= dispatch_fu_i[lane];
-            port_mask_q[dispatch_index_o[lane]] <= dispatch_port_mask_i[lane];
-            src_used_q[dispatch_index_o[lane]] <= dispatch_src_used_i[lane];
-            src0_class_q[dispatch_index_o[lane]] <= dispatch_src_class_i[lane][0];
-            src1_class_q[dispatch_index_o[lane]] <= dispatch_src_class_i[lane][1];
-            src2_class_q[dispatch_index_o[lane]] <= dispatch_src_class_i[lane][2];
-            src_phys_q[dispatch_index_o[lane]] <= dispatch_src_phys_i[lane];
-            for (int unsigned source = 0; source < 3; source++) begin
-              src_ready_q[dispatch_index_o[lane]][source] <=
-                !dispatch_src_used_i[lane][source] ||
-                dispatch_src_ready_i[lane][source] ||
-                ((source == 0) ?
-                 tag_wakes(dispatch_src_class_i[lane][0],
-                           dispatch_src_phys_i[lane][source]) :
-                 ((source == 1) ?
-                  tag_wakes(dispatch_src_class_i[lane][1],
-                            dispatch_src_phys_i[lane][source]) :
-                  tag_wakes(dispatch_src_class_i[lane][2],
-                            dispatch_src_phys_i[lane][source])));
+          for (int unsigned entry = 0; entry < ENTRIES; entry++) begin
+            if (allocation_hot[lane][entry]) begin
+              valid_q[entry] <= 1'b1;
+              sequence_q[entry] <= dispatch_sequence_i[lane];
+              fu_q[entry] <= dispatch_fu_i[lane];
+              port_mask_q[entry] <= dispatch_port_mask_i[lane];
+              src_used_q[entry] <= dispatch_src_used_i[lane];
+              src0_class_q[entry] <= dispatch_src_class_i[lane][0];
+              src1_class_q[entry] <= dispatch_src_class_i[lane][1];
+              src2_class_q[entry] <= dispatch_src_class_i[lane][2];
+              src_phys_q[entry] <= dispatch_src_phys_i[lane];
+              src_ready_q[entry] <= dispatch_ready_for_write[lane];
+              destination_valid_q[entry] <=
+                dispatch_destination_valid_i[lane];
+              destination_class_q[entry] <=
+                dispatch_destination_class_i[lane];
+              destination_phys_q[entry] <=
+                dispatch_destination_phys_i[lane];
+              pc_q[entry] <= dispatch_pc_i[lane];
+              instruction_q[entry] <= dispatch_instruction_i[lane];
+              inst_len_q[entry] <= dispatch_inst_len_i[lane];
+              prediction_q[entry] <= dispatch_prediction_i[lane];
+              immediate_q[entry] <= dispatch_immediate_i[lane];
+              operation_q[entry] <= dispatch_operation_i[lane];
+              use_pc_q[entry] <= dispatch_use_pc_i[lane];
+              use_immediate_q[entry] <=
+                dispatch_use_immediate_i[lane];
+              word_operation_q[entry] <=
+                dispatch_word_operation_i[lane];
+              mem_size_q[entry] <= dispatch_mem_size_i[lane];
+              mem_unsigned_q[entry] <=
+                dispatch_mem_unsigned_i[lane];
+              rounding_mode_q[entry] <=
+                dispatch_rounding_mode_i[lane];
+              checkpoint_valid_q[entry] <=
+                dispatch_checkpoint_valid_i[lane];
+              checkpoint_id_q[entry] <=
+                dispatch_checkpoint_id_i[lane];
+              lq_index_q[entry] <= dispatch_lq_index_i[lane];
+              sq_index_q[entry] <= dispatch_sq_index_i[lane];
+              store_address_issued_q[entry] <= 1'b0;
             end
-            destination_valid_q[dispatch_index_o[lane]] <=
-              dispatch_destination_valid_i[lane];
-            destination_class_q[dispatch_index_o[lane]] <=
-              dispatch_destination_class_i[lane];
-            destination_phys_q[dispatch_index_o[lane]] <=
-              dispatch_destination_phys_i[lane];
-            pc_q[dispatch_index_o[lane]] <= dispatch_pc_i[lane];
-            instruction_q[dispatch_index_o[lane]] <= dispatch_instruction_i[lane];
-            inst_len_q[dispatch_index_o[lane]] <= dispatch_inst_len_i[lane];
-            prediction_q[dispatch_index_o[lane]] <= dispatch_prediction_i[lane];
-            immediate_q[dispatch_index_o[lane]] <= dispatch_immediate_i[lane];
-            operation_q[dispatch_index_o[lane]] <= dispatch_operation_i[lane];
-            use_pc_q[dispatch_index_o[lane]] <= dispatch_use_pc_i[lane];
-            use_immediate_q[dispatch_index_o[lane]] <=
-              dispatch_use_immediate_i[lane];
-            word_operation_q[dispatch_index_o[lane]] <=
-              dispatch_word_operation_i[lane];
-            mem_size_q[dispatch_index_o[lane]] <= dispatch_mem_size_i[lane];
-            mem_unsigned_q[dispatch_index_o[lane]] <=
-              dispatch_mem_unsigned_i[lane];
-            rounding_mode_q[dispatch_index_o[lane]] <=
-              dispatch_rounding_mode_i[lane];
-            checkpoint_valid_q[dispatch_index_o[lane]] <=
-              dispatch_checkpoint_valid_i[lane];
-            checkpoint_id_q[dispatch_index_o[lane]] <=
-              dispatch_checkpoint_id_i[lane];
-            lq_index_q[dispatch_index_o[lane]] <= dispatch_lq_index_i[lane];
-            sq_index_q[dispatch_index_o[lane]] <= dispatch_sq_index_i[lane];
-            store_address_issued_q[dispatch_index_o[lane]] <= 1'b0;
           end
         end
       end
@@ -838,6 +831,25 @@ module rv_issue_queue #(
   // PROTOTYPE matrix maintenance.  A newly allocated entry records every
   // currently valid entry (and, for lane1, lane0's entry) as older, and its own
   // column is cleared in every row.
+  // Compute the identical lane wakeup once, not once per potential slot.
+  always_comb begin
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      for (int unsigned source = 0; source < 3; source++) begin
+        dispatch_ready_for_write[lane][source] =
+          !dispatch_src_used_i[lane][source] ||
+          dispatch_src_ready_i[lane][source] ||
+          ((source == 0) ?
+           tag_wakes(dispatch_src_class_i[lane][0],
+                     dispatch_src_phys_i[lane][source]) :
+           ((source == 1) ?
+            tag_wakes(dispatch_src_class_i[lane][1],
+                      dispatch_src_phys_i[lane][source]) :
+            tag_wakes(dispatch_src_class_i[lane][2],
+                      dispatch_src_phys_i[lane][source])));
+      end
+    end
+  end
+
   always_ff @(posedge clk_i) begin
     if (!rst_ni || flush_all_i) begin
       age_matrix_q <= '0;

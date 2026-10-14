@@ -271,6 +271,8 @@ module rv_lsu_pipe #(
     update_payload_t head_q, tail_q, issue_payload;
     logic pop, push, kill0, kill1;
     logic keep0, keep1;
+    logic head_from_issue, head_from_tail, tail_from_issue;
+    localparam int unsigned PAYLOAD_BITS = $bits(update_payload_t);
 
     always_comb begin
       issue_payload.rob_sequence     = issue_rob_sequence_i;
@@ -303,37 +305,67 @@ module rv_lsu_pipe #(
     assign keep0 = update_valid_q && !kill0;
     assign keep1 = valid1_q && !kill1;
 
+    // Preserve the exact queue/control priority, but express wide payload
+    // updates as disjoint masks. The old case/if priority lowered to a deep
+    // mux chain on every address/data/exception bit, including inactive bits.
+    // No additional state, stage, port or invalid-output behavior is added.
+    always_comb begin
+      head_from_issue = 1'b0;
+      head_from_tail = 1'b0;
+      tail_from_issue = 1'b0;
+      if (flush_valid_i) begin
+        if (!keep0 && keep1) head_from_tail = 1'b1;
+      end else begin
+        case ({push, pop})
+          2'b10: begin
+            if (!update_valid_q) head_from_issue = 1'b1;
+            else tail_from_issue = 1'b1;
+          end
+          2'b01: head_from_tail = 1'b1;
+          2'b11: head_from_issue = 1'b1;
+          default: begin end
+        endcase
+      end
+    end
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni) begin
+        head_q <= '0;
+        tail_q <= '0;
+      end else begin
+        head_q <= update_payload_t'(
+          (issue_payload & {PAYLOAD_BITS{head_from_issue}}) |
+          (tail_q & {PAYLOAD_BITS{head_from_tail}}) |
+          (head_q & {PAYLOAD_BITS{!(head_from_issue || head_from_tail)}}));
+        tail_q <= update_payload_t'(
+          (issue_payload & {PAYLOAD_BITS{tail_from_issue}}) |
+          (tail_q & {PAYLOAD_BITS{!tail_from_issue}}));
+      end
+    end
+
     always_ff @(posedge clk_i) begin
       if (!rst_ni) begin
         update_valid_q <= 1'b0;
         valid1_q <= 1'b0;
-        head_q <= '0;
-        tail_q <= '0;
       end else if (flush_valid_i) begin
         // No push or pop in a flush cycle (issue_ready_o is low).
         update_valid_q <= keep0 || keep1;
         valid1_q <= keep0 && keep1;
-        if (!keep0 && keep1) head_q <= tail_q;
       end else begin
         case ({push, pop})
           2'b10: begin
             if (!update_valid_q) begin
               update_valid_q <= 1'b1;
-              head_q <= issue_payload;
             end else begin
               valid1_q <= 1'b1;
-              tail_q <= issue_payload;
             end
           end
           2'b01: begin
             update_valid_q <= valid1_q;
             valid1_q <= 1'b0;
-            head_q <= tail_q;
           end
           2'b11: begin
             // push requires !full, so only the head was occupied: it leaves
             // and the new entry becomes the head.
-            head_q <= issue_payload;
           end
           default: begin end
         endcase

@@ -61,6 +61,32 @@ module rv_branch_predictor #(
   logic [1:0] pht_q [0:PHT_ENTRIES-1];
   logic [1:0] global_pht_q [0:PHT_ENTRIES-1];
   logic [1:0] chooser_q [0:PHT_ENTRIES-1];
+  // Two-level, shared decoded direction read. The MSBs are the same stored
+  // two-bit saturating counters; neither capacity nor training is changed.
+  // Index bits drive a small row decoder, not thousands of mux select pins.
+  localparam int unsigned PHT_ROW_BITS = (PHT_BITS < 5) ? PHT_BITS : 5;
+  localparam int unsigned PHT_ROWS = 1 << PHT_ROW_BITS;
+  localparam int unsigned PHT_BANKS = PHT_ENTRIES / PHT_ROWS;
+  logic [PHT_ENTRIES-1:0] bimodal_direction, global_direction, chooser_direction;
+  for (genvar entry=0; entry<PHT_ENTRIES; entry++) begin : g_direction_bits
+    assign bimodal_direction[entry] = pht_q[entry][1];
+    assign global_direction[entry] = global_pht_q[entry][1];
+    assign chooser_direction[entry] = chooser_q[entry][1];
+  end
+  function automatic logic lookup_direction(
+    input logic [PHT_ENTRIES-1:0] directions,
+    input logic [PHT_BITS-1:0] index
+  );
+    logic [PHT_ROWS-1:0] row_select;
+    logic [PHT_BANKS-1:0] bank_taken;
+    for (int row=0; row<PHT_ROWS; row++)
+      row_select[row] = index[PHT_ROW_BITS-1:0] == PHT_ROW_BITS'(row);
+    for (int bank=0; bank<PHT_BANKS; bank++) begin
+      bank_taken[bank] = (|(directions[bank*PHT_ROWS +: PHT_ROWS] & row_select)) &&
+        ((index >> PHT_ROW_BITS) == PHT_BITS'(bank));
+    end
+    return |bank_taken;
+  endfunction
   logic [PHT_BITS-1:0] speculative_history_q, committed_history_q;
   logic [XLEN-1:0] speculative_ras_q [0:RAS_DEPTH-1];
   logic [XLEN-1:0] committed_ras_q [0:RAS_DEPTH-1];
@@ -85,15 +111,75 @@ module rv_branch_predictor #(
     btb_lookup_t found;
     logic [BTB_SET_BITS-1:0] set_index;
     logic [BTB_TAG_BITS-1:0] tag;
+    logic [BTB_SETS-1:0] set_select;
+    logic [BTB_WAYS-1:0] way_hit, winning_way;
+    logic [BTB_WAYS-1:0][XLEN-1:0] way_target;
     found='0;
     set_index=pc[BTB_SET_BITS:1];
     tag=pc[XLEN-1:BTB_SET_BITS+1];
+    // Compare static words in parallel with the shared set decoder. Avoid
+    // placing an address-controlled tag-array mux BEFORE the tag comparator.
+    for (int set_word=0; set_word<BTB_SETS; set_word++)
+      set_select[set_word] = set_index == BTB_SET_BITS'(set_word);
     for (int way=0; way<BTB_WAYS; way++) begin
-      if (btb_q[set_index][way].valid && btb_q[set_index][way].tag==tag) begin
-        found.hit=1'b1;
-        found.target=btb_q[set_index][way].target;
-        found.way=$clog2(BTB_WAYS)'(way);
-      end
+      logic [BTB_SETS-1:0] entry_hits;
+      logic [XLEN-1:0] target_tree [0:2*BTB_SETS-2];
+      for (int set_word=0; set_word<BTB_SETS; set_word++)
+        entry_hits[set_word] = set_select[set_word] &&
+          btb_q[set_word][way].valid && btb_q[set_word][way].tag==tag;
+      way_hit[way] = |entry_hits;
+      for (int set_word=0; set_word<BTB_SETS; set_word++)
+        target_tree[BTB_SETS-1+set_word] = btb_q[set_word][way].target &
+          {XLEN{set_select[set_word]}};
+      for (int node=BTB_SETS-2; node>=0; node--)
+        target_tree[node] = target_tree[2*node+1] | target_tree[2*node+2];
+      way_target[way] = target_tree[0];
+    end
+    found.hit=|way_hit;
+    for (int way=0; way<BTB_WAYS; way++) begin
+      // Preserve the highest matching way even for duplicate valid tags.
+      winning_way[way] = way_hit[way] && !(|(way_hit >> (way+1)));
+      found.target |= way_target[way] & {XLEN{winning_way[way]}};
+      found.way |= $clog2(BTB_WAYS)'(way) & {$clog2(BTB_WAYS){winning_way[way]}};
+    end
+    return found;
+  endfunction
+
+  function automatic btb_lookup_t lookup_btb_sequential(
+    input logic [XLEN-1:0] pc, input logic [1:0] parcels
+  );
+    btb_lookup_t found;
+    logic [BTB_SET_BITS:0] set_sum;
+    logic [BTB_TAG_BITS-1:0] base_tag, following_tag;
+    logic [BTB_SETS-1:0] set_select;
+    logic [BTB_WAYS-1:0] way_hit, winning_way;
+    logic [BTB_WAYS-1:0][XLEN-1:0] way_target;
+    found='0;
+    set_sum={1'b0,pc[BTB_SET_BITS:1]} + (BTB_SET_BITS+1)'(parcels);
+    base_tag=pc[XLEN-1:BTB_SET_BITS+1];
+    following_tag=base_tag + BTB_TAG_BITS'(1);
+    for (int set_word=0; set_word<BTB_SETS; set_word++)
+      set_select[set_word] = set_sum[BTB_SET_BITS-1:0] == BTB_SET_BITS'(set_word);
+    for (int way=0; way<BTB_WAYS; way++) begin
+      logic [BTB_SETS-1:0] entry_hits;
+      logic [XLEN-1:0] target_tree [0:2*BTB_SETS-2];
+      for (int set_word=0; set_word<BTB_SETS; set_word++)
+        entry_hits[set_word] = set_select[set_word] && btb_q[set_word][way].valid &&
+          (set_sum[BTB_SET_BITS] ? btb_q[set_word][way].tag==following_tag :
+                                  btb_q[set_word][way].tag==base_tag);
+      way_hit[way] = |entry_hits;
+      for (int set_word=0; set_word<BTB_SETS; set_word++)
+        target_tree[BTB_SETS-1+set_word] = btb_q[set_word][way].target &
+          {XLEN{set_select[set_word]}};
+      for (int node=BTB_SETS-2; node>=0; node--)
+        target_tree[node] = target_tree[2*node+1] | target_tree[2*node+2];
+      way_target[way] = target_tree[0];
+    end
+    found.hit=|way_hit;
+    for (int way=0; way<BTB_WAYS; way++) begin
+      winning_way[way] = way_hit[way] && !(|(way_hit >> (way+1)));
+      found.target |= way_target[way] & {XLEN{winning_way[way]}};
+      found.way |= $clog2(BTB_WAYS)'(way) & {$clog2(BTB_WAYS){winning_way[way]}};
     end
     return found;
   endfunction
@@ -101,8 +187,8 @@ module rv_branch_predictor #(
   if (SEQUENTIAL_QUERIES) begin : g_sequential_btb
     // Decode/address/table compare run before length0; select only a completed
     // result afterward. No state, prediction policy, training or cycle changes.
-    assign sequential_btb_lookup[0]=lookup_btb(query_pc_i[0]+XLEN'(2));
-    assign sequential_btb_lookup[1]=lookup_btb(query_pc_i[0]+XLEN'(4));
+    assign sequential_btb_lookup[0]=lookup_btb_sequential(query_pc_i[0],2'd1);
+    assign sequential_btb_lookup[1]=lookup_btb_sequential(query_pc_i[0],2'd2);
 `ifndef SYNTHESIS
     assert property (@(posedge clk_i) disable iff (!rst_ni)
       query_valid_i[1] |-> query_pc_i[1] ==
@@ -369,9 +455,9 @@ module rv_branch_predictor #(
       query_pht_index[lane] = query_pc_i[lane][PHT_BITS:1];
       query_global_pht_index[lane] =
         query_pc_i[lane][PHT_BITS:1] ^ history_work;
-      query_bimodal_taken[lane] = pht_q[query_pht_index[lane]][1];
+      query_bimodal_taken[lane] = lookup_direction(bimodal_direction,query_pht_index[lane]);
       query_global_taken[lane] =
-        global_pht_q[query_global_pht_index[lane]][1];
+        lookup_direction(global_direction,query_global_pht_index[lane]);
       if (lane == 1) begin
         logic [PHT_BITS-1:0] unshifted_index, shifted_zero_index, shifted_one_index;
         logic unshifted_taken, shifted_zero_taken, shifted_one_taken;
@@ -384,23 +470,22 @@ module rv_branch_predictor #(
                              history_shift(speculative_history_q, 1'b0);
         shifted_one_index = query_pc_i[lane][PHT_BITS:1] ^
                             history_shift(speculative_history_q, 1'b1);
-        unshifted_taken = global_pht_q[unshifted_index][1];
-        shifted_zero_taken = global_pht_q[shifted_zero_index][1];
-        shifted_one_taken = global_pht_q[shifted_one_index][1];
+        unshifted_taken = lookup_direction(global_direction,unshifted_index);
+        shifted_zero_taken = lookup_direction(global_direction,shifted_zero_index);
+        shifted_one_taken = lookup_direction(global_direction,shifted_one_index);
         query_global_taken[lane] = (query_valid_i[0] && query_conditional[0]) ?
           (prediction_taken_o[0] ? shifted_one_taken : shifted_zero_taken) :
           unshifted_taken;
       end
-      query_use_global[lane] = chooser_q[query_pht_index[lane]][1];
+      query_use_global[lane] = lookup_direction(chooser_direction,query_pht_index[lane]);
       query_btb_set[lane] = query_pc_i[lane][BTB_SET_BITS:1];
       query_btb_tag[lane] = query_pc_i[lane][XLEN-1:BTB_SET_BITS+1];
-      for (integer way = 0; way < BTB_WAYS; way++) begin
-        if (btb_q[query_btb_set[lane]][way].valid &&
-            (btb_q[query_btb_set[lane]][way].tag == query_btb_tag[lane])) begin
-          query_btb_hit[lane] = 1'b1;
-          query_btb_target[lane] = btb_q[query_btb_set[lane]][way].target;
-          query_btb_way[lane] = $clog2(BTB_WAYS)'(way);
-        end
+      begin
+        btb_lookup_t general_lookup;
+        general_lookup=lookup_btb(query_pc_i[lane]);
+        query_btb_hit[lane]=general_lookup.hit;
+        query_btb_target[lane]=general_lookup.target;
+        query_btb_way[lane]=general_lookup.way;
       end
       if (SEQUENTIAL_QUERIES && lane==1) begin
         btb_lookup_t selected;
@@ -425,21 +510,26 @@ module rv_branch_predictor #(
       prediction_meta_o[lane].is_return = query_return[lane];
 
       prediction_target_o[lane] = query_sequential_pc[lane];
+      // Direction has no target-data dependency. Preserve classification
+      // priority explicitly while avoiding nested default/override muxes
+      // after the late BTB hit on the fetch-consumption feedback path.
+      prediction_taken_o[lane] = query_valid_i[lane] &&
+        ((query_conditional[lane] && (query_use_global[lane] ?
+            query_global_taken[lane] : query_bimodal_taken[lane])) ||
+         (!query_conditional[lane] && query_direct_jump[lane]) ||
+         (!query_conditional[lane] && !query_direct_jump[lane] &&
+          query_indirect_jump[lane] &&
+          ((query_return[lane] && (ras_count_work != 0)) || query_btb_hit[lane])));
       if (query_valid_i[lane] && query_conditional[lane]) begin
-        prediction_taken_o[lane] = query_use_global[lane] ?
-          query_global_taken[lane] : query_bimodal_taken[lane];
         if (prediction_taken_o[lane])
           prediction_target_o[lane] = query_direct_target[lane];
       end else if (query_valid_i[lane] && query_direct_jump[lane]) begin
-        prediction_taken_o[lane] = 1'b1;
         prediction_target_o[lane] = query_direct_target[lane];
       end else if (query_valid_i[lane] && query_indirect_jump[lane]) begin
         if (query_return[lane] && (ras_count_work != 0)) begin
-          prediction_taken_o[lane] = 1'b1;
           prediction_target_o[lane] = speculative_ras_q[
             (ras_pointer_work == 0) ? RAS_DEPTH-1 : ras_pointer_work-1'b1];
         end else if (query_btb_hit[lane]) begin
-          prediction_taken_o[lane] = 1'b1;
           prediction_target_o[lane] = query_btb_target[lane];
         end
       end
@@ -472,6 +562,45 @@ module rv_branch_predictor #(
     end
   end
 
+  // Resolve trains the same entry on the same edge as before. Decode the
+  // selected set/way into static word enables; do not build temporary packed
+  // array versions for a dynamic partial write of valid/tag/target.
+  logic [BTB_SET_BITS-1:0] training_set;
+  logic [BTB_TAG_BITS-1:0] training_tag;
+  logic [$clog2(BTB_WAYS)-1:0] training_way;
+  assign training_set = resolve_pc_i[BTB_SET_BITS:1];
+  assign training_tag = resolve_pc_i[XLEN-1:BTB_SET_BITS+1];
+  always_comb begin
+    training_way = btb_replace_q[training_set];
+    // Preserve the original highest-matching-way priority, including
+    // duplicated tags. A miss uses the stored round-robin replacement way.
+    for (int way = 0; way < BTB_WAYS; way++)
+      if (btb_q[training_set][way].valid &&
+          (btb_q[training_set][way].tag == training_tag))
+        training_way = $clog2(BTB_WAYS)'(way);
+  end
+  for (genvar set_index = 0; set_index < BTB_SETS; set_index++) begin : g_btb_training_set
+    wire set_write = resolve_valid_i && resolve_taken_i &&
+                     (training_set == BTB_SET_BITS'(set_index));
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni)
+        btb_replace_q[set_index] <= '0;
+      else if (set_write)
+        btb_replace_q[set_index] <= training_way + 1'b1;
+    end
+    for (genvar way = 0; way < BTB_WAYS; way++) begin : g_way
+      always_ff @(posedge clk_i) begin
+        if (!rst_ni)
+          btb_q[set_index][way] <= '0;
+        else if (set_write && (training_way == $clog2(BTB_WAYS)'(way))) begin
+          btb_q[set_index][way].valid <= 1'b1;
+          btb_q[set_index][way].tag <= training_tag;
+          btb_q[set_index][way].target <= resolve_target_i;
+        end
+      end
+    end
+  end
+
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       speculative_history_q <= '0;
@@ -480,11 +609,6 @@ module rv_branch_predictor #(
       committed_ras_pointer_q <= '0;
       speculative_ras_count_q <= '0;
       committed_ras_count_q <= '0;
-      for (integer set_index = 0; set_index < BTB_SETS; set_index++) begin
-        btb_replace_q[set_index] <= '0;
-        for (integer way = 0; way < BTB_WAYS; way++)
-          btb_q[set_index][way] <= '0;
-      end
       for (integer index = 0; index < PHT_ENTRIES; index++) begin
         pht_q[index] <= 2'b01;
         global_pht_q[index] <= 2'b01;
@@ -503,19 +627,9 @@ module rv_branch_predictor #(
       if (resolve_valid_i) begin
         logic [PHT_BITS-1:0] resolve_pht_index;
         logic [PHT_BITS-1:0] resolve_global_pht_index;
-        logic [BTB_SET_BITS-1:0] resolve_set;
-        logic [BTB_TAG_BITS-1:0] resolve_tag;
-        logic [$clog2(BTB_WAYS)-1:0] update_way;
         resolve_pht_index = resolve_pc_i[PHT_BITS:1];
         resolve_global_pht_index = resolve_pc_i[PHT_BITS:1] ^
           PHT_BITS'(resolve_prediction_i.global_history);
-        resolve_set = resolve_pc_i[BTB_SET_BITS:1];
-        resolve_tag = resolve_pc_i[XLEN-1:BTB_SET_BITS+1];
-        update_way = btb_replace_q[resolve_set];
-        for (integer way = 0; way < BTB_WAYS; way++)
-          if (btb_q[resolve_set][way].valid &&
-              (btb_q[resolve_set][way].tag == resolve_tag))
-            update_way = $clog2(BTB_WAYS)'(way);
         if (is_conditional_branch(resolve_instruction_i,
                                   resolve_inst_len_i)) begin
           if (resolve_taken_i && (pht_q[resolve_pht_index] != 2'b11))
@@ -541,12 +655,6 @@ module rv_branch_predictor #(
               chooser_q[resolve_pht_index] <=
                 chooser_q[resolve_pht_index] - 1'b1;
           end
-        end
-        if (resolve_taken_i) begin
-          btb_q[resolve_set][update_way].valid <= 1'b1;
-          btb_q[resolve_set][update_way].tag <= resolve_tag;
-          btb_q[resolve_set][update_way].target <= resolve_target_i;
-          btb_replace_q[resolve_set] <= update_way + 1'b1;
         end
         if (resolve_mispredict_i) begin
           speculative_history_q <=

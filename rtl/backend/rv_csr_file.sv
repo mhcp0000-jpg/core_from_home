@@ -122,16 +122,24 @@ module rv_csr_file #(
     input logic [63:0] value,
     input logic [1:0] increment
   );
-    logic [2:0] lower_two_sum;
     logic [61:0] upper_ones_prefix;
-    lower_two_sum = {1'b0,value[1:0]} + {1'b0,increment};
+    logic [61:0] ones_from_two;
+    logic [61:0] ones_from_one;
+    logic [61:0] ones_from_zero;
+    logic [61:0] carry;
     upper_ones_prefix = value[63:2];
     for (int stride = 1; stride < 62; stride *= 2)
       upper_ones_prefix &= (upper_ones_prefix << stride) |
                            ((62'd1 << stride) - 62'd1);
-    increment_counter[1:0] = lower_two_sum[1:0];
-    increment_counter[63:2] = value[63:2] ^
-      ({62{lower_two_sum[2]}} & {upper_ones_prefix[60:0],1'b1});
+    ones_from_two = {upper_ones_prefix[60:0],1'b1};
+    ones_from_one = ones_from_two & {62{value[1]}};
+    ones_from_zero = ones_from_one & {62{value[0]}};
+    carry = (ones_from_one & {62{increment[1]}}) |
+            (ones_from_zero & {62{increment[0]}}) |
+            (ones_from_two & {62{value[0] & increment[0] & increment[1]}});
+    increment_counter[0] = value[0] ^ increment[0];
+    increment_counter[1] = value[1] ^ increment[1] ^ (value[0] & increment[0]);
+    increment_counter[63:2] = value[63:2] ^ carry;
   endfunction
 
   function automatic logic [XLEN-1:0] build_misa;
@@ -382,6 +390,52 @@ module rv_csr_file #(
       mtval_q <= csr_pending_wdata_q;
   end
 
+  // Counters advance even on trap/MRET cycles. Only a pending counter write
+  // is blocked by those higher-priority actions. Isolate storage from the
+  // unrelated CSR/PMP case network, retaining RV32 partial-write semantics:
+  // low-half write holds old high half; high-half write keeps incremented low.
+  logic counter_csr_write;
+  logic [63:0] mcycle_incremented, minstret_incremented;
+  logic mcycle_low_write, mcycle_high_write;
+  logic minstret_low_write, minstret_high_write;
+  assign counter_csr_write = trap_state_csr_write &&
+    !(trap_valid_i && trap_ready_o) &&
+    !(mret_valid_i && mret_commit_i && !mret_illegal_o);
+  assign mcycle_incremented = increment_counter(mcycle_q, 2'd1);
+  assign minstret_incremented = increment_counter(minstret_q, retire_count_i);
+  assign mcycle_low_write = counter_csr_write && (csr_pending_addr_q == 12'hB00);
+  assign mcycle_high_write = (XLEN == 32) && counter_csr_write &&
+    (csr_pending_addr_q == 12'hB80);
+  assign minstret_low_write = counter_csr_write && (csr_pending_addr_q == 12'hB02);
+  assign minstret_high_write = (XLEN == 32) && counter_csr_write &&
+    (csr_pending_addr_q == 12'hB82);
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni)
+      mcycle_q <= '0;
+    else begin
+      if (XLEN == 32) begin
+        mcycle_q[31:0] <= mcycle_low_write ? csr_pending_wdata_q[31:0] :
+          mcycle_incremented[31:0];
+        mcycle_q[63:32] <= mcycle_low_write ? mcycle_q[63:32] :
+          (mcycle_high_write ? csr_pending_wdata_q[31:0] : mcycle_incremented[63:32]);
+      end else
+        mcycle_q <= mcycle_low_write ? csr_pending_wdata_q : mcycle_incremented;
+    end
+  end
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni)
+      minstret_q <= '0;
+    else begin
+      if (XLEN == 32) begin
+        minstret_q[31:0] <= minstret_low_write ? csr_pending_wdata_q[31:0] :
+          minstret_incremented[31:0];
+        minstret_q[63:32] <= minstret_low_write ? minstret_q[63:32] :
+          (minstret_high_write ? csr_pending_wdata_q[31:0] : minstret_incremented[63:32]);
+      end else
+        minstret_q <= minstret_low_write ? csr_pending_wdata_q : minstret_incremented;
+    end
+  end
+
   always_ff @(posedge clk_i) begin
     if (!rst_ni) begin
       current_priv_q <= PRIV_M;
@@ -390,8 +444,6 @@ module rv_csr_file #(
       mtvec_q <= {RESET_MTVEC[XLEN-1:2], 2'b00};
       mscratch_q <= '0;
       mcounteren_q <= '0;
-      mcycle_q <= '0;
-      minstret_q <= '0;
       fflags_q <= '0;
       frm_q <= '0;
       csr_pending_q <= 1'b0;
@@ -403,8 +455,6 @@ module rv_csr_file #(
         pmpaddr_q[entry] <= '0;
       end
     end else begin
-      mcycle_q <= increment_counter(mcycle_q, 2'd1);
-      minstret_q <= increment_counter(minstret_q, retire_count_i);
       if (fflags_accrue_valid_i)
         fflags_q <= fflags_q | fflags_accrue_i;
 
@@ -452,16 +502,7 @@ module rv_csr_file #(
           end
           12'h306: mcounteren_q <= csr_pending_wdata_q & XLEN'(3'b111);
           12'h340: mscratch_q <= csr_pending_wdata_q;
-          12'hB00: mcycle_q <= (XLEN == 32) ?
-            {mcycle_q[63:32], csr_pending_wdata_q[31:0]} :
-            csr_pending_wdata_q;
-          12'hB02: minstret_q <= (XLEN == 32) ?
-            {minstret_q[63:32], csr_pending_wdata_q[31:0]} :
-            csr_pending_wdata_q;
-          12'hB80: if (XLEN == 32)
-            mcycle_q[63:32] <= csr_pending_wdata_q[31:0];
-          12'hB82: if (XLEN == 32)
-            minstret_q[63:32] <= csr_pending_wdata_q[31:0];
+          12'hB00, 12'hB02, 12'hB80, 12'hB82: begin end
           default: begin
             for (int unsigned cfg_csr = 0; cfg_csr < 4; cfg_csr++) begin
               if (csr_pending_addr_q == (12'h3A0 + cfg_csr)) begin

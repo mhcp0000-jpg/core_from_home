@@ -52,6 +52,7 @@ module rv_fetch_queue #(
   localparam int unsigned BLOCK_INDEX_WIDTH = $clog2(QUEUE_BLOCKS);
   localparam int unsigned BLOCK_COUNT_WIDTH = $clog2(QUEUE_BLOCKS + 1);
   localparam int unsigned PARCEL_OFFSET_WIDTH = $clog2(FETCH_PARCELS);
+  localparam int unsigned ADVANCE_WIDTH = $clog2(FETCH_PARCELS + 4);
 
   logic [FETCH_BYTES*8-1:0] block_data_q [0:QUEUE_BLOCKS-1];
   logic [FETCH_PARCELS-1:0] block_fault_q [0:QUEUE_BLOCKS-1];
@@ -76,8 +77,12 @@ module rv_fetch_queue #(
   integer unsigned available_parcels;
   integer unsigned length0_parcels, length1_parcels;
   integer unsigned lane1_offset_parcels;
-  integer unsigned consume_parcels, consume_blocks;
-  integer unsigned next_head_offset;
+  logic [2:0] consume_parcels;
+  logic consume_blocks;
+  logic [ADVANCE_WIDTH-1:0] next_head_offset;
+  logic consume_lane0, consume_lane1, cross_lane0, cross_pair;
+  logic [XLEN-1:0] head_pc_plus2, head_pc_plus4, head_pc_plus6, head_pc_plus8;
+  logic [XLEN-1:0] head_pc_after_lane0, head_pc_after_pair;
   integer unsigned fill_head_offset;
   integer unsigned byte_count_integer;
 
@@ -205,17 +210,43 @@ module rv_fetch_queue #(
     end
   end
 
+  // Compute the two possible block crossings before downstream ready and
+  // prediction arrive. A late lane acceptance selects a one-bit result, not
+  // a 32-bit add/compare/subtract chain on the response/request feedback path.
+  assign consume_lane0 = out_valid_o[0] && out_ready_i[0];
+  assign consume_lane1 = out_valid_o[1] && out_ready_i[1];
+  assign cross_lane0 = first_is_word ?
+    (head_parcel_offset_q >= FETCH_PARCELS-2) :
+    (head_parcel_offset_q >= FETCH_PARCELS-1);
+  assign cross_pair = first_is_word ?
+    (second_at_two_is_word ? (head_parcel_offset_q >= FETCH_PARCELS-4) :
+                            (head_parcel_offset_q >= FETCH_PARCELS-3)) :
+    (second_at_one_is_word ? (head_parcel_offset_q >= FETCH_PARCELS-3) :
+                            (head_parcel_offset_q >= FETCH_PARCELS-2));
+  assign consume_blocks = consume_lane0 &&
+                          (cross_lane0 || (consume_lane1 && cross_pair));
+  // Ready/prediction are late: select already-computed successor PCs rather
+  // than injecting late consumption bits into an XLEN carry chain.
+  assign head_pc_plus2 = head_pc_q + XLEN'(2);
+  assign head_pc_plus4 = head_pc_q + XLEN'(4);
+  assign head_pc_plus6 = head_pc_q + XLEN'(6);
+  assign head_pc_plus8 = head_pc_q + XLEN'(8);
+  assign head_pc_after_lane0 = first_is_word ? head_pc_plus4 : head_pc_plus2;
+  assign head_pc_after_pair = first_is_word ?
+    (second_at_two_is_word ? head_pc_plus8 : head_pc_plus6) :
+    (second_at_one_is_word ? head_pc_plus6 : head_pc_plus4);
+
   always_comb begin
     consume_parcels = 0;
-    if (out_valid_o[0] && out_ready_i[0]) begin
-      consume_parcels = length0_parcels;
-      if (out_valid_o[1] && out_ready_i[1])
-        consume_parcels += length1_parcels;
+    if (consume_lane0) begin
+      consume_parcels = 3'(length0_parcels);
+      if (consume_lane1)
+        consume_parcels += 3'(length1_parcels);
     end
-    next_head_offset = head_parcel_offset_q + consume_parcels;
-    consume_blocks = (next_head_offset >= FETCH_PARCELS) ? 1 : 0;
+    next_head_offset = ADVANCE_WIDTH'(head_parcel_offset_q) +
+                       ADVANCE_WIDTH'(consume_parcels);
     if (consume_blocks != 0)
-      next_head_offset -= FETCH_PARCELS;
+      next_head_offset -= ADVANCE_WIDTH'(FETCH_PARCELS);
   end
 
   always_comb begin
@@ -273,7 +304,7 @@ module rv_fetch_queue #(
     end else begin
       if (consume_parcels != 0) begin
         head_parcel_offset_q <= PARCEL_OFFSET_WIDTH'(next_head_offset);
-        head_pc_q <= head_pc_q + XLEN'(consume_parcels * 2);
+        head_pc_q <= consume_lane1 ? head_pc_after_pair : head_pc_after_lane0;
         if (consume_blocks != 0)
           head_block_q <= head_block_q + BLOCK_INDEX_WIDTH'(1);
       end
@@ -312,6 +343,8 @@ module rv_fetch_queue #(
   assign empty_o = (block_count_q == 0);
 
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    consume_blocks == ((int'(head_parcel_offset_q) + int'(consume_parcels)) >= FETCH_PARCELS));
   assert property (@(posedge clk_i) disable iff (!rst_ni)
     (SEPARATE_NORMAL_FILL_ADDRESS && !redirect_valid_i) |->
       normal_fill_valid_i == fill_valid_i);

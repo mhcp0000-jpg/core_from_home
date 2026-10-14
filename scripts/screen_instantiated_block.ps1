@@ -16,7 +16,7 @@ foreach($path in @($full,$build)){
   if(!$path.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Inputs/output must be below repository'}
 }
 $manifest=Get-Content "$full/run_manifest.json" -Raw | ConvertFrom-Json
-if($manifest.topModule -ne 'rv_ooo_core' -or $manifest.parameters -ne ''){
+if($manifest.topModule -ne 'rv_ooo_core' -or $manifest.parameters -ne '' -or $manifest.resetModel -ne 'retained'){
   throw 'Expected actual core elaboration with RTL defaults and no tool overrides'
 }
 if((Get-Content "$full/Map.result.json" -Raw | ConvertFrom-Json).exitCode -ne 0){throw 'No successful Map checkpoint'}
@@ -43,19 +43,31 @@ try {
     fullRun=$full; instantiatedModule=$Module; actualCoreDefaults=$manifest.coreDefaults
     sources=$manifest.sources; checkpointSha256=(Get-FileHash "$input/mapped_arrays.il").Hash
     libertySha256=(Get-FileHash "$run/library.lib").Hash
+    constraintSha256=(Get-FileHash "$run/abc.constr").Hash
+    yosysSha256=(Get-FileHash "$ToolRoot/bin/yosys.exe").Hash
+    abcSha256=(Get-FileHash "$ToolRoot/bin/yosys-abc.exe").Hash
+    targetDelayPs=$TargetDelayPs; resetModel=$manifest.resetModel
     scope='Actual core instance geometry, block-boundary Nangate45 screening; NOT whole-core timing or 2nm STA'
   } | ConvertTo-Json -Depth 6 | Set-Content "$run/manifest.json" -Encoding UTF8
   $env:PATH="$ToolRoot/bin;$ToolRoot/lib;"+$savedPath
   $cmd="read_rtlil $input/mapped_arrays.il; hierarchy -check -top $Module; rename $Module block_under_test; flatten; techmap; opt; dfflibmap -liberty $run/library.lib; " +
     "select -assert-none t:`$mem*; write_rtlil $run/pre_abc.il; abc -exe $ToolRoot/bin/yosys-abc.exe -script $run/abc.scr -liberty $run/library.lib -constr $run/abc.constr -D $TargetDelayPs; clean; read_liberty -lib $run/library.lib; check; stat -liberty $run/library.lib"
+  $watch=[Diagnostics.Stopwatch]::StartNew()
   & "$ToolRoot/bin/yosys.exe" -Q -T -p $cmd *> "$run/synthesis.log"
-  if($LASTEXITCODE){throw "Instance screen failed: $run/synthesis.log"}
+  $nativeExit=$LASTEXITCODE
+  $watch.Stop()
+  @{exitCode=$nativeExit;seconds=$watch.Elapsed.TotalSeconds;
+    configurationMode='Existing core snapshot; no re-elaboration or hardware tool overrides';
+    scope='Native leaf-screen exit only; not a whole-core result'} |
+    ConvertTo-Json | Set-Content "$run/native_result.json" -Encoding UTF8
+  if($nativeExit){throw "Instance screen failed: $run/synthesis.log"}
   $log=Get-Content "$run/synthesis.log" -Raw
   $delays=[regex]::Matches($log,'Delay\s*=\s*([0-9.]+)\s*ps')
   $areas=[regex]::Matches($log,"Chip area for module '[^']+':\s*([0-9.]+)")
   if(!$delays.Count -or !$areas.Count){throw 'Missing actual completed timing/area report'}
   @{
     delayPs=[double]$delays[$delays.Count-1].Groups[1].Value
+    actualExitCode=$nativeExit
     areaUm2=[double]$areas[$areas.Count-1].Groups[1].Value
     instantiatedModule=$Module; configurationMode='Existing core snapshot; no re-elaboration or hardware tool overrides'
     scope='Block-boundary Nangate45 screening only'

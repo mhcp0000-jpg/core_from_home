@@ -22,7 +22,8 @@ def fragment(text):
     stop = text.index(end)
     priority = '      prediction_target_o[lane] = query_sequential_pc[lane];'
     onehot = "      choose_sequential = 1'b1;"
-    starts = [text.find(marker, 0, stop) for marker in (priority, onehot)]
+    local_target = '      lane_target = query_sequential_pc[lane];'
+    starts = [text.find(marker, 0, stop) for marker in (priority, onehot, local_target)]
     starts = [value for value in starts if value >= 0]
     if len(starts) != 1 or text.count(end) != 1:
         raise ValueError('Expected one recognized target-selection fragment')
@@ -73,6 +74,7 @@ always_comb begin
   for(integer lane=0; lane<2; lane++) begin
     logic choose_sequential, choose_direct, choose_ras, choose_btb;
     logic [XLEN-1:0] ras_target;
+    logic [XLEN-1:0] lane_target;
 {candidate}
   end
 end

@@ -34,6 +34,7 @@ module rv_fetch_target_buffer #(
   logic [INDEX_BITS-1:0] selected_lookup_index;
   logic [TAG_BITS-1:0] selected_lookup_tag;
   logic selected_lookup_valid;
+  logic [LOOKUP_PORTS-1:0] candidate_hit;
   logic [INDEX_BITS-1:0] fill_index;
   logic [TAG_BITS-1:0] fill_tag;
 
@@ -44,6 +45,14 @@ module rv_fetch_target_buffer #(
       lookup_addr_i[port][OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
     assign lookup_tag[port] =
       lookup_addr_i[port][PADDR_WIDTH-1:OFFSET_BITS+INDEX_BITS];
+    logic [ENTRIES-1:0] word_hit;
+    for (genvar entry=0; entry<ENTRIES; entry++) begin : g_hit_word
+      // Address/tag matching for both candidates precedes the late port
+      // select. The wide block/PMP arrays still have ONE selected read.
+      assign word_hit[entry] = lookup_valid_i[port] && valid_q[entry] &&
+        lookup_index[port] == INDEX_BITS'(entry) && tag_q[entry] == lookup_tag[port];
+    end
+    assign candidate_hit[port] = |word_hit;
   end
 
   // Both candidate addresses are formed ahead of the direction decision, but
@@ -53,9 +62,7 @@ module rv_fetch_target_buffer #(
   assign selected_lookup_index = lookup_index[lookup_select_i];
   assign selected_lookup_tag = lookup_tag[lookup_select_i];
   assign selected_lookup_valid = lookup_valid_i[lookup_select_i];
-  assign lookup_hit_o = selected_lookup_valid &&
-                        valid_q[selected_lookup_index] &&
-                        (tag_q[selected_lookup_index] == selected_lookup_tag);
+  assign lookup_hit_o = candidate_hit[lookup_select_i];
   assign lookup_data_o = data_q[selected_lookup_index];
   assign lookup_pmp_allow_o = pmp_allow_q[selected_lookup_index];
 

@@ -22,11 +22,11 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def lookup(text):
-    hits = re.findall(r"function\s+automatic\s+btb_lookup_t\s+lookup_btb\b.*?endfunction",
+def lookup(text, name='lookup_btb'):
+    hits = re.findall(r"function\s+automatic\s+btb_lookup_t\s+" + re.escape(name) + r"\b.*?endfunction",
                       text, re.S)
     if len(hits) != 1:
-        raise ValueError("Expected exactly one actual lookup_btb function")
+        raise ValueError("Expected exactly one actual " + name + " function")
     return hits[0]
 
 
@@ -45,6 +45,12 @@ def main():
     parser.add_argument('--xlen', type=int, choices=(32, 64), default=32)
     parser.add_argument('--sets', type=int, default=64)
     parser.add_argument('--ways', type=int, default=4)
+    parser.add_argument('--sequential-step', action='store_true',
+                        help='Prove actual PC+one/two-parcel helper against full-width address lookup')
+    parser.add_argument('--pc-set', type=int,
+                        help='Partition only low PC set bits; run every set to cover all PCs')
+    parser.add_argument('--parcel-count', type=int, choices=(1, 2),
+                        help='Sequential helper partition; run both lengths for complete coverage')
     parser.add_argument('--yosys', type=Path)
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--out', type=Path, required=True)
@@ -53,6 +59,10 @@ def main():
         parser.error('sets/ways must be powers of two and at least two')
     if args.sets.bit_length() >= args.xlen or args.timeout <= 0:
         parser.error('invalid geometry/timeout')
+    if args.pc_set is not None and not 0 <= args.pc_set < args.sets:
+        parser.error('PC set partition out of range')
+    if args.parcel_count is not None and not args.sequential_step:
+        parser.error('parcel partition requires sequential helper')
     repo = Path(__file__).resolve().parent.parent
     rtl = args.rtl or repo / 'rtl/frontend/rv_branch_predictor.sv'
     candidate_bytes = rtl.read_bytes()
@@ -68,7 +78,7 @@ def main():
         if re.sub(r'\s+', '', actual) != re.sub(r'\s+', '', typedef(reference, name)):
             raise ValueError('Changed entry/result type requires a new proof binding')
         types.append(actual)
-    candidate_lookup = lookup(candidate)
+    candidate_lookup = lookup(candidate, 'lookup_btb_sequential' if args.sequential_step else 'lookup_btb')
     reference_lookup = re.sub(r'\blookup_btb\b', 'lookup_btb_ref', lookup(reference))
     out = args.out.absolute()
     if os.name == 'nt' and not str(out).isascii():
@@ -79,6 +89,15 @@ def main():
         yosys = Path('C:/rv_toolchains/oss-cad-suite/bin/yosys.exe')
     if not yosys or not Path(yosys).is_file():
         raise FileNotFoundError('Pass --yosys to an existing executable')
+    equality = ('((parcels_i != 1 && parcels_i != 2) || '
+                '(lookup_btb_sequential(pc_i,parcels_i) == '
+                'lookup_btb_ref(pc_i + (XLEN\'(parcels_i) << 1))))'
+                if args.sequential_step else '(lookup_btb(pc_i)==lookup_btb_ref(pc_i))')
+    bound_pc = ("{pc_i[XLEN-1:BTB_SET_BITS+1],BTB_SET_BITS'(" + str(args.pc_set) + "),pc_i[0]}"
+                if args.pc_set is not None else 'pc_i')
+    bound_parcels = "2'd" + str(args.parcel_count) if args.parcel_count is not None else 'parcels_i'
+    equality = re.sub(r'\bpc_i\b', 'bound_pc', equality)
+    equality = re.sub(r'\bparcels_i\b', 'bound_parcels', equality)
     fixture = f'''module btb_lookup_miter #(
   parameter int XLEN={args.xlen}, BTB_SETS={args.sets}, BTB_WAYS={args.ways},
   localparam int BTB_SET_BITS=$clog2(BTB_SETS),
@@ -86,6 +105,7 @@ def main():
   localparam int ENTRY_WIDTH=1+BTB_TAG_BITS+XLEN
 ) (
   input logic [XLEN-1:0] pc_i,
+  input logic [1:0] parcels_i,
   input logic [BTB_SETS-1:0][BTB_WAYS-1:0][ENTRY_WIDTH-1:0] entries_i,
   output logic equal_o
 );
@@ -99,7 +119,9 @@ for (genvar s=0; s<BTB_SETS; s++) begin : g_set
 end
 {candidate_lookup}
 {reference_lookup}
-assign equal_o=(lookup_btb(pc_i)==lookup_btb_ref(pc_i));
+wire [XLEN-1:0] bound_pc={bound_pc};
+wire [1:0] bound_parcels={bound_parcels};
+assign equal_o={equality};
 endmodule
 '''
     fixture_path = out / 'miter.sv'
@@ -116,6 +138,8 @@ endmodule
                   candidate_sha256=sha(candidate_bytes), reference_sha256=sha(reference_bytes),
                   fixture_sha256=sha(fixture.encode()), xlen=args.xlen,
                   sets=args.sets, ways=args.ways,
+                  sequential_step=args.sequential_step,
+                  pc_set_partition=args.pc_set, parcel_count_partition=args.parcel_count,
                   scope='Actual lookup helper; all two-state PCs/BTB entries including multi-hit; '
                         'not training/recovery/pipeline/core equivalence')
     report_path = out / 'report.json'
@@ -140,8 +164,16 @@ endmodule
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             else:
                 os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
             report['status'] = 'timeout'
+            report['owned_process_id'] = process.pid
+            try:
+                process.wait(timeout=10)
+                report['owned_process_still_alive'] = False
+            except subprocess.TimeoutExpired:
+                report['owned_process_still_alive'] = True
+                report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
+                raise RuntimeError('Owned timed-out proof could not be stopped; '
+                                   f'confirm PID {process.pid} before explicit cleanup')
     log_text = (out / 'proof.log').read_text(encoding='utf-8', errors='replace')
     if report.get('exit_code') == 0 and 'no model found: SUCCESS!' in log_text:
         report['status'] = 'pass'

@@ -25,23 +25,39 @@ module rv_pmp #(
   logic [PMP_ADDR_WIDTH-1:0] napot_prefix_ones [0:PMP_ENTRIES-1];
   logic [PMP_ADDR_WIDTH-1:0] napot_high_base [0:PMP_ENTRIES-1];
   logic [PMP_ADDR_WIDTH:0] napot_high_encoded [0:PMP_ENTRIES-1];
+  function automatic logic [PMP_ADDR_WIDTH:0] napot_exclusive_high(
+    input logic [PMP_ADDR_WIDTH-1:0] address
+  );
+    logic [PMP_ADDR_WIDTH-1:0] all_ones, at_most_one_zero;
+    logic [PMP_ADDR_WIDTH-1:0] lower_neutral, high_base;
+    logic [PMP_ADDR_WIDTH:0] result;
+    all_ones=address;
+    at_most_one_zero='1;
+    // Filling the first zero in the encoded address makes the increment
+    // carry into bit k true iff address[k-1:0] has at most one zero.
+    // Compute those two associative prefix properties together, instead of
+    // detecting trailing ones and THEN incrementing the modified address.
+    for (int stride=1; stride<PMP_ADDR_WIDTH; stride*=2) begin
+      lower_neutral=(PMP_ADDR_WIDTH'(1)<<stride)-1'b1;
+      at_most_one_zero=(at_most_one_zero & ((all_ones<<stride)|lower_neutral)) |
+                       (all_ones & (at_most_one_zero<<stride));
+      all_ones &= (all_ones<<stride)|lower_neutral;
+    end
+    high_base=address | ((all_ones<<1)|PMP_ADDR_WIDTH'(1));
+    result= {1'b0,high_base} ^ {at_most_one_zero,1'b1};
+    return result;
+  endfunction
   for (genvar entry=0; entry<PMP_ENTRIES; entry++) begin : g_napot_prefix
     assign napot_high_base[entry] =
       pmpaddr_i[entry*PMP_ADDR_WIDTH +: PMP_ADDR_WIDTH] |
       ((napot_prefix_ones[entry] << 1) | PMP_ADDR_WIDTH'(1));
-    // Exclusive high = encoded base + 1. Constant-width parallel reductions
-    // expose all increment carries directly, without a second adder prefix
-    // downstream of the trailing-one prefix. Keep the physical-space carry.
-    assign napot_high_encoded[entry][0] = ~napot_high_base[entry][0];
-    assign napot_high_encoded[entry][PMP_ADDR_WIDTH] = &napot_high_base[entry];
+    // Keep the physical-space carry, but derive it together with every
+    // lower carry from the original address (at most one zero per prefix).
+    assign napot_high_encoded[entry] = napot_exclusive_high(
+      pmpaddr_i[entry*PMP_ADDR_WIDTH +: PMP_ADDR_WIDTH]);
     for (genvar bit_index=0; bit_index<PMP_ADDR_WIDTH; bit_index++) begin : g_bit
       assign napot_prefix_ones[entry][bit_index] =
         &pmpaddr_i[entry*PMP_ADDR_WIDTH +: bit_index+1];
-      if (bit_index != 0) begin : g_high_increment
-        assign napot_high_encoded[entry][bit_index] =
-          napot_high_base[entry][bit_index] ^
-          (&napot_high_base[entry][bit_index-1:0]);
-      end
     end
   end
 

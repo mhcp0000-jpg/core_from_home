@@ -59,18 +59,23 @@ try {
       $parameters = "-G XLEN=$xlen -G FETCH_BYTES=$fetch -G QUEUE_BYTES=$queue " +
                     "-G UNGATED_PAYLOAD=$ungated -G SEPARATE_NORMAL_FILL_ADDRESS=$separate"
       $common = "--std 1800-2017 --ignore-assertions --ignore-initial"
+      if ($rtlRoot -match '\s') { throw 'Formal output path requires an ASCII alias without whitespace' }
       $command = "read_slang $common --top rv_fetch_queue_ref $parameters " +
-        "`"$rtlRoot/rv_ooo_pkg.sv`" `"$rtlRoot/reference.sv`"; " +
+        "$rtlRoot/rv_ooo_pkg.sv $rtlRoot/reference.sv; " +
         "prep -top rv_fetch_queue_ref; memory_map; opt_clean; design -stash gold; " +
         "read_slang $common --top rv_fetch_queue $parameters " +
-        "`"$rtlRoot/rv_ooo_pkg.sv`" `"$rtlRoot/candidate.sv`"; " +
+        "$rtlRoot/rv_ooo_pkg.sv $rtlRoot/candidate.sv; " +
         "prep -top rv_fetch_queue; memory_map; opt_clean; design -stash gate; " +
         "design -copy-from gold -as gold rv_fetch_queue_ref; " +
         "design -copy-from gate -as gate rv_fetch_queue; " +
         "equiv_make gold gate equiv; hierarchy -top equiv; " +
         "equiv_simple -seq 1; equiv_status -assert"
       $ErrorActionPreference = "Continue"
-      & $yosys -Q -T -p $command *> "$runRoot/$name.log"
+      # Native Windows argument quoting may preserve literal quotes inside
+      # -p. A saved script gives read_slang the same paths without shell
+      # re-escaping and leaves an auditable proof command artifact.
+      [IO.File]::WriteAllText("$runRoot/$name.ys", $command, [Text.UTF8Encoding]::new($false))
+      & $yosys -Q -T -s "$runRoot/$name.ys" *> "$runRoot/$name.log"
       $proofExit = $LASTEXITCODE
       $ErrorActionPreference = "Stop"
       if ($proofExit) { throw "Equivalence failed: $runRoot/$name.log" }

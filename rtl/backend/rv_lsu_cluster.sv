@@ -362,7 +362,10 @@ module rv_lsu_cluster #(
     if (!flush_valid_i && commit_valid_i[0] && commit_is_store_i[0])
       store_commit_valid[0] = 1'b1;
 
-    commit_ready_o = {2{!flush_valid_i}};
+    // Availability is a side-effect-free hint. Backend retirement and the
+    // actual load/store commit-valid strobes still independently mask flush.
+    // Do not route redirect through the non-memory default readiness cone.
+    commit_ready_o = 2'b11;
     if (commit_valid_i[0] && commit_is_load_i[0])
       commit_ready_o[0] = load_commit_ready[0];
     else if (commit_valid_i[0] && commit_is_store_i[0])

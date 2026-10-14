@@ -412,7 +412,10 @@ module rv_rob #(
         entries_q[entry].valid &&
         (entries_q[entry].sequence_id == complete_sequence_i[port]) &&
         (!flush_younger_i ||
-         !sequence_after(complete_sequence_i[port], flush_sequence_i));
+         // Equality above binds the incoming generation to this resident
+         // row. Precompute flush age from its stored sequence, not from the
+         // late WB payload selected after the LSU permission/fault decision.
+         !sequence_after(entries_q[entry].sequence_id, flush_sequence_i));
       assign exception_hit[port] = complete_hit[port] && complete_exception_valid_i[port];
     end
     // Preserve highest-port priority even for duplicate generations. Exception

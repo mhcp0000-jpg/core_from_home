@@ -7,6 +7,8 @@ module rv_backend #(
   // Optional DIV-only raw-tag boundary; leaves normal ALU/load latency alone.
   parameter bit DIV_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
   parameter bit INT_ISSUE_PIPELINE = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE,
+  parameter bit SYSTEM_RESULT_PIPELINE = rv_ooo_pkg::CORE_CFG_SYSTEM_RESULT_PIPELINE,
+  parameter bit AGU_EA_PRECOMPUTE = rv_ooo_pkg::CORE_CFG_AGU_EA_PRECOMPUTE,
   parameter int unsigned FPU_LATENCY = rv_ooo_pkg::CORE_CFG_FPU_LATENCY,
   parameter int unsigned XLEN = 32,
   parameter int unsigned PADDR_WIDTH = 32,
@@ -590,6 +592,7 @@ module rv_backend #(
   logic [5:0] int_query_ready, fp_query_ready;
   logic [1:0] int_wb_valid, fp_wb_valid, int_alloc_valid, fp_alloc_valid;
   logic [1:0][PHYS_TAG_WIDTH-1:0] int_wb_phys, fp_wb_phys;
+  logic [1:0][PHYS_TAG_WIDTH-1:0] int_alloc_addr, fp_alloc_addr;
   logic [1:0][XLEN-1:0] int_wb_data;
   logic [1:0][31:0] fp_wb_data;
   logic [1:0][2:0] dispatch_src_ready;
@@ -607,12 +610,21 @@ module rv_backend #(
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      int_query_addr[lane*3] = src0_phys[lane];
-      int_query_addr[lane*3+1] = src1_phys[lane];
-      int_query_addr[lane*3+2] = src2_phys[lane];
-      fp_query_addr[lane*3] = src0_phys[lane];
-      fp_query_addr[lane*3+1] = src1_phys[lane];
-      fp_query_addr[lane*3+2] = src2_phys[lane];
+      // Only the matching namespace's readiness is consumed below. Gate the
+      // unused query before its large PRF selector, not after the selector.
+      // The selected namespace sees exactly the original physical tag.
+      int_query_addr[lane*3] = src0_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][0] == REG_INT}};
+      int_query_addr[lane*3+1] = src1_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][1] == REG_INT}};
+      int_query_addr[lane*3+2] = src2_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][2] == REG_INT}};
+      fp_query_addr[lane*3] = src0_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][0] == REG_FP}};
+      fp_query_addr[lane*3+1] = src1_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][1] == REG_FP}};
+      fp_query_addr[lane*3+2] = src2_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_src_class[lane][2] == REG_FP}};
       for (int unsigned source = 0; source < 3; source++) begin
         case (dec_src_class[lane][source])
           REG_INT: dispatch_src_ready[lane][source] =
@@ -626,6 +638,12 @@ module rv_backend #(
         renamed_writes_dst[lane] && (dec_dst_class[lane] == REG_INT);
       fp_alloc_valid[lane] = dispatch_fire && dec_valid[lane] &&
         renamed_writes_dst[lane] && (dec_dst_class[lane] == REG_FP);
+      // Inactive allocation addresses cannot affect PRF state/readiness.
+      // Class-only masks avoid adding the late dispatch_fire to the tag path.
+      int_alloc_addr[lane] = renamed_dst_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_dst_class[lane] == REG_INT}};
+      fp_alloc_addr[lane] = renamed_dst_phys[lane] &
+        {PHYS_TAG_WIDTH{dec_dst_class[lane] == REG_FP}};
     end
   end
 
@@ -641,7 +659,7 @@ module rv_backend #(
     .read_ready_o(int_read_ready), .query_addr_i(int_query_addr),
     .query_ready_o(int_query_ready), .write_valid_i(int_wb_valid),
     .write_addr_i(int_wb_phys), .write_data_i(int_wb_data),
-    .allocate_valid_i(int_alloc_valid), .allocate_addr_i(renamed_dst_phys),
+    .allocate_valid_i(int_alloc_valid), .allocate_addr_i(int_alloc_addr),
     .probe_addr_i('0), .probe_ready_o()
   );
   rv_phys_regfile #(
@@ -653,7 +671,7 @@ module rv_backend #(
     .read_ready_o(fp_read_ready), .query_addr_i(fp_query_addr),
     .query_ready_o(fp_query_ready), .write_valid_i(fp_wb_valid),
     .write_addr_i(fp_wb_phys), .write_data_i(fp_wb_data),
-    .allocate_valid_i(fp_alloc_valid), .allocate_addr_i(renamed_dst_phys),
+    .allocate_valid_i(fp_alloc_valid), .allocate_addr_i(fp_alloc_addr),
     .probe_addr_i('0), .probe_ready_o()
   );
 
@@ -1726,6 +1744,44 @@ module rv_backend #(
   logic [1:0] lsu_issue_valid, lsu_issue_is_load, lsu_issue_is_store;
   logic [1:0] lsu_issue_address_valid, lsu_issue_store_data_valid;
   logic [1:0][ROB_SEQ_WIDTH-1:0] lsu_issue_sequence;
+  logic [1:0][XLEN-1:0] lsu_candidate_ea;
+  // Same modulo-XLEN grouped carry-select helper as the original AGU.
+  function automatic logic [XLEN-1:0] lsu_candidate_address_add(
+    input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs
+  );
+    localparam int GROUPS = XLEN / 4;
+    localparam int LEVELS = $clog2(GROUPS);
+    logic [GROUPS-1:0] p [0:LEVELS], g [0:LEVELS];
+    logic [4:0] sum0 [0:GROUPS-1], sum1 [0:GROUPS-1];
+    logic carry_in;
+    for (int group=0; group<GROUPS; group++) begin
+      sum0[group] = {1'b0,lhs[group*4+:4]} + {1'b0,rhs[group*4+:4]};
+      sum1[group] = sum0[group] + 5'd1;
+      p[0][group] = &(lhs[group*4+:4] ^ rhs[group*4+:4]);
+      g[0][group] = sum0[group][4];
+    end
+    for (int level=0; level<LEVELS; level++) begin
+      for (int group=0; group<GROUPS; group++) begin
+        if (group >= (1<<level)) begin
+          g[level+1][group] = g[level][group] |
+            (p[level][group] & g[level][group-(1<<level)]);
+          p[level+1][group] = p[level][group] & p[level][group-(1<<level)];
+        end else begin
+          g[level+1][group] = g[level][group];
+          p[level+1][group] = p[level][group];
+        end
+      end
+    end
+    for (int group=0; group<GROUPS; group++) begin
+      carry_in = (group==0) ? 1'b0 : g[LEVELS][group-1];
+      lsu_candidate_address_add[group*4+:4] = carry_in ? sum1[group][3:0] : sum0[group][3:0];
+    end
+  endfunction
+  for (genvar candidate=0; candidate<2; candidate++) begin : g_lsu_candidate_ea
+    assign lsu_candidate_ea[candidate] =
+      lsu_candidate_address_add(cand_operand0[candidate], cand_immediate[candidate]);
+  end
+
   logic [1:0] lsu_issue_lq_valid, lsu_issue_sq_valid;
   logic [1:0][LQ_WIDTH-1:0] lsu_issue_lq_index;
   logic [1:0][SQ_WIDTH-1:0] lsu_issue_sq_index;
@@ -1764,8 +1820,17 @@ module rv_backend #(
       // Data is don't-care until issue_valid && issue_ready. Keep the late
       // selected-port-valid/flush reduction out of the XLEN-wide AGU adder.
       // Metadata and all side effects retain the original gated port bundle.
-      lsu_issue_base[lane] = cand_operand0[port_candidate[2+lane]];
-      lsu_issue_immediate[lane] = cand_immediate[port_candidate[2+lane]];
+      if (AGU_EA_PRECOMPUTE) begin
+        // Two candidates, two parallel sums; port choice sees a narrow mux
+        // of finished addresses instead of controlling an XLEN-wide adder.
+        // Passing EA+0 keeps the LSU cluster/pipe interface and all downstream
+        // truncation/alignment/mask/fault semantics unchanged.
+        lsu_issue_base[lane] = lsu_candidate_ea[port_candidate[2+lane]];
+        lsu_issue_immediate[lane] = '0;
+      end else begin
+        lsu_issue_base[lane] = cand_operand0[port_candidate[2+lane]];
+        lsu_issue_immediate[lane] = cand_immediate[port_candidate[2+lane]];
+      end
       lsu_issue_store_data[lane] = port_operand1[2+lane];
       lsu_issue_size[lane] = port_mem_size[2+lane];
     end
@@ -1775,8 +1840,8 @@ module rv_backend #(
   for (genvar lane=0; lane<2; lane++) begin : g_lsu_route_check
     assert property (@(posedge clk_i) disable iff (!rst_ni)
       lsu_issue_valid[lane] |->
-        (lsu_issue_base[lane] == port_operand0[2+lane]) &&
-        (lsu_issue_immediate[lane] == port_immediate[2+lane]));
+        (lsu_candidate_address_add(lsu_issue_base[lane], lsu_issue_immediate[lane]) ==
+         lsu_candidate_address_add(port_operand0[2+lane], port_immediate[2+lane])));
   end
 `endif
 
@@ -1912,6 +1977,14 @@ module rv_backend #(
         system_completion_exception;
   exception_code_e system_completion_cause;
   logic [XLEN-1:0] system_completion_tval;
+  logic system_result_request_ready, system_result_valid;
+  logic system_result_pending_head, system_result_pending;
+  logic [ROB_SEQ_WIDTH-1:0] system_result_sequence;
+  logic system_result_dst_valid, system_result_exception;
+  reg_class_e system_result_dst_class;
+  logic [PHYS_TAG_WIDTH-1:0] system_result_dst_phys;
+  logic [XLEN-1:0] system_result_data, system_result_tval;
+  exception_code_e system_result_cause;
   logic [XLEN-1:0] architectural_next_pc_q;
   logic architectural_redirect_valid;
   logic [XLEN-1:0] architectural_redirect_pc;
@@ -1937,7 +2010,8 @@ module rv_backend #(
     head_is_ecall || head_is_mret || head_is_wfi || head_is_fence ||
     head_is_fence_i;
   assign head_special_request = head_is_special_instruction &&
-    !rob_head_complete && !flush_valid && !system_redirect_pending_q;
+    !rob_head_complete && !flush_valid && !system_redirect_pending_q &&
+    !system_result_pending_head;
 
   always_comb begin
     case (rob_head_instruction[13:12])
@@ -2109,7 +2183,74 @@ module rv_backend #(
       system_completion_exception = 1'b1;
       system_completion_tval = XLEN'(rob_head_instruction);
     end
-    system_completion_fire = system_completion_valid && source_ready[10];
+    // CSR execute captures its pending operand exactly once on ingress.
+    // The registered result can wait for WB without re-reading counters or
+    // replacing the pending CSR write. Architectural CSR write is at commit.
+    system_completion_fire = system_completion_valid && system_result_request_ready;
+  end
+
+  if (SYSTEM_RESULT_PIPELINE) begin : g_system_result_pipeline
+    // Two-slot storage gives ingress-ready a registered-occupancy boundary.
+    // The head-only request gate keeps at most ONE system result outstanding;
+    // the second slot is not a second executing/committing CSR instruction.
+    assign system_result_pending_head = system_result_valid;
+    rv_exec_result_buffer #(.XLEN(XLEN), .ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
+      .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH), .DEPTH(2)) u_buffer (
+      .clk_i, .rst_ni,
+      .request_valid_i(system_completion_valid),
+      .request_ready_o(system_result_request_ready),
+      .request_at_head_next_o(), .pending_valid_o(system_result_pending),
+      .pending_sequence_o(), .pending_destination_valid_o(),
+      .pending_destination_class_o(), .pending_destination_phys_o(),
+      .pending_data_o(), .pending_exception_valid_o(),
+      .request_sequence_i((head_is_fence || head_is_fence_i) ?
+        fence_completion_sequence : rob_head_sequence),
+      .request_destination_valid_i(head_is_csr_instruction && !csr_illegal &&
+        rob_head_writes_dst),
+      .request_destination_class_i(head_is_csr_instruction ? rob_head_dst_class : REG_NONE),
+      .request_destination_phys_i(rob_head_dst_phys), .request_data_i(csr_rdata),
+      .request_exception_valid_i(system_completion_exception),
+      .request_exception_cause_i(system_completion_cause),
+      .request_exception_tval_i(system_completion_tval),
+      .request_branch_mispredict_i(1'b0), .request_branch_target_i('0), .request_fflags_i('0),
+      .flush_valid_i(flush_valid), .flush_all_i(flush_all), .flush_sequence_i(flush_sequence),
+      // This FIFO rebuilds survivors without transfers on a flush edge.
+      // Do not offer its retained older result to WB on that same edge;
+      // otherwise WB could accept it while the FIFO retains it, duplicating
+      // the next cycle's completion. Direct/LSU completion rules are separate.
+      .result_valid_o(system_result_valid), .result_ready_i(source_ready[10] && !flush_valid),
+      .result_sequence_o(system_result_sequence),
+      .result_destination_valid_o(system_result_dst_valid),
+      .result_destination_class_o(system_result_dst_class),
+      .result_destination_phys_o(system_result_dst_phys), .result_data_o(system_result_data),
+      .result_exception_valid_o(system_result_exception),
+      .result_exception_cause_o(system_result_cause), .result_exception_tval_o(system_result_tval),
+      .result_branch_mispredict_o(), .result_branch_target_o(), .result_fflags_o()
+    );
+`ifndef SYNTHESIS
+    assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+      !system_result_pending) else $error("More than one head system result outstanding");
+    assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+      system_result_valid |-> (!head_special_request && !csr_execute))
+      else $error("Head system instruction re-executed while waiting for WB");
+    assert property (@(posedge clk_i) disable iff (!rst_ni || flush_valid)
+      system_result_valid |-> (rob_head_valid && system_result_sequence == rob_head_sequence))
+      else $error("System result lost its ROB head owner");
+`endif
+  end else begin : g_system_result_direct
+    assign system_result_pending_head = 1'b0;
+    assign system_result_pending = 1'b0;
+    assign system_result_request_ready = source_ready[10];
+    assign system_result_valid = system_completion_valid;
+    assign system_result_sequence = (head_is_fence || head_is_fence_i) ?
+      fence_completion_sequence : rob_head_sequence;
+    assign system_result_dst_valid = head_is_csr_instruction && !csr_illegal && rob_head_writes_dst;
+    assign system_result_dst_class = head_is_csr_instruction ? rob_head_dst_class : REG_NONE;
+    assign system_result_dst_phys = rob_head_dst_phys;
+    assign system_result_data = csr_rdata;
+    assign system_result_exception = system_completion_exception;
+    assign system_result_cause = system_completion_cause;
+    assign system_result_tval = system_completion_tval;
   end
 
   always_comb begin
@@ -2175,17 +2316,15 @@ module rv_backend #(
       source_exception_cause[5+lsu_source]=lsu_completion_cause[lsu_source];
       source_exception_tval[5+lsu_source]=lsu_completion_tval[lsu_source];
     end
-    source_valid[10]=system_completion_valid;
-    source_sequence[10]=(head_is_fence || head_is_fence_i) ?
-      fence_completion_sequence : rob_head_sequence;
-    source_dst_valid[10]=head_is_csr_instruction && !csr_illegal &&
-      rob_head_writes_dst;
-    source_dst_class[10]=head_is_csr_instruction ? rob_head_dst_class : REG_NONE;
-    source_dst_phys[10]=rob_head_dst_phys;
-    source_data[10]=csr_rdata;
-    source_exception[10]=system_completion_exception;
-    source_exception_cause[10]=system_completion_cause;
-    source_exception_tval[10]=system_completion_tval;
+    source_valid[10]=system_result_valid && (!SYSTEM_RESULT_PIPELINE || !flush_valid);
+    source_sequence[10]=system_result_sequence;
+    source_dst_valid[10]=system_result_dst_valid;
+    source_dst_class[10]=system_result_dst_class;
+    source_dst_phys[10]=system_result_dst_phys;
+    source_data[10]=system_result_data;
+    source_exception[10]=system_result_exception;
+    source_exception_cause[10]=system_result_cause;
+    source_exception_tval[10]=system_result_tval;
     fast_result_ready=source_ready[1:0];mul_result_ready=source_ready[2];
     div_result_ready=source_ready[3];
     fpu_result_ready=source_ready[4];
@@ -2455,25 +2594,45 @@ module rv_backend #(
   // Branch sequence metadata allows one-time checkpoint restore/release.
   logic branch_valid_q[0:SEQ_SPACE-1],branch_resolved_q[0:SEQ_SPACE-1];
   logic [CP_WIDTH-1:0] branch_cp_q[0:SEQ_SPACE-1];
+  // Wide resolve-only metadata belongs to an unresolved branch's rename
+  // checkpoint, not to every possible ROB sequence. The seq->CP map and
+  // resolved/live guards remain intact. Taken bits stay sequence-indexed
+  // because commit still needs them after the checkpoint has been released.
+  typedef struct packed {
+    logic [XLEN-1:0] pc;
+    logic [31:0] raw_instruction;
+    inst_len_e inst_len;
+    prediction_meta_t prediction;
+    logic [XLEN-1:0] actual_target;
+  } checkpoint_branch_meta_t;
+  checkpoint_branch_meta_t checkpoint_branch_meta_q[0:BR_CHECKPOINTS-1];
+  logic [CP_WIDTH-1:0] resolve_metadata_cp, execute_metadata_cp;
+  assign resolve_metadata_cp = branch_cp_q[fast_result_sequence[0]];
+  assign execute_metadata_cp = branch_cp_q[branch_execute_sequence];
+`ifndef SYNTHESIS
+  // Original sequence-indexed storage is a simulation-only oracle. Never
+  // synthesize these shadow arrays; assert equality only for live resolves,
+  // since metadata on an invalid resolve port is not an architectural value.
   logic [XLEN-1:0] branch_pc_q[0:SEQ_SPACE-1];
   logic [31:0] branch_instruction_q[0:SEQ_SPACE-1];
   inst_len_e branch_inst_len_q[0:SEQ_SPACE-1];
   prediction_meta_t branch_prediction_q[0:SEQ_SPACE-1];
-  logic branch_actual_taken_q[0:SEQ_SPACE-1];
   logic [XLEN-1:0] branch_actual_target_q[0:SEQ_SPACE-1];
+`endif
+  logic branch_actual_taken_q[0:SEQ_SPACE-1];
   logic branch_resolve_valid,branch_resolve_live,branch_resolve_drop;
   assign branch_resolve_valid=fast_result_valid[0]&&
     branch_valid_q[fast_result_sequence[0]]&&!branch_resolved_q[fast_result_sequence[0]];
   assign branch_resolve_live=wb_source_live[0];
   always_comb begin
     bp_resolve_valid_o = branch_resolve_valid && branch_resolve_live;
-    bp_resolve_pc_o = branch_pc_q[fast_result_sequence[0]];
-    bp_resolve_instruction_o = branch_instruction_q[fast_result_sequence[0]];
-    bp_resolve_inst_len_o = branch_inst_len_q[fast_result_sequence[0]];
+    bp_resolve_pc_o = checkpoint_branch_meta_q[resolve_metadata_cp].pc;
+    bp_resolve_instruction_o = checkpoint_branch_meta_q[resolve_metadata_cp].raw_instruction;
+    bp_resolve_inst_len_o = checkpoint_branch_meta_q[resolve_metadata_cp].inst_len;
     bp_resolve_taken_o = branch_actual_taken_q[fast_result_sequence[0]];
-    bp_resolve_target_o = branch_actual_target_q[fast_result_sequence[0]];
+    bp_resolve_target_o = checkpoint_branch_meta_q[resolve_metadata_cp].actual_target;
     bp_resolve_mispredict_o = fast_result_mispredict[0];
-    bp_resolve_prediction_o = branch_prediction_q[fast_result_sequence[0]];
+    bp_resolve_prediction_o = checkpoint_branch_meta_q[resolve_metadata_cp].prediction;
     bp_commit_valid_o = '0;
     bp_commit_pc_o = retire_pc;
     bp_commit_instruction_o = retire_instruction;
@@ -2486,6 +2645,42 @@ module rv_backend #(
         branch_actual_taken_q[retire_sequence[lane]];
     end
   end
+  for (genvar checkpoint = 0; checkpoint < BR_CHECKPOINTS; checkpoint++) begin : g_branch_metadata
+    always_ff @(posedge clk_i) begin
+      if (!rst_ni)
+        checkpoint_branch_meta_q[checkpoint] <= '0;
+      else begin
+        // Ordered dual dispatch: lane1 priority is explicit. Legal rename
+        // allocation never assigns the same checkpoint to both lanes.
+        for (int lane = 0; lane < 2; lane++) begin
+          if (dispatch_fire && dec_valid[lane] && cp_save[lane] &&
+              (cp_save_id[lane] == CP_WIDTH'(checkpoint))) begin
+            checkpoint_branch_meta_q[checkpoint].pc <= dec_pc[lane];
+            checkpoint_branch_meta_q[checkpoint].raw_instruction <= dec_raw[lane];
+            checkpoint_branch_meta_q[checkpoint].inst_len <= dec_len[lane];
+            checkpoint_branch_meta_q[checkpoint].prediction <= dec_prediction[lane];
+          end
+        end
+        if (branch_execute_valid && fast_req_ready[0] &&
+            (execute_metadata_cp == CP_WIDTH'(checkpoint)))
+          checkpoint_branch_meta_q[checkpoint].actual_target <= branch_target;
+      end
+    end
+  end
+`ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    bp_resolve_valid_o |-> cp_sequence_q[resolve_metadata_cp] == fast_result_sequence[0]);
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    branch_execute_valid && fast_req_ready[0] |->
+      cp_sequence_q[execute_metadata_cp] == branch_execute_sequence);
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    bp_resolve_valid_o |->
+      {bp_resolve_pc_o, bp_resolve_instruction_o, bp_resolve_inst_len_o,
+       bp_resolve_prediction_o, bp_resolve_target_o} ==
+      {branch_pc_q[fast_result_sequence[0]], branch_instruction_q[fast_result_sequence[0]],
+       branch_inst_len_q[fast_result_sequence[0]], branch_prediction_q[fast_result_sequence[0]],
+       branch_actual_target_q[fast_result_sequence[0]]});
+`endif
   rv_branch_recovery #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
     .CHECKPOINT_ID_WIDTH(CP_WIDTH)) u_recovery(
     .trap_redirect_valid_i(architectural_redirect_valid),
@@ -2515,12 +2710,14 @@ module rv_backend #(
       for(int unsigned seq_index=0;seq_index<SEQ_SPACE;seq_index++) begin
         branch_valid_q[seq_index]<=1'b0;branch_resolved_q[seq_index]<=1'b0;
         branch_cp_q[seq_index]<='0;
+`ifndef SYNTHESIS
         branch_pc_q[seq_index]<='0;
         branch_instruction_q[seq_index]<='0;
         branch_inst_len_q[seq_index]<=INST_LEN_NONE;
         branch_prediction_q[seq_index]<='0;
-        branch_actual_taken_q[seq_index]<=1'b0;
         branch_actual_target_q[seq_index]<='0;
+`endif
+        branch_actual_taken_q[seq_index]<=1'b0;
       end
       for(int unsigned checkpoint=0;checkpoint<BR_CHECKPOINTS;checkpoint++)
         cp_sequence_q[checkpoint]<='0;
@@ -2529,6 +2726,7 @@ module rv_backend #(
         branch_valid_q[rob_alloc_sequence[lane]]<=cp_save[lane];
         branch_resolved_q[rob_alloc_sequence[lane]]<=1'b0;
         branch_cp_q[rob_alloc_sequence[lane]]<=cp_save_id[lane];
+`ifndef SYNTHESIS
         branch_pc_q[rob_alloc_sequence[lane]]<=dec_pc[lane];
         // The predictor classifies compressed control flow from the original
         // 16-bit encoding together with INST_LEN_16.  Execution uses the
@@ -2538,13 +2736,16 @@ module rv_backend #(
         branch_instruction_q[rob_alloc_sequence[lane]]<=dec_raw[lane];
         branch_inst_len_q[rob_alloc_sequence[lane]]<=dec_len[lane];
         branch_prediction_q[rob_alloc_sequence[lane]]<=dec_prediction[lane];
+`endif
         if(cp_save[lane])cp_sequence_q[cp_save_id[lane]]<=rob_alloc_sequence[lane];
       end
       if(branch_resolve_valid&&branch_resolve_live)
         branch_resolved_q[fast_result_sequence[0]]<=1'b1;
       if (branch_execute_valid && fast_req_ready[0]) begin
         branch_actual_taken_q[branch_execute_sequence] <= branch_taken;
+`ifndef SYNTHESIS
         branch_actual_target_q[branch_execute_sequence] <= branch_target;
+`endif
       end
     end
   end

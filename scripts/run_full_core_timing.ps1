@@ -70,6 +70,13 @@ function Get-MemoryStatus {
   return $s
 }
 function Yosys-Path([string]$path) { return $path.Replace("\", "/") }
+function Get-StageAdmissionGiB([string]$stage, [double]$guardGiB) {
+  # Admission is stricter than the unchanged runtime guard, not a waiver of it.
+  # Measured full-array Flatten transient needs about 6.5GiB additional commit.
+  # Reject before launching rather than predictably crossing the safety guard.
+  if ($stage -eq 'Flatten') { return $guardGiB + 6.5 }
+  return $guardGiB
+}
 $drive = @("Z", "Y", "X", "W", "U", "T", "S", "R") |
   Where-Object { !(Test-Path "$_`:\") } | Select-Object -First 1
 if (!$drive) { throw "No unused ASCII drive alias" }
@@ -190,6 +197,43 @@ try {
       }
       if(!$priorOk){throw "Cannot run ${stage}: $priorStage has no successful checkpoint result"}
     }
+    $ownerPath = "$run/$stage.active.json"
+    if (Test-Path -LiteralPath $ownerPath) {
+      $priorOwner = Get-Content -LiteralPath $ownerPath -Raw | ConvertFrom-Json
+      $priorNative = Get-Process -Id $priorOwner.nativeProcessId -ErrorAction SilentlyContinue
+      if ($priorNative -and
+          $priorNative.StartTime.ToUniversalTime().ToString('o') -eq $priorOwner.nativeStartUtc) {
+        throw "Refusing duplicate ${stage}: original native PID=$($priorNative.Id) is still live"
+      }
+    }
+    $admissionGiB = Get-StageAdmissionGiB $stage $MinAvailableCommitGiB
+    $admissionMemory = Get-MemoryStatus
+    if ($admissionMemory.availablePageFile / 1GB -lt $admissionGiB) {
+      throw ("No native process launched: {0} admission needs {1:N2}GiB available commit; current {2:N2}GiB. Existing checkpoint/evidence unchanged." -f $stage, $admissionGiB, ($admissionMemory.availablePageFile / 1GB))
+    }
+    if (Test-Path -LiteralPath "$run/$stage.result.json") {
+      # A terminal/unknown-exit attempt is not silently replaced by a retry.
+      # Archive generated stage evidence with its ownership and guard records.
+      $archive = "$run/attempts/$stage-$([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ'))"
+      New-Item -ItemType Directory -Path $archive | Out-Null
+      foreach ($suffix in @('result.json','active.json','log','stdout.log','stderr.log','memory.csv','live.memory.csv','ys')) {
+        $oldEvidence = "$run/$stage.$suffix"
+        if (Test-Path -LiteralPath $oldEvidence) {
+          Move-Item -LiteralPath $oldEvidence -Destination "$archive/$stage.$suffix"
+        }
+      }
+      $stageOutput = switch ($stage) {
+        'Coarse' { 'coarse.il' }
+        'Map' { 'mapped_arrays.il' }
+        'Fine' { 'fine_hierarchy.il' }
+        'Flatten' { 'pre_abc.il' }
+        'Abc' { 'mapped.v' }
+      }
+      if (Test-Path -LiteralPath "$run/$stageOutput") {
+        Move-Item -LiteralPath "$run/$stageOutput" -Destination "$archive/$stageOutput"
+      }
+      Write-Host "PRESERVED_PRIOR_ATTEMPT $archive (not converted to success)"
+    }
     if ($stage -eq "Fine") {
       # Map and clean each module before flattening. Whole-design techmap can
       # retain >10GiB of temporary, unoptimized gates at once on this core.
@@ -232,6 +276,17 @@ try {
     $lastReport = -60
     $failure = $null
     $stopFailure = $null
+    $nativeStartUtc = $process.StartTime.ToUniversalTime().ToString('o')
+    $parentStartUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+    $stageOwner = @{
+      stage=$stage; status='running'; nativeProcessId=$process.Id; nativeStartUtc=$nativeStartUtc
+      parentProcessId=$PID; parentStartUtc=$parentStartUtc
+      heartbeatUtc=[DateTime]::UtcNow.ToString('o'); runnerSha256=(Get-FileHash $PSCommandPath).Hash
+      manifestSha256=(Get-FileHash $manifestPath).Hash
+      executableSha256=(Get-FileHash $yosys).Hash
+      scope='Native ownership/telemetry only; a running heartbeat is NOT successful completion'
+    }
+    $stageOwner | ConvertTo-Json | Set-Content "$run/$stage.active.json" -Encoding UTF8
     Write-Host "START $stage PID=$($process.Id) reset retained; all arrays included"
     try {
       while (!$process.WaitForExit(2000)) {
@@ -242,8 +297,17 @@ try {
         $workingBytes = $process.WorkingSet64
         $peakPrivate = [Math]::Max($peakPrivate, $privateBytes)
         $peakWorking = [Math]::Max($peakWorking, $workingBytes)
-        $samples.Add([pscustomobject]@{ Seconds = $timer.Elapsed.TotalSeconds; PrivateGiB = $privateBytes / 1GB; WorkingGiB = $workingBytes / 1GB; AvailableCommitGiB = $memory.availablePageFile / 1GB })
+        $sample=[pscustomobject]@{ Seconds = $timer.Elapsed.TotalSeconds; PrivateGiB = $privateBytes / 1GB; WorkingGiB = $workingBytes / 1GB; AvailableCommitGiB = $memory.availablePageFile / 1GB }
+        $samples.Add($sample)
+        # Persist while running: forced termination may skip finally entirely.
+        # Keep the previous result untouched until an actual native exit exists.
+        $sample | Export-Csv "$run/$stage.live.memory.csv" -NoTypeInformation -Append
         if ($timer.Elapsed.TotalSeconds - $lastReport -ge 45) {
+          $stageOwner.heartbeatUtc=[DateTime]::UtcNow.ToString('o')
+          $stageOwner.seconds=$timer.Elapsed.TotalSeconds
+          $stageOwner.privateGiB=$privateBytes/1GB
+          $stageOwner.availableCommitGiB=$memory.availablePageFile/1GB
+          $stageOwner | ConvertTo-Json | Set-Content "$run/$stage.active.json" -Encoding UTF8
           Write-Host ("RUN {0} {1:N0}s private={2:N2}GiB available commit={3:N2}GiB" -f $stage, $timer.Elapsed.TotalSeconds, ($privateBytes / 1GB), ($memory.availablePageFile / 1GB))
           $lastReport = $timer.Elapsed.TotalSeconds
         }
@@ -270,6 +334,11 @@ try {
         maxYosysPrivateGiB = $MaxYosysPrivateGiB; minAvailableCommitGiB = $MinAvailableCommitGiB
         failure = $failure; targetDelayPs = $TargetDelayPs } |
         ConvertTo-Json | Set-Content "$run/$stage.result.json" -Encoding UTF8
+      $stageOwner.status=if($process.HasExited){'native_exited'}else{'owned_process_still_alive'}
+      $stageOwner.heartbeatUtc=[DateTime]::UtcNow.ToString('o')
+      $stageOwner.exitCode=if($process.HasExited){$process.ExitCode}else{$null}
+      $stageOwner.failure=$failure
+      $stageOwner | ConvertTo-Json | Set-Content "$run/$stage.active.json" -Encoding UTF8
     }
     if ($stopFailure) { throw $stopFailure }
     if ($failure) { throw $failure }
