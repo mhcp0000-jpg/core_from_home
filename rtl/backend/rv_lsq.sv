@@ -185,10 +185,16 @@ module rv_lsq #(
   // Keep the tree as parallel scalar arrays.  Besides mapping cleanly to
   // comparators/muxes, this remains compatible with Icarus, which cannot
   // elaborate variable indexing through a multi-dimensional struct array.
+`ifndef SYNTHESIS
   logic lq_select_valid [0:LQ_SELECT_TREE_LEVELS]
                          [0:LQ_SELECT_TREE_LEAVES-1][0:1];
   logic [LQ_ENTRIES-1:0] lq_select_onehot [0:LQ_SELECT_TREE_LEVELS]
                          [0:LQ_SELECT_TREE_LEAVES-1][0:1];
+  logic [1:0] legacy_candidate_found;
+  logic [1:0][LQ_INDEX_WIDTH-1:0] legacy_candidate_index;
+  logic [1:0][SEQ_WIDTH-1:0] legacy_candidate_sequence;
+  logic legacy_replacement_available;
+`endif
   logic [LQ_ENTRIES-1:0] lq_entry_before [LQ_ENTRIES];
 
   // Compare registered entry sequences before late eligibility arrives.
@@ -363,6 +369,154 @@ module rv_lsq #(
     end
   end
 
+  typedef struct packed {
+    logic available;
+    logic [1:0] found;
+    logic [1:0][LQ_INDEX_WIDTH-1:0] index;
+    logic [1:0][SEQ_WIDTH-1:0] sequence_id;
+  } lq_selection_t;
+
+  // The EXACT original tournament, including invalid leaf identities and
+  // non-total modulo-age comparisons. Calling it for different eligibility
+  // masks does not change its policy, state, or number of issued loads.
+  function automatic lq_selection_t select_load_pair(
+    input logic [LQ_ENTRIES-1:0] eligible_work
+  );
+    logic lq_select_valid [0:LQ_SELECT_TREE_LEVELS]
+                           [0:LQ_SELECT_TREE_LEAVES-1][0:1];
+    logic [LQ_ENTRIES-1:0] lq_select_onehot [0:LQ_SELECT_TREE_LEVELS]
+                           [0:LQ_SELECT_TREE_LEAVES-1][0:1];
+    logic choose_first_left, choose_second_left;
+    lq_selection_t result;
+    result = '0;
+    choose_first_left = 1'b0;
+    choose_second_left = 1'b0;
+    for (int unsigned level = 0; level <= LQ_SELECT_TREE_LEVELS; level++)
+      for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
+        for (int unsigned rank = 0; rank < 2; rank++) begin
+          lq_select_valid[level][node][rank] = 1'b0;
+          lq_select_onehot[level][node][rank] = '0;
+        end
+
+    result.available = |eligible_work;
+    for (int unsigned leaf = 0; leaf < LQ_SELECT_TREE_LEAVES; leaf++) begin
+      if (leaf < LQ_ENTRIES) begin
+        lq_select_valid[0][leaf][0] = eligible_work[leaf];
+        // Retain invalid leaf identities too: preserve original don't-care
+        // sequence/index values without relying on environment assumptions.
+        lq_select_onehot[0][leaf][0][leaf] = 1'b1;
+      end
+    end
+    for (int unsigned level = 1; level <= LQ_SELECT_TREE_LEVELS; level++)
+      for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
+        if (node < (LQ_SELECT_TREE_LEAVES >> level)) begin
+          choose_first_left = onehot_select_before(
+            lq_select_valid[level-1][node*2][0],
+            lq_select_onehot[level-1][node*2][0],
+            lq_select_valid[level-1][node*2+1][0],
+            lq_select_onehot[level-1][node*2+1][0]);
+          lq_select_onehot[level][node][0] = choose_first_left ?
+            lq_select_onehot[level-1][node*2][0] :
+            lq_select_onehot[level-1][node*2+1][0];
+          if (choose_first_left) begin
+            choose_second_left = onehot_select_before(
+              lq_select_valid[level-1][node*2][1],
+              lq_select_onehot[level-1][node*2][1],
+              lq_select_valid[level-1][node*2+1][0],
+              lq_select_onehot[level-1][node*2+1][0]);
+            lq_select_onehot[level][node][1] = choose_second_left ?
+              lq_select_onehot[level-1][node*2][1] :
+              lq_select_onehot[level-1][node*2+1][0];
+          end else begin
+            choose_second_left = onehot_select_before(
+              lq_select_valid[level-1][node*2][0],
+              lq_select_onehot[level-1][node*2][0],
+              lq_select_valid[level-1][node*2+1][1],
+              lq_select_onehot[level-1][node*2+1][1]);
+            lq_select_onehot[level][node][1] = choose_second_left ?
+              lq_select_onehot[level-1][node*2][0] :
+              lq_select_onehot[level-1][node*2+1][1];
+          end
+          lq_select_valid[level][node][0] =
+            lq_select_valid[level-1][node*2][0] |
+            lq_select_valid[level-1][node*2+1][0];
+          lq_select_valid[level][node][1] =
+            lq_select_valid[level-1][node*2][1] |
+            lq_select_valid[level-1][node*2+1][1] |
+            (lq_select_valid[level-1][node*2][0] &
+             lq_select_valid[level-1][node*2+1][0]);
+        end
+    for (int unsigned lane = 0; lane < 2; lane++) begin
+      result.found[lane] = lq_select_valid[LQ_SELECT_TREE_LEVELS][0][lane];
+      for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
+        result.index[lane] = result.index[lane] |
+          ({LQ_INDEX_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
+           LQ_INDEX_WIDTH'(entry));
+        result.sequence_id[lane] = result.sequence_id[lane] |
+          ({SEQ_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
+           lq_sequence_q[entry]);
+      end
+    end
+    return result;
+  endfunction
+
+  logic [LQ_ENTRIES-1:0] eligible_base;
+  always_comb begin
+    eligible_base = '0;
+    for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
+      logic address_ready;
+      address_ready = lq_address_valid_q[entry];
+      // Capture a newly addressed load identity on the SAME edge as its
+      // LQ address/mask/device state. Ordering/forwarding still happens only
+      // next cycle from registered LQ/SQ state; no speculative memory read.
+      if (EARLY_LOAD_SELECT)
+        for (int unsigned agu = 0; agu < 2; agu++)
+          if (agu_preview_valid_i[agu] && agu_lq_valid_i[agu] &&
+              (agu_lq_index_i[agu] == LQ_INDEX_WIDTH'(entry)) &&
+              (agu_sequence_i[agu] == lq_sequence_q[entry]) &&
+              agu_address_valid_i[agu])
+            address_ready = 1'b1;
+      eligible_base[entry] =
+        lq_valid_q[entry] && !lq_killed_q[entry] &&
+        address_ready && !lq_issued_q[entry] &&
+        !lq_completed_q[entry] && !lq_exception_q[entry] &&
+        !(candidate_found[0] &&
+          (candidate_index[0] == LQ_INDEX_WIDTH'(entry))) &&
+        !(candidate_found[1] &&
+          (candidate_index[1] == LQ_INDEX_WIDTH'(entry)));
+    end
+
+  end
+
+  // Precompute all exclusions BEFORE late AGU generation/permission settles.
+  // active_agu[lane] implies active_index[lane]==agu_lq_index_i[lane], by
+  // the unchanged bypass producer below. These are combinational alternatives,
+  // NOT four speculative requests; only the selected pair has any effect.
+  localparam int unsigned LQ_LOOKAHEAD_CASES = AGU_LOAD_BYPASS ? 4 : 1;
+  lq_selection_t [LQ_LOOKAHEAD_CASES-1:0] lookahead_selection;
+  lq_selection_t chosen_selection;
+  for (genvar exclusion=0; exclusion<LQ_LOOKAHEAD_CASES; exclusion++) begin : g_lq_lookahead
+    always_comb begin
+      logic [LQ_ENTRIES-1:0] eligible_work;
+      eligible_work = eligible_base;
+      for (int unsigned entry=0; entry<LQ_ENTRIES; entry++) begin
+        if ((((exclusion & 1) != 0) && (agu_lq_index_i[0] == LQ_INDEX_WIDTH'(entry))) ||
+            (((exclusion & 2) != 0) && (agu_lq_index_i[1] == LQ_INDEX_WIDTH'(entry))))
+          eligible_work[entry] = 1'b0;
+      end
+      lookahead_selection[exclusion] = select_load_pair(eligible_work);
+    end
+  end
+  assign chosen_selection = lookahead_selection[AGU_LOAD_BYPASS ? active_agu : 2'b00];
+  assign selected_candidate_found = chosen_selection.found;
+  assign selected_candidate_index = chosen_selection.index;
+  assign selected_candidate_sequence = chosen_selection.sequence_id;
+  assign lq_replacement_available = chosen_selection.available;
+
+`ifndef SYNTHESIS
+  // Independent complete original selector, used ONLY as a clocked oracle.
+  // The original classification/tournament is not changed to match the new
+  // implementation; compare every selected bit, including invalid payload.
   always_comb begin
     logic [LQ_ENTRIES-1:0] eligible_work;
     // Loop-local decisions are combinational scratch, never retained state.
@@ -372,9 +526,9 @@ module rv_lsq #(
     eligible_work = '0;
     choose_first_left = 1'b0;
     choose_second_left = 1'b0;
-    selected_candidate_found = '0;
-    selected_candidate_index = '0;
-    selected_candidate_sequence = '0;
+    legacy_candidate_found = '0;
+    legacy_candidate_index = '0;
+    legacy_candidate_sequence = '0;
     for (int unsigned level = 0; level <= LQ_SELECT_TREE_LEVELS; level++)
       for (int unsigned node = 0; node < LQ_SELECT_TREE_LEAVES; node++)
         for (int unsigned rank = 0; rank < 2; rank++) begin
@@ -412,7 +566,7 @@ module rv_lsq #(
     // Existence is independent of age comparisons. Keep the exact tournament
     // for selecting identities, but do not route its sequence/identity muxes
     // through the current request-permit decision.
-    lq_replacement_available = |eligible_work;
+    legacy_replacement_available = |eligible_work;
 
 
     for (int unsigned leaf = 0; leaf < LQ_SELECT_TREE_LEAVES; leaf++) begin
@@ -463,17 +617,31 @@ module rv_lsq #(
              lq_select_valid[level-1][node*2+1][0]);
         end
     for (int unsigned lane = 0; lane < 2; lane++) begin
-      selected_candidate_found[lane] = lq_select_valid[LQ_SELECT_TREE_LEVELS][0][lane];
+      legacy_candidate_found[lane] = lq_select_valid[LQ_SELECT_TREE_LEVELS][0][lane];
       for (int unsigned entry = 0; entry < LQ_ENTRIES; entry++) begin
-        selected_candidate_index[lane] = selected_candidate_index[lane] |
+        legacy_candidate_index[lane] = legacy_candidate_index[lane] |
           ({LQ_INDEX_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
            LQ_INDEX_WIDTH'(entry));
-        selected_candidate_sequence[lane] = selected_candidate_sequence[lane] |
+        legacy_candidate_sequence[lane] = legacy_candidate_sequence[lane] |
           ({SEQ_WIDTH{lq_select_onehot[LQ_SELECT_TREE_LEVELS][0][lane][entry]}} &
            lq_sequence_q[entry]);
       end
     end
   end
+
+  always_ff @(posedge clk_i) begin : p_lookahead_selector_equal
+    if (rst_ni) begin
+      assert ({selected_candidate_found, selected_candidate_index,
+               selected_candidate_sequence, lq_replacement_available} ==
+              {legacy_candidate_found, legacy_candidate_index,
+               legacy_candidate_sequence, legacy_replacement_available})
+        else $error("LQ exclusion lookahead differs from original selector");
+      for (int lane=0; lane<2; lane++)
+        if (active_agu[lane])
+          assert (active_index[lane] == agu_lq_index_i[lane]);
+    end
+  end
+`endif
 
   always_comb begin
     for (int unsigned lane = 0; lane < 2; lane++) begin
@@ -698,6 +866,7 @@ module rv_lsq #(
       logic [DATA_WIDTH-1:0] sq_forward_data;
       logic candidate_present;
       logic candidate_valid;
+      logic ordering_permitted;
       logic [LQ_INDEX_WIDTH-1:0] selected_index;
       logic [SEQ_WIDTH-1:0] selected_sequence;
       logic [PADDR_WIDTH-1:0] selected_address;
@@ -816,21 +985,24 @@ module rv_lsq #(
           stall_reason = LSQ_STALL_PARTIAL_OVERLAP;
         end else if (sq_match && !sq_match_data_valid) begin
           stall_reason = LSQ_STALL_STORE_DATA;
-        end else if (sq_match) begin
-          candidate_valid = 1'b1;
-          forward_valid = 1'b1;
-          forward_data = sq_forward_data;
-        end else if (sb_query_partial_i[lane]) begin
+        end else if (!sq_match && sb_query_partial_i[lane]) begin
           stall_reason = LSQ_STALL_PARTIAL_OVERLAP;
-        end else if (sb_query_full_cover_i[lane]) begin
-          candidate_valid = 1'b1;
-          forward_valid = 1'b1;
-          forward_data = sb_query_data_i[lane];
-        end else begin
-          candidate_valid = 1'b1;
-          memory_read = 1'b1;
         end
       end
+
+      // Evaluate SQ/device/unknown-address permission IN PARALLEL with the
+      // store-buffer CAM. A late SB partial/full-cover result should not
+      // traverse the complete priority ladder before candidate refill.
+      // Preserve SQ-over-SB precedence and every invalid/stalled data value.
+      ordering_permitted = candidate_present && !older_device_memory &&
+        (!selected_device || device_load_permit_i[lane]) &&
+        !unknown_address && !partial_overlap && (!sq_match || sq_match_data_valid);
+      candidate_valid = ordering_permitted && (sq_match || !sb_query_partial_i[lane]);
+      memory_read = candidate_valid && !sq_match && !sb_query_full_cover_i[lane];
+      forward_valid = candidate_valid && (sq_match || sb_query_full_cover_i[lane]);
+      forward_data = ({DATA_WIDTH{ordering_permitted && sq_match}} & sq_forward_data) |
+        ({DATA_WIDTH{ordering_permitted && !sq_match && !sb_query_partial_i[lane] &&
+                     sb_query_full_cover_i[lane]}} & sb_query_data_i[lane]);
 
       // This block only produces permit-dependent issue/forward controls.
       // Candidate identity and metadata are generated above, outside the

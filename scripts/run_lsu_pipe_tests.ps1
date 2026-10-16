@@ -2,13 +2,17 @@ param(
   [string]$VerilatorRoot='C:/rv_toolchains/verilator-5.050',
   [string]$W64DevkitRoot='C:/rv_toolchains/w64devkit-2.9.1/w64devkit',
   [string]$BuildRoot='',
-  [string]$RtlPath=''
+  [string]$RtlPath='',
+  [string]$PackagePath=''
 )
 $ErrorActionPreference='Stop'
 $repo=Split-Path -Parent $PSScriptRoot
 if(!$RtlPath){$RtlPath=Join-Path $repo 'rtl/backend/rv_lsu_pipe.sv'}
 $rtlFull=(Resolve-Path -LiteralPath $RtlPath).Path
 if(!$rtlFull.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Candidate source must stay below workspace'}
+if(!$PackagePath){$PackagePath=Join-Path $repo 'rtl/rv_ooo_pkg.sv'}
+$pkgFull=(Resolve-Path -LiteralPath $PackagePath).Path
+if(!$pkgFull.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Package source must stay below workspace'}
 if(!$BuildRoot){$BuildRoot=Join-Path $repo 'out/lsu_pipe_tests'}
 $build=[IO.Path]::GetFullPath($BuildRoot)
 if(!$build.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Output must be below workspace'}
@@ -20,15 +24,17 @@ try {
   if($LASTEXITCODE){throw 'subst failed'}
   $root="$drive`:/";$run=$root+$build.Substring($repo.Length+1).Replace('\','/')
   $rtlMapped=$root+$rtlFull.Substring($repo.Length+1).Replace('\','/')
+  $pkgMapped=$root+$pkgFull.Substring($repo.Length+1).Replace('\','/')
   New-Item -ItemType Directory -Force -Path $run | Out-Null
   $env:PATH="$W64DevkitRoot/bin;"+$savedPath;$env:VERILATOR_ROOT=$VerilatorRoot
   @{sourceSha256=(Get-FileHash $rtlFull).Hash;sourcePath=$rtlFull;
+    packageSha256=(Get-FileHash $pkgFull).Hash;packagePath=$pkgFull;
     scope='Asserted directed depth1 + randomized depth2 + XLEN32/64 x DEPTH1/2 payload queue reference model'} |
     ConvertTo-Json | Set-Content "$run/manifest.json" -Encoding UTF8
   foreach($top in @('rv_lsu_pipe_tb','rv_lsu_pipe_depth2_tb','rv_lsu_pipe_widths_tb')){
     $case="$run/$top";New-Item -ItemType Directory -Force -Path $case | Out-Null
     & "$VerilatorRoot/bin/verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal -Werror-UNOPTFLAT --top-module $top --Mdir $case `
-      "${root}rtl/rv_ooo_pkg.sv" $rtlMapped "${root}tb/unit/backend/$top.sv" *> "$case/compile.log"
+      $pkgMapped $rtlMapped "${root}tb/unit/backend/$top.sv" *> "$case/compile.log"
     if($LASTEXITCODE){throw "Code generation failed: $top"}
     & "$W64DevkitRoot/bin/make.exe" -j 2 -C $case -f "V$top.mk" VM_PARALLEL_BUILDS=1 CXX=g++ CC=gcc LINK=g++ *> "$case/build.log"
     if($LASTEXITCODE){throw "Build failed: $top"}

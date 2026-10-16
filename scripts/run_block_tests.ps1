@@ -5,7 +5,10 @@ param(
   [switch]$RtlAssertions,
   [ValidateRange(1, 32)]
   [int]$BuildJobs = 4,
-  [string[]]$OnlyTests = @()
+  [string[]]$OnlyTests = @(),
+  [string]$SourceRoot = '',
+  [string]$FixtureRoot = '',
+  [switch]$SnapshotInputs
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +24,28 @@ if (!(Test-Path -LiteralPath $make) -or !(Test-Path -LiteralPath $gxx)) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if(!$SourceRoot){$SourceRoot=$repoRoot}
+$sourceFull=(Resolve-Path -LiteralPath $SourceRoot).Path.TrimEnd('\')
+if(!$FixtureRoot){$FixtureRoot=$sourceFull}
+$fixtureFull=(Resolve-Path -LiteralPath $FixtureRoot).Path.TrimEnd('\')
+$repoFull=(Resolve-Path -LiteralPath $repoRoot).Path.TrimEnd('\')
+if($sourceFull -ne $repoFull -and !$sourceFull.StartsWith($repoFull+'\',[StringComparison]::OrdinalIgnoreCase)){
+  throw 'SourceRoot must be inside this workspace'
+}
+if($fixtureFull -ne $repoFull -and !$fixtureFull.StartsWith($repoFull+'\',[StringComparison]::OrdinalIgnoreCase)){
+  throw 'FixtureRoot must be inside this workspace'
+}
+if($SnapshotInputs -and !$PSBoundParameters.ContainsKey('BuildRoot')){
+  $BuildRoot=Join-Path $repoFull 'out/block_tests_snapshot'
+}
+$buildFull=[IO.Path]::GetFullPath($BuildRoot)
+if($SnapshotInputs){
+  if(!$buildFull.StartsWith($repoFull+'\',[StringComparison]::OrdinalIgnoreCase)){
+    throw 'Snapshot BuildRoot must be below this workspace; use its resolved path'
+  }
+  if(Test-Path -LiteralPath $buildFull){throw 'Snapshot BuildRoot already exists; preserve earlier observations'}
+}
+$sourceRelative=if($sourceFull -eq $repoFull){''}else{$sourceFull.Substring($repoFull.Length+1).Replace('\','/')+'/'}
 $drive = $null
 foreach ($letter in @("Z", "Y", "X", "W", "U", "T", "S", "R")) {
   if (!(Test-Path "$letter`:\")) {
@@ -181,8 +206,6 @@ $tests = @(
   }
 )
 
-New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
-
 $frontendFiles = @("rtl/rv_ooo_pkg.sv", "rtl/frontend/rv_fetch_queue.sv",
   "rtl/frontend/rv_branch_predictor.sv", "rtl/frontend/rv_fetch_target_buffer.sv",
   "rtl/frontend/rv_frontend.sv", "tb/unit/frontend/rv_frontend_cross_block_tb.sv")
@@ -217,6 +240,35 @@ if ($OnlyTests.Count) {
   if ($unknownTests.Count) { throw "Unknown test names: $($unknownTests -join ', ')" }
   $tests = @($tests | Where-Object { $_.Top -in $OnlyTests })
 }
+New-Item -ItemType Directory -Force -Path $buildFull | Out-Null
+$report=$null
+if($SnapshotInputs){
+  $dataInputs=@()
+  if('rv_i_fabric_tb' -in $tests.Top -or 'rv_soc_peripheral_tb' -in $tests.Top){
+    $relative='tb/fixtures/bootrom/bootrom_test.hex'
+    $original=Join-Path $fixtureFull $relative
+    if(!(Test-Path -LiteralPath $original)){throw 'Missing BootROM fixture; pass -FixtureRoot explicitly for a partial RTL snapshot'}
+    $frozen=Join-Path "$buildFull/inputs" $relative
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $frozen) | Out-Null
+    Copy-Item -LiteralPath $original -Destination $frozen
+    $dataInputs+=@{Path=$relative;Sha256=(Get-FileHash -LiteralPath $frozen).Hash}
+  }
+  $inputs=@($tests | ForEach-Object {$_.Files} | Sort-Object -Unique | ForEach-Object {
+    $relative=$_.ToString()
+    $original=Join-Path $sourceFull $relative
+    $frozen=Join-Path "$buildFull/inputs" $relative
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $frozen) | Out-Null
+    Copy-Item -LiteralPath $original -Destination $frozen
+    @{Path=$relative;Sha256=(Get-FileHash -LiteralPath $frozen).Hash}
+  })
+  $report=@{passed=$false;expectedTests=$tests.Count;cases=[Collections.Generic.List[object]]::new();
+    sourceRoot=$sourceFull;inputs=$inputs;fixtureRoot=$fixtureFull;runtimeDataInputs=$dataInputs;assertionsEnabled=[bool]$RtlAssertions;
+    runnerSha256=(Get-FileHash $PSCommandPath).Hash;
+    verilatorSha256=(Get-FileHash $verilator).Hash;makeSha256=(Get-FileHash $make).Hash;
+    gxxSha256=(Get-FileHash $gxx).Hash;
+    scope='Finite block tests with immutable RTL/TB and selected BootROM runtime inputs, per-case native exits. Simulation cwd is frozen inputs/. Explicit unit geometry sweeps are NOT core parameter overrides, full ISA/X proof, or timing.'}
+  $report | ConvertTo-Json -Depth 8 | Set-Content "$buildFull/report.json" -Encoding UTF8
+}
 try {
   & subst $drive $repoRoot
   if ($LASTEXITCODE -ne 0) { throw "Failed to map $repoRoot to $drive." }
@@ -226,38 +278,91 @@ try {
   try {
     $env:VERILATOR_ROOT = $VerilatorRoot
     $env:PATH = (Join-Path $W64DevkitRoot "bin") + ";" + $oldPath
-
+    $caseNumber=0
+    $toolBuild=if($SnapshotInputs){"$drive/"+$buildFull.Substring($repoFull.Length+1).Replace('\','/')}else{$BuildRoot}
     foreach ($test in $tests) {
       if ($OnlyTests.Count -and $test.Top -notin $OnlyTests) { continue }
-      $testBuild = Join-Path $BuildRoot $test.Top
+      $caseNumber++
+      $caseName=if($SnapshotInputs){'{0:D2}_{1}' -f $caseNumber,$test.Top}else{$test.Top}
+      $testBuild = Join-Path $toolBuild $caseName
       New-Item -ItemType Directory -Force -Path $testBuild | Out-Null
       $mappedSources = $test.Files | ForEach-Object {
-        "$drive/" + ($_ -replace '\\', '/')
+        if($SnapshotInputs){"$toolBuild/inputs/"+($_ -replace '\\','/')}
+        else{"$drive/"+$sourceRelative+($_ -replace '\\','/')}
       }
 
       Write-Host "`n=== $($test.Top) ==="
       $assertionOption = if ($RtlAssertions) { "--assert" } else { "-DSYNTHESIS" }
       [string[]]$testArgs = @()
       if ($test.ContainsKey("ParameterArgs")) { $testArgs = @($test.ParameterArgs) }
-      & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
-        -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module $test.Top `
-        --Mdir $testBuild @testArgs @mappedSources
+      if($SnapshotInputs){
+        $observation=@{case=$caseName;top=$test.Top;unitParameterArgs=$testArgs;
+          compileExit=$null;buildExit=$null;nativeExit=$null;passed=$false}
+        $report.cases.Add($observation)
+        & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
+          -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module $test.Top `
+          --Mdir $testBuild @testArgs @mappedSources *> "$testBuild/compile.log"
+        $observation.compileExit=$LASTEXITCODE
+        $report | ConvertTo-Json -Depth 8 | Set-Content "$buildFull/report.json" -Encoding UTF8
+      }else{
+        & $verilator --cc --exe --timing --main $assertionOption -Wno-fatal `
+          -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC --top-module $test.Top `
+          --Mdir $testBuild @testArgs @mappedSources
+      }
       if ($LASTEXITCODE -ne 0) {
         throw "Verilator code generation failed: $($test.Top)"
       }
 
-      & $make -j $BuildJobs -C $testBuild -f "V$($test.Top).mk" `
-        CXX=g++ CC=gcc LINK=g++ VM_PARALLEL_BUILDS=1
+      if($SnapshotInputs){
+        & $make -j $BuildJobs -C $testBuild -f "V$($test.Top).mk" `
+          CXX=g++ CC=gcc LINK=g++ VM_PARALLEL_BUILDS=1 *> "$testBuild/build.log"
+        $observation.buildExit=$LASTEXITCODE
+        $report | ConvertTo-Json -Depth 8 | Set-Content "$buildFull/report.json" -Encoding UTF8
+      }else{
+        & $make -j $BuildJobs -C $testBuild -f "V$($test.Top).mk" `
+          CXX=g++ CC=gcc LINK=g++ VM_PARALLEL_BUILDS=1
+      }
       if ($LASTEXITCODE -ne 0) {
         throw "Verilator C++ build failed: $($test.Top)"
       }
 
       $simulation = Join-Path $testBuild "V$($test.Top).exe"
-      & $simulation
+      if($SnapshotInputs){
+        Push-Location "$toolBuild/inputs"
+        try {
+          & $simulation *> "$testBuild/result.log"
+          $observation.nativeExit=$LASTEXITCODE
+          $observation.passed=$LASTEXITCODE -eq 0
+        } finally {Pop-Location}
+        $observation.logs=@{}
+        foreach($file in @('compile.log','build.log','result.log')){
+          $observation.logs[$file]=(Get-FileHash "$testBuild/$file").Hash
+        }
+        $report | ConvertTo-Json -Depth 8 | Set-Content "$buildFull/report.json" -Encoding UTF8
+      }else{& $simulation}
       if ($LASTEXITCODE -ne 0) {
         throw "Simulation failed: $($test.Top)"
       }
       Write-Host "PASS $($test.Top)"
+    }
+    if($SnapshotInputs){
+      $report.sourceUnchangedAtEnd=$true
+      foreach($s in $report.inputs){
+        if((Get-FileHash (Join-Path $sourceFull $s.Path)).Hash -ne $s.Sha256 -or
+           (Get-FileHash (Join-Path "$buildFull/inputs" $s.Path)).Hash -ne $s.Sha256){
+          $report.sourceUnchangedAtEnd=$false
+        }
+      }
+      foreach($s in $report.runtimeDataInputs){
+        if((Get-FileHash (Join-Path $fixtureFull $s.Path)).Hash -ne $s.Sha256 -or
+           (Get-FileHash (Join-Path "$buildFull/inputs" $s.Path)).Hash -ne $s.Sha256){
+          $report.sourceUnchangedAtEnd=$false
+        }
+      }
+      $report.passed=$report.sourceUnchangedAtEnd -and $report.cases.Count -eq $report.expectedTests -and
+        @($report.cases | Where-Object {!$_.passed -or $_.compileExit -ne 0 -or $_.buildExit -ne 0 -or $_.nativeExit -ne 0}).Count -eq 0
+      $report | ConvertTo-Json -Depth 8 | Set-Content "$buildFull/report.json" -Encoding UTF8
+      if(!$report.passed){throw 'Block snapshot/source/native qualification incomplete'}
     }
   } finally {
     $env:VERILATOR_ROOT = $oldVerilatorRoot

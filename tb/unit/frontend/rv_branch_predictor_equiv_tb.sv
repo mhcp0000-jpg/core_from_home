@@ -90,6 +90,9 @@ module rv_branch_predictor_equiv_tb #(
   initial begin
     query_valid=0; query_pc=0; query_instruction=0;
     query_length='{default:INST_LEN_32}; fire=0;
+    // Maintain the documented sequential interface even during the idle gap
+    // between reset release and the first randomized transaction.
+    if(SEQUENTIAL_QUERIES) query_pc[1]=XLEN'(4);
     commit_valid=0; commit_taken=0; commit_pc=0; commit_instruction=0;
     commit_length='{default:INST_LEN_32}; redirect_valid=0;
     resolve_valid=0; resolve_taken=0; resolve_mispredict=0;

@@ -140,6 +140,8 @@ module rv_rob #(
   logic [1:0] accepted_alloc_count;
   logic [1:0] retire_count;
   logic [ROB_COUNT_WIDTH:0] available_with_retire;
+  logic [SEQ_WIDTH-1:0] allocation_sequence_distance;
+  logic sequence_capacity_available;
   logic flush_boundary_found;
   logic [ROB_INDEX_WIDTH-1:0] flush_tail;
   logic [ROB_COUNT_WIDTH-1:0] flush_kept_count;
@@ -186,6 +188,10 @@ module rv_rob #(
   endfunction
 
   assign head_plus_one = increment_index(head_q, 1);
+  // Repeated selective flush can advance next_sequence without retiring the
+  // old head. Entry count alone does not bound signed modulo age distance.
+  // Use the pre-edge head conservatively, including simultaneous retirement.
+  assign allocation_sequence_distance = next_sequence_q - head_read[0].sequence_id;
   always_comb begin
     retire_valid_o = '0;
     if ((count_q != 0) && head_read[0].valid &&
@@ -208,9 +214,13 @@ module rv_rob #(
 
     requested_alloc_count = {1'b0, alloc_valid_i[0]} +
                             {1'b0, alloc_valid_i[1]};
+    sequence_capacity_available = (count_q == 0) ||
+      (({1'b0,allocation_sequence_distance} + (SEQ_WIDTH+1)'(requested_alloc_count)) <=
+        ((SEQ_WIDTH+1)'(1) << (SEQ_WIDTH-1)));
     available_with_retire = ROB_CAPACITY - {1'b0, count_q} +
                             {{(ROB_COUNT_WIDTH-1){1'b0}}, retire_count};
     alloc_ready_o = !flush_all_i && !flush_younger_i &&
+                    sequence_capacity_available &&
                     !(alloc_valid_i[1] && !alloc_valid_i[0]) &&
                     (available_with_retire >= requested_alloc_count);
     accepted_alloc_count = alloc_ready_o ? requested_alloc_count : '0;
@@ -449,14 +459,17 @@ module rv_rob #(
     always_ff @(posedge clk_i) begin
       if (!rst_ni) begin
         entries_q[entry] <= '0;
-      end else if (flush_all_i ||
-                   (flush_younger_i && !flush_boundary_found)) begin
-        entries_q[entry].valid <= 1'b0;
       end else begin
-        if (flush_younger_i && entries_q[entry].valid &&
-            sequence_after(entries_q[entry].sequence_id, flush_sequence_i))
+        // The global boundary search controls validity, not the data of a
+        // row that is being invalidated. A missing boundary empties the ROB;
+        // any same-edge completion data in those now-invalid rows is dead.
+        // Allocation initializes ALL fields before a row becomes valid again.
+        if (flush_all_i || (flush_younger_i && !flush_boundary_found) ||
+            (flush_younger_i && entries_q[entry].valid &&
+             sequence_after(entries_q[entry].sequence_id, flush_sequence_i)))
           entries_q[entry].valid <= 1'b0;
 
+        if (!flush_all_i) begin
         // Selective flush preserves same-edge older/boundary completions.
         // Match uses pre-edge generation state, including slot reuse.
         if (|complete_hit) begin
@@ -526,6 +539,7 @@ module rv_rob #(
             end
           end
         end
+        end
       end
     end
   end
@@ -535,6 +549,12 @@ module rv_rob #(
   assign full_o  = (count_q == ROB_ENTRIES);
 
 `ifndef SYNTHESIS
+  for (genvar row = 0; row < ROB_ENTRIES; row++) begin : g_sequence_window_oracle
+    wire [SEQ_WIDTH-1:0] distance_to_next = next_sequence_q - entries_q[row].sequence_id;
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      entries_q[row].valid |-> ((distance_to_next != 0) &&
+        ({1'b0,distance_to_next} <= ((SEQ_WIDTH+1)'(1) << (SEQ_WIDTH-1)))));
+  end
   // Independent linear CAM oracle. This deliberately keeps the old algorithm
   // in assertions only, checking the tree across reset, sequence wrap, retire,
   // allocation and recovery without changing synthesized state or latency.

@@ -1,5 +1,6 @@
 param(
   [string]$Baseline = "2b17093",
+  [string]$SourceRoot = "",
   [string]$BuildRoot = "",
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
@@ -13,6 +14,12 @@ param(
 # redirect+fill, wraparound, and repeated reset are exercised.
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
+if (!$SourceRoot) { $SourceRoot = $repo }
+$candidateRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
+if ($candidateRoot -ne $repo -and
+    !$candidateRoot.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Candidate source must be inside workspace'
+}
 $drive = @("Z", "Y", "X", "W", "U", "T", "S", "R") |
   Where-Object { !(Test-Path "$_`:\") } | Select-Object -First 1
 if (!$drive) { throw "No unused drive letter" }
@@ -36,15 +43,16 @@ try {
   $candidatePath = "$BuildRoot/candidate.sv"
   $testbenchPath = "$BuildRoot/testbench.sv"
   $packagePath = "$BuildRoot/rv_ooo_pkg.sv"
-  Copy-Item -LiteralPath rtl/frontend/rv_fetch_queue.sv -Destination $candidatePath -Force
+  Copy-Item -LiteralPath (Join-Path $candidateRoot 'rtl/frontend/rv_fetch_queue.sv') -Destination $candidatePath -Force
   Copy-Item -LiteralPath tb/unit/frontend/rv_fetch_queue_equiv_tb.sv -Destination $testbenchPath -Force
-  Copy-Item -LiteralPath rtl/rv_ooo_pkg.sv -Destination $packagePath -Force
+  Copy-Item -LiteralPath (Join-Path $candidateRoot 'rtl/rv_ooo_pkg.sv') -Destination $packagePath -Force
   $configurations = @(@(32,16,64), @(64,16,64), @(32,8,32), @(64,32,128))
   if ($IncludeMinimumQueue) {
     $configurations += @(@(32,8,16), @(64,16,32))
   }
   @{
     referenceCommit=(& git rev-parse $Baseline)
+    sourceRoot=$candidateRoot
     candidateSha256=(Get-FileHash $candidatePath -Algorithm SHA256).Hash
     testbenchSha256=(Get-FileHash $testbenchPath -Algorithm SHA256).Hash
     packageSha256=(Get-FileHash $packagePath -Algorithm SHA256).Hash

@@ -268,77 +268,95 @@ module rv_lsu_pipe #(
     // Entry 0 is the head presented on update_*.  Entries stay in issue
     // order; a flush removes the killed ones and compacts the survivor.
     logic valid1_q;
-    update_payload_t head_q, tail_q, issue_payload;
+    // Retimed encoding of the SAME in-order update entry. Base/immediate and
+    // unshifted store data cross the existing FF boundary; address, mask and
+    // alignment are computed from that resident state. update_valid timing,
+    // handshake and exception priority are unchanged (not an extra stage).
+    typedef struct packed {
+      update_payload_t metadata;
+      logic [XLEN-1:0] base;
+      logic [XLEN-1:0] immediate;
+      logic [XLEN-1:0] store_data;
+    } operand_payload_t;
+    operand_payload_t head_q, tail_q, issue_payload;
+    update_payload_t finished_payload;
     logic pop, push, kill0, kill1;
     logic keep0, keep1;
-    logic head_from_issue, head_from_tail, tail_from_issue;
-    localparam int unsigned PAYLOAD_BITS = $bits(update_payload_t);
+    logic head_capture_issue, head_from_tail, tail_capture_issue;
+
+    function automatic update_payload_t finish_payload(input operand_payload_t payload);
+      update_payload_t result;
+      logic [XLEN-1:0] resident_ea, resident_alignment_mask;
+      logic [BYTE_OFFSET_WIDTH-1:0] resident_byte_offset;
+      resident_ea = address_add(payload.base, payload.immediate);
+      resident_byte_offset = resident_ea[BYTE_OFFSET_WIDTH-1:0];
+      result = payload.metadata;
+      result.address = PADDR_WIDTH'(resident_ea);
+      result.byte_mask = '0;
+      for (int unsigned byte_index=0; byte_index<MEM_BYTES; byte_index++)
+        result.byte_mask[byte_index] = payload.metadata.memory_size >= $clog2(byte_index+1);
+      result.byte_mask = result.byte_mask << resident_byte_offset;
+      result.store_data = MEM_DATA_WIDTH'(payload.store_data) << (int'(resident_byte_offset)*8);
+      resident_alignment_mask = '0;
+      for (int bit_index=0; bit_index<XLEN; bit_index++)
+        if (bit_index<7)
+          resident_alignment_mask[bit_index] = payload.metadata.memory_size > bit_index;
+      result.exception_valid = (payload.metadata.memory_size > BYTE_OFFSET_WIDTH) ||
+        ((resident_ea & resident_alignment_mask) != 0);
+      result.exception_cause = payload.metadata.is_store ?
+        EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
+      result.exception_tval = resident_ea;
+      return result;
+    endfunction
 
     always_comb begin
-      issue_payload.rob_sequence     = issue_rob_sequence_i;
-      issue_payload.is_load          = issue_is_load_i;
-      issue_payload.is_store         = issue_is_store_i;
-      issue_payload.lq_valid         = issue_lq_valid_i;
-      issue_payload.lq_index         = issue_lq_index_i;
-      issue_payload.sq_valid         = issue_sq_valid_i;
-      issue_payload.sq_index         = issue_sq_index_i;
-      issue_payload.address          = physical_address;
-      issue_payload.memory_size      = memory_size_i;
-      issue_payload.byte_mask        = generated_mask;
-      issue_payload.store_data       = generated_store_data;
-      issue_payload.address_valid    = issue_address_valid_i;
-      issue_payload.store_data_valid = issue_is_store_i &&
-                                       issue_store_data_valid_i;
-      issue_payload.exception_valid  = misaligned;
-      issue_payload.exception_cause  = issue_is_store_i ?
-        EXC_STORE_ADDR_MISALIGNED : EXC_LOAD_ADDR_MISALIGNED;
-      issue_payload.exception_tval   = effective_address;
+      issue_payload = '0;
+      issue_payload.metadata.rob_sequence = issue_rob_sequence_i;
+      issue_payload.metadata.is_load = issue_is_load_i;
+      issue_payload.metadata.is_store = issue_is_store_i;
+      issue_payload.metadata.lq_valid = issue_lq_valid_i;
+      issue_payload.metadata.lq_index = issue_lq_index_i;
+      issue_payload.metadata.sq_valid = issue_sq_valid_i;
+      issue_payload.metadata.sq_index = issue_sq_index_i;
+      issue_payload.metadata.memory_size = memory_size_i;
+      issue_payload.metadata.address_valid = issue_address_valid_i;
+      issue_payload.metadata.store_data_valid = issue_is_store_i && issue_store_data_valid_i;
+      issue_payload.base = base_i;
+      issue_payload.immediate = immediate_i;
+      issue_payload.store_data = store_data_i;
     end
+    assign finished_payload = finish_payload(head_q);
 
     assign issue_ready_o = !(update_valid_q && valid1_q) && !flush_valid_i;
     assign pop  = update_valid_q && update_ready_i && !flush_valid_i;
     assign push = issue_valid_i && issue_ready_o;
     assign kill0 = flush_valid_i && update_valid_q &&
-      (flush_all_i || sequence_is_younger(head_q.rob_sequence, flush_sequence_i));
+      (flush_all_i || sequence_is_younger(head_q.metadata.rob_sequence, flush_sequence_i));
     assign kill1 = flush_valid_i && valid1_q &&
-      (flush_all_i || sequence_is_younger(tail_q.rob_sequence, flush_sequence_i));
+      (flush_all_i || sequence_is_younger(tail_q.metadata.rob_sequence, flush_sequence_i));
     assign keep0 = update_valid_q && !kill0;
     assign keep1 = valid1_q && !kill1;
 
-    // Preserve the exact queue/control priority, but express wide payload
-    // updates as disjoint masks. The old case/if priority lowered to a deep
-    // mux chain on every address/data/exception bit, including inactive bits.
-    // No additional state, stage, port or invalid-output behavior is added.
-    always_comb begin
-      head_from_issue = 1'b0;
-      head_from_tail = 1'b0;
-      tail_from_issue = 1'b0;
-      if (flush_valid_i) begin
-        if (!keep0 && keep1) head_from_tail = 1'b1;
-      end else begin
-        case ({push, pop})
-          2'b10: begin
-            if (!update_valid_q) head_from_issue = 1'b1;
-            else tail_from_issue = 1'b1;
-          end
-          2'b01: head_from_tail = 1'b1;
-          2'b11: head_from_issue = 1'b1;
-          default: begin end
-        endcase
-      end
-    end
+    // Pre-capture the incoming data into an EMPTY slot, independently of the
+    // late IQ issue_valid decision. Only push makes that data a valid entry.
+    // With one entry popping, the head can similarly capture its replacement;
+    // with two entries the existing tail, NOT the unaccepted input, moves up.
+    // Valid/ready/occupancy and every valid payload retain their exact cycles.
+    // Invalid payload is intentionally unspecified and may toggle more often.
+    // All state still resets; no extra stage, FF, or queue capacity is added.
+    assign head_capture_issue = !flush_valid_i &&
+      (!update_valid_q || (pop && !valid1_q));
+    assign tail_capture_issue = !flush_valid_i && !valid1_q;
+    assign head_from_tail = flush_valid_i ? (!keep0 && keep1) :
+                           (pop && valid1_q);
     always_ff @(posedge clk_i) begin
       if (!rst_ni) begin
         head_q <= '0;
         tail_q <= '0;
       end else begin
-        head_q <= update_payload_t'(
-          (issue_payload & {PAYLOAD_BITS{head_from_issue}}) |
-          (tail_q & {PAYLOAD_BITS{head_from_tail}}) |
-          (head_q & {PAYLOAD_BITS{!(head_from_issue || head_from_tail)}}));
-        tail_q <= update_payload_t'(
-          (issue_payload & {PAYLOAD_BITS{tail_from_issue}}) |
-          (tail_q & {PAYLOAD_BITS{!tail_from_issue}}));
+        if (head_capture_issue) head_q <= issue_payload;
+        else if (head_from_tail) head_q <= tail_q;
+        if (tail_capture_issue) tail_q <= issue_payload;
       end
     end
 
@@ -373,22 +391,22 @@ module rv_lsu_pipe #(
     end
 
     assign update_valid_o            = update_valid_q;
-    assign update_rob_sequence_o     = head_q.rob_sequence;
-    assign update_is_load_o          = head_q.is_load;
-    assign update_is_store_o         = head_q.is_store;
-    assign update_lq_valid_o         = head_q.lq_valid;
-    assign update_lq_index_o         = head_q.lq_index;
-    assign update_sq_valid_o         = head_q.sq_valid;
-    assign update_sq_index_o         = head_q.sq_index;
-    assign update_address_o          = head_q.address;
-    assign update_memory_size_o      = head_q.memory_size;
-    assign update_byte_mask_o        = head_q.byte_mask;
-    assign update_store_data_o       = head_q.store_data;
-    assign update_address_valid_o    = head_q.address_valid;
-    assign update_store_data_valid_o = head_q.store_data_valid;
-    assign update_exception_valid_o  = head_q.exception_valid;
-    assign update_exception_cause_o  = head_q.exception_cause;
-    assign update_exception_tval_o   = head_q.exception_tval;
+    assign update_rob_sequence_o     = finished_payload.rob_sequence;
+    assign update_is_load_o          = finished_payload.is_load;
+    assign update_is_store_o         = finished_payload.is_store;
+    assign update_lq_valid_o         = finished_payload.lq_valid;
+    assign update_lq_index_o         = finished_payload.lq_index;
+    assign update_sq_valid_o         = finished_payload.sq_valid;
+    assign update_sq_index_o         = finished_payload.sq_index;
+    assign update_address_o          = finished_payload.address;
+    assign update_memory_size_o      = finished_payload.memory_size;
+    assign update_byte_mask_o        = finished_payload.byte_mask;
+    assign update_store_data_o       = finished_payload.store_data;
+    assign update_address_valid_o    = finished_payload.address_valid;
+    assign update_store_data_valid_o = finished_payload.store_data_valid;
+    assign update_exception_valid_o  = finished_payload.exception_valid;
+    assign update_exception_cause_o  = finished_payload.exception_cause;
+    assign update_exception_tval_o   = finished_payload.exception_tval;
   end
 
 `ifndef SYNTHESIS

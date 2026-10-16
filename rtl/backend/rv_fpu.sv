@@ -382,6 +382,26 @@ module rv_fpu #(
     return shifted;
   endfunction
 
+  // Reduce the lower-bit sticky predicate in an explicit balanced tree.
+  // A conditional sticky |= magnitude[i] loop can become MAGW serial muxes
+  // after the late exponent/shift decision. The threshold remains unsigned
+  // seven-bit, including all out-of-range encodings; no cycle/state changes.
+  function automatic logic magnitude_below(
+    input logic [MAGW-1:0] magnitude,
+    input logic [6:0] exclusive_limit
+  );
+    localparam int LEAVES = 1 << $clog2(MAGW);
+    logic [2*LEAVES-1:1] tree;
+    for (int bit_index=0; bit_index<LEAVES; bit_index++) begin
+      if (bit_index<MAGW)
+        tree[LEAVES+bit_index] = magnitude[bit_index] && (7'(bit_index)<exclusive_limit);
+      else tree[LEAVES+bit_index] = 1'b0;
+    end
+    for (int node=LEAVES-1; node>0; node--)
+      tree[node] = tree[2*node] | tree[2*node+1];
+    return tree[1];
+  endfunction
+
   function automatic fp_calc_t pack_finite(
     input logic sign,
     input logic [MAGW-1:0] magnitude,
@@ -455,9 +475,7 @@ module rv_fpu #(
         shift_minus1 = shift_unsigned - 7'd1;
         retained = magnitude >> shift_unsigned;
         guard_bit = magnitude[shift_minus1];
-        for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
-          if (7'(bit_index) < shift_minus1)
-            sticky_bit |= magnitude[bit_index];
+        sticky_bit |= magnitude_below(magnitude, shift_minus1);
       end else begin
         shift_unsigned = 7'(-shift_amount);
         retained = magnitude << shift_unsigned;
@@ -496,9 +514,7 @@ module rv_fpu #(
           shift_minus1 = shift_unsigned - 7'd1;
           retained = magnitude >> shift_unsigned;
           guard_bit = magnitude[shift_minus1];
-          for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
-            if (7'(bit_index) < shift_minus1)
-              sticky_bit |= magnitude[bit_index];
+          sticky_bit |= magnitude_below(magnitude, shift_minus1);
         end else begin
           sticky_bit |= |magnitude;
         end
@@ -628,9 +644,7 @@ module rv_fpu #(
         shift_minus1 = shift_unsigned - 7'd1;
         retained_wide = magnitude >> shift_unsigned;
         norm.guard_bit = magnitude[shift_minus1];
-        for (integer bit_index = 0; bit_index < int'(MAGW); bit_index++)
-          if (7'(bit_index) < shift_minus1)
-            sticky |= magnitude[bit_index];
+        sticky |= magnitude_below(magnitude, shift_minus1);
       end else begin
         sticky |= |magnitude;
       end

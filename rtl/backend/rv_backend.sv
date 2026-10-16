@@ -8,6 +8,8 @@ module rv_backend #(
   parameter bit DIV_TAG_PIPELINE = rv_ooo_pkg::CORE_CFG_DIV_TAG_PIPELINE,
   parameter bit INT_ISSUE_PIPELINE = rv_ooo_pkg::CORE_CFG_INT_ISSUE_PIPELINE,
   parameter bit SYSTEM_RESULT_PIPELINE = rv_ooo_pkg::CORE_CFG_SYSTEM_RESULT_PIPELINE,
+  parameter bit ROB_COMPLETION_PIPELINE = rv_ooo_pkg::CORE_CFG_ROB_COMPLETION_PIPELINE,
+  parameter bit LSU_VALIDATION_PIPELINE = rv_ooo_pkg::CORE_CFG_LSU_VALIDATION_PIPELINE,
   parameter bit AGU_EA_PRECOMPUTE = rv_ooo_pkg::CORE_CFG_AGU_EA_PRECOMPUTE,
   parameter int unsigned FPU_LATENCY = rv_ooo_pkg::CORE_CFG_FPU_LATENCY,
   parameter int unsigned XLEN = 32,
@@ -1806,17 +1808,21 @@ module rv_backend #(
     for (int unsigned lane = 0; lane < 2; lane++) begin
       lsu_issue_valid[lane] = port_valid[2+lane] &&
         ((port_fu[2+lane] == FU_LOAD) || (port_fu[2+lane] == FU_STORE));
-      lsu_issue_sequence[lane] = port_sequence[2+lane];
-      lsu_issue_is_load[lane] = port_fu[2+lane] == FU_LOAD;
-      lsu_issue_is_store[lane] = port_fu[2+lane] == FU_STORE;
+      // Payload can be prepared before selected_port_valid/flush settles.
+      // Only the UNCHANGED issue_valid && issue_ready authorizes an entry.
+      // In particular, do not put late port-valid gating ahead of the AGU
+      // size decode, byte-mask generator, or wide data/metadata registers.
+      lsu_issue_sequence[lane] = cand_sequence[port_candidate[2+lane]];
+      lsu_issue_is_load[lane] = cand_fu[port_candidate[2+lane]] == FU_LOAD;
+      lsu_issue_is_store[lane] = cand_fu[port_candidate[2+lane]] == FU_STORE;
       lsu_issue_address_valid[lane] = lsu_issue_is_load[lane] ||
-        port_store_address_valid[2+lane];
+        cand_store_address_valid[port_candidate[2+lane]];
       lsu_issue_store_data_valid[lane] =
-        lsu_issue_is_store[lane] && port_store_data_valid[2+lane];
-      lsu_issue_lq_valid[lane] = port_fu[2+lane] == FU_LOAD;
-      lsu_issue_lq_index[lane] = port_lq_index[2+lane];
-      lsu_issue_sq_valid[lane] = port_fu[2+lane] == FU_STORE;
-      lsu_issue_sq_index[lane] = port_sq_index[2+lane];
+        lsu_issue_is_store[lane] && cand_store_data_valid[port_candidate[2+lane]];
+      lsu_issue_lq_valid[lane] = cand_fu[port_candidate[2+lane]] == FU_LOAD;
+      lsu_issue_lq_index[lane] = cand_lq_index[port_candidate[2+lane]];
+      lsu_issue_sq_valid[lane] = cand_fu[port_candidate[2+lane]] == FU_STORE;
+      lsu_issue_sq_index[lane] = cand_sq_index[port_candidate[2+lane]];
       // Data is don't-care until issue_valid && issue_ready. Keep the late
       // selected-port-valid/flush reduction out of the XLEN-wide AGU adder.
       // Metadata and all side effects retain the original gated port bundle.
@@ -1831,13 +1837,27 @@ module rv_backend #(
         lsu_issue_base[lane] = cand_operand0[port_candidate[2+lane]];
         lsu_issue_immediate[lane] = cand_immediate[port_candidate[2+lane]];
       end
-      lsu_issue_store_data[lane] = port_operand1[2+lane];
-      lsu_issue_size[lane] = port_mem_size[2+lane];
+      lsu_issue_store_data[lane] = cand_operand1[port_candidate[2+lane]];
+      lsu_issue_size[lane] = cand_mem_size[port_candidate[2+lane]];
     end
   end
 
 `ifndef SYNTHESIS
   for (genvar lane=0; lane<2; lane++) begin : g_lsu_route_check
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      lsu_issue_valid[lane] |->
+        ({lsu_issue_sequence[lane], lsu_issue_is_load[lane], lsu_issue_is_store[lane],
+          lsu_issue_address_valid[lane], lsu_issue_store_data_valid[lane],
+          lsu_issue_lq_valid[lane], lsu_issue_lq_index[lane],
+          lsu_issue_sq_valid[lane], lsu_issue_sq_index[lane],
+          lsu_issue_store_data[lane], lsu_issue_size[lane]} ==
+         {port_sequence[2+lane], (port_fu[2+lane] == FU_LOAD),
+          (port_fu[2+lane] == FU_STORE),
+          ((port_fu[2+lane] == FU_LOAD) || port_store_address_valid[2+lane]),
+          ((port_fu[2+lane] == FU_STORE) && port_store_data_valid[2+lane]),
+          (port_fu[2+lane] == FU_LOAD), port_lq_index[2+lane],
+          (port_fu[2+lane] == FU_STORE), port_sq_index[2+lane],
+          port_operand1[2+lane], port_mem_size[2+lane]}));
     assert property (@(posedge clk_i) disable iff (!rst_ni)
       lsu_issue_valid[lane] |->
         (lsu_candidate_address_add(lsu_issue_base[lane], lsu_issue_immediate[lane]) ==
@@ -1939,6 +1959,8 @@ module rv_backend #(
     logic [4:0]                fflags;
   } wb_payload_t;
   wb_payload_t [WB_SOURCES-1:0] raw_payload, wb_payload;
+  wb_payload_t [1:0] validation_payload;
+  logic [1:0] validation_valid, validation_ready;
   logic [WB_SOURCES-1:0] skid_valid_q;
   wb_payload_t [WB_SOURCES-1:0] skid_q;
   logic [WB_SOURCES-1:0] wb_source_valid, wb_source_ready, wb_source_live;
@@ -1956,6 +1978,12 @@ module rv_backend #(
   exception_code_e [3:0] complete_cause;
   logic [3:0][XLEN-1:0] complete_tval,complete_target;
   logic [3:0][4:0] complete_fflags;
+  logic [3:0] rob_complete_valid, rob_complete_exception, rob_complete_mispredict;
+  logic [3:0][ROB_SEQ_WIDTH-1:0] rob_complete_sequence;
+  exception_code_e [3:0] rob_complete_cause;
+  logic [3:0][XLEN-1:0] rob_complete_tval, rob_complete_target;
+  logic [3:0][4:0] rob_complete_fflags;
+  logic head_completion_inflight;
 
   logic head_is_ecall, head_is_mret, head_is_wfi, head_is_fence,
         head_is_fence_i, head_special_request;
@@ -2009,9 +2037,16 @@ module rv_backend #(
   assign head_is_special_instruction = head_is_csr_instruction ||
     head_is_ecall || head_is_mret || head_is_wfi || head_is_fence ||
     head_is_fence_i;
+  // The system-result FIFO can drain one edge before ROB.complete changes.
+  // Do not execute the same CSR/counter/fence again during that interval.
+  assign head_completion_inflight = ROB_COMPLETION_PIPELINE &&
+    ((rob_complete_valid[0] && (rob_complete_sequence[0] == rob_head_sequence)) ||
+     (rob_complete_valid[1] && (rob_complete_sequence[1] == rob_head_sequence)) ||
+     (rob_complete_valid[2] && (rob_complete_sequence[2] == rob_head_sequence)) ||
+     (rob_complete_valid[3] && (rob_complete_sequence[3] == rob_head_sequence)));
   assign head_special_request = head_is_special_instruction &&
     !rob_head_complete && !flush_valid && !system_redirect_pending_q &&
-    !system_result_pending_head;
+    !system_result_pending_head && !head_completion_inflight;
 
   always_comb begin
     case (rob_head_instruction[13:12])
@@ -2344,7 +2379,13 @@ module rv_backend #(
       raw_payload[src].mispredict    = source_mispredict[src];
       raw_payload[src].branch_target = source_branch_target[src];
       raw_payload[src].fflags        = source_fflags[src];
-      if ((src >= SKID_FIRST) && (src <= SKID_LAST) && skid_valid_q[src]) begin
+      if (LSU_VALIDATION_PIPELINE && ((src == 5) || (src == 6))) begin
+        // The FIFO preserves older entries on a selective flush and performs
+        // no pop on that edge. Do not let WB consume the same survivor twice.
+        wb_source_valid[src] = validation_valid[src-5] && !flush_valid;
+        wb_payload[src]      = validation_payload[src-5];
+        source_ready[src]    = validation_ready[src-5];
+      end else if ((src >= SKID_FIRST) && (src <= SKID_LAST) && skid_valid_q[src]) begin
         wb_source_valid[src] = 1'b1;
         wb_payload[src]      = skid_q[src];
         source_ready[src]    = 1'b0;
@@ -2368,6 +2409,52 @@ module rv_backend #(
     end
   end
 
+  // An address/PMP verdict does not claim a PRF destination, but its late
+  // valid formerly reached WB union ranks and every other PRF write mux.
+  // Buffer JUST those two completion streams. The producer/LSQ handshake
+  // still occurs together; stores remain invisible until in-order commit.
+  // Request-ready is registered occupancy, not a new WB->AGU ready path.
+  if (LSU_VALIDATION_PIPELINE) begin : g_validation_pipeline
+    for (genvar lane=0; lane<2; lane++) begin : g_lane
+      localparam int SRC=5+lane;
+      rv_exec_result_buffer #(.XLEN(XLEN),.ROB_SEQ_WIDTH(ROB_SEQ_WIDTH),
+        .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),.DEPTH(2)) u_buffer (
+        .clk_i, .rst_ni,
+        .request_valid_i(source_valid[SRC]),.request_ready_o(validation_ready[lane]),
+        .request_at_head_next_o(),.pending_valid_o(),.pending_sequence_o(),
+        .pending_destination_valid_o(),.pending_destination_class_o(),
+        .pending_destination_phys_o(),.pending_data_o(),.pending_exception_valid_o(),
+        .request_sequence_i(source_sequence[SRC]),
+        .request_destination_valid_i(source_dst_valid[SRC]),
+        .request_destination_class_i(source_dst_class[SRC]),
+        .request_destination_phys_i(source_dst_phys[SRC]),.request_data_i(source_data[SRC]),
+        .request_exception_valid_i(source_exception[SRC]),
+        .request_exception_cause_i(source_exception_cause[SRC]),
+        .request_exception_tval_i(source_exception_tval[SRC]),
+        .request_branch_mispredict_i(source_mispredict[SRC]),
+        .request_branch_target_i(source_branch_target[SRC]),.request_fflags_i(source_fflags[SRC]),
+        .flush_valid_i(flush_valid),.flush_all_i(flush_all),.flush_sequence_i(flush_sequence),
+        .result_valid_o(validation_valid[lane]),
+        .result_ready_i(wb_source_ready[SRC] && !flush_valid),
+        .result_sequence_o(validation_payload[lane].sequence_id),
+        .result_destination_valid_o(validation_payload[lane].dst_valid),
+        .result_destination_class_o(validation_payload[lane].dst_class),
+        .result_destination_phys_o(validation_payload[lane].dst_phys),
+        .result_data_o(validation_payload[lane].data),
+        .result_exception_valid_o(validation_payload[lane].exception),
+        .result_exception_cause_o(validation_payload[lane].cause),
+        .result_exception_tval_o(validation_payload[lane].tval),
+        .result_branch_mispredict_o(validation_payload[lane].mispredict),
+        .result_branch_target_o(validation_payload[lane].branch_target),
+        .result_fflags_o(validation_payload[lane].fflags)
+      );
+    end
+  end else begin : g_validation_direct
+    assign validation_valid='0;
+    assign validation_ready='0;
+    assign validation_payload='0;
+  end
+
   // A presented result that the arbiter does not take (write or discard) is
   // captured and presented from the skid until it is taken.  The arbiter's
   // ready already covers flush and ROB-liveness discards.
@@ -2377,7 +2464,9 @@ module rv_backend #(
       skid_q <= '0;
     end else begin
       for (int unsigned src = SKID_FIRST; src <= SKID_LAST; src++) begin
-        if (skid_valid_q[src]) begin
+        if (LSU_VALIDATION_PIPELINE && ((src == 5) || (src == 6))) begin
+          // These streams use the registered FIFO, not a fall-through skid.
+        end else if (skid_valid_q[src]) begin
           if (wb_source_ready[src])
             skid_valid_q[src] <= 1'b0;
         end else if (source_valid[src] && !wb_source_ready[src]) begin
@@ -2535,6 +2624,58 @@ module rv_backend #(
     .complete_branch_mispredict_o(complete_mispredict),
     .complete_branch_target_o(complete_target),.complete_fflags_o(complete_fflags));
 
+  if (ROB_COMPLETION_PIPELINE) begin : g_rob_completion_pipeline
+    typedef struct packed {
+      logic valid;
+      logic [ROB_SEQ_WIDTH-1:0] sequence_id;
+      logic exception_valid;
+      exception_code_e exception_cause;
+      logic [XLEN-1:0] exception_tval;
+      logic branch_mispredict;
+      logic [XLEN-1:0] branch_target;
+      logic [4:0] fflags;
+    } completion_t;
+    completion_t [3:0] completion_d, completion_q;
+    for (genvar slot = 0; slot < 4; slot++) begin : g_slot
+      assign completion_d[slot] = '{
+        valid: complete_valid[slot], sequence_id: complete_sequence[slot],
+        exception_valid: complete_exception[slot],
+        exception_cause: complete_cause[slot], exception_tval: complete_tval[slot],
+        branch_mispredict: complete_mispredict[slot],
+        branch_target: complete_target[slot], fflags: complete_fflags[slot]
+      };
+      // All four ROB input lanes accept each edge. Do not kill an older
+      // accepted payload just because a selective flush also occurs: ROB
+      // checks resident generation and current flush age on delivery.
+      always_ff @(posedge clk_i) begin
+        if (!rst_ni) completion_q[slot] <= '0;
+        else completion_q[slot] <= completion_d[slot];
+      end
+      assign rob_complete_valid[slot] = completion_q[slot].valid;
+      assign rob_complete_sequence[slot] = completion_q[slot].sequence_id;
+      assign rob_complete_exception[slot] = completion_q[slot].exception_valid;
+      assign rob_complete_cause[slot] = completion_q[slot].exception_cause;
+      assign rob_complete_tval[slot] = completion_q[slot].exception_tval;
+      assign rob_complete_mispredict[slot] = completion_q[slot].branch_mispredict;
+      assign rob_complete_target[slot] = completion_q[slot].branch_target;
+      assign rob_complete_fflags[slot] = completion_q[slot].fflags;
+`ifndef SYNTHESIS
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+        $past(rst_ni) |-> (completion_q[slot] == $past(completion_d[slot])))
+        else $error("ROB completion stage payload/order mismatch slot=%0d", slot);
+`endif
+    end
+  end else begin : g_rob_completion_direct
+    assign rob_complete_valid = complete_valid;
+    assign rob_complete_sequence = complete_sequence;
+    assign rob_complete_exception = complete_exception;
+    assign rob_complete_cause = complete_cause;
+    assign rob_complete_tval = complete_tval;
+    assign rob_complete_mispredict = complete_mispredict;
+    assign rob_complete_target = complete_target;
+    assign rob_complete_fflags = complete_fflags;
+  end
+
   rv_rob #(.XLEN(XLEN),.ROB_ENTRIES(ROB_ENTRIES),.SEQ_WIDTH(ROB_SEQ_WIDTH),
     .PHYS_TAG_WIDTH(PHYS_TAG_WIDTH),.LQ_INDEX_WIDTH(LQ_WIDTH),
     .SQ_INDEX_WIDTH(SQ_WIDTH),.COMPLETE_PORTS(4),
@@ -2554,14 +2695,14 @@ module rv_backend #(
     .alloc_serializing_i(dec_serializing),
     .alloc_exception_valid_i(backend_exception),
     .alloc_exception_cause_i(backend_exception_cause),
-    .alloc_exception_tval_i(backend_exception_tval),.complete_valid_i(complete_valid),
-    .complete_sequence_i(complete_sequence),
-    .complete_exception_valid_i(complete_exception),
-    .complete_exception_cause_i(complete_cause),
-    .complete_exception_tval_i(complete_tval),
-    .complete_fflags_i(complete_fflags),
-    .complete_branch_mispredict_i(complete_mispredict),
-    .complete_branch_target_i(complete_target),
+    .alloc_exception_tval_i(backend_exception_tval),.complete_valid_i(rob_complete_valid),
+    .complete_sequence_i(rob_complete_sequence),
+    .complete_exception_valid_i(rob_complete_exception),
+    .complete_exception_cause_i(rob_complete_cause),
+    .complete_exception_tval_i(rob_complete_tval),
+    .complete_fflags_i(rob_complete_fflags),
+    .complete_branch_mispredict_i(rob_complete_mispredict),
+    .complete_branch_target_i(rob_complete_target),
     .live_query_sequence_i(wb_source_sequence),.live_query_valid_o(wb_source_live),
     .retire_valid_o(retire_valid),.retire_ready_i(retire_ready),
     .retire_sequence_o(retire_sequence),.retire_pc_o(retire_pc),
@@ -2607,7 +2748,19 @@ module rv_backend #(
   } checkpoint_branch_meta_t;
   checkpoint_branch_meta_t checkpoint_branch_meta_q[0:BR_CHECKPOINTS-1];
   logic [CP_WIDTH-1:0] resolve_metadata_cp, execute_metadata_cp;
-  assign resolve_metadata_cp = branch_cp_q[fast_result_sequence[0]];
+  // Unresolved branches own resident rename checkpoints. Compare their
+  // generation tags directly instead of indexing 256-entry sequence tables
+  // after selecting the fast-result FIFO head. No extra resolve cycle.
+  logic [BR_CHECKPOINTS-1:0] resolve_checkpoint_match;
+  always_comb begin
+    resolve_metadata_cp = '0;
+    for (int checkpoint = 0; checkpoint < BR_CHECKPOINTS; checkpoint++) begin
+      resolve_checkpoint_match[checkpoint] = cp_valid[checkpoint] &&
+        (cp_sequence_q[checkpoint] == fast_result_sequence[0]);
+      resolve_metadata_cp |= CP_WIDTH'(checkpoint) &
+        {CP_WIDTH{resolve_checkpoint_match[checkpoint]}};
+    end
+  end
   assign execute_metadata_cp = branch_cp_q[branch_execute_sequence];
 `ifndef SYNTHESIS
   // Original sequence-indexed storage is a simulation-only oracle. Never
@@ -2621,9 +2774,21 @@ module rv_backend #(
 `endif
   logic branch_actual_taken_q[0:SEQ_SPACE-1];
   logic branch_resolve_valid,branch_resolve_live,branch_resolve_drop;
-  assign branch_resolve_valid=fast_result_valid[0]&&
-    branch_valid_q[fast_result_sequence[0]]&&!branch_resolved_q[fast_result_sequence[0]];
+  assign branch_resolve_valid=fast_result_valid[0]&&(|resolve_checkpoint_match);
   assign branch_resolve_live=wb_source_live[0];
+`ifndef SYNTHESIS
+  // Keep the original sequence-table lookup as a simulation oracle. On
+  // invalid/non-live resolve ports metadata is not an architectural value.
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    fast_result_valid[0] && branch_resolve_live |->
+      ((|resolve_checkpoint_match) == (branch_valid_q[fast_result_sequence[0]] &&
+        !branch_resolved_q[fast_result_sequence[0]])));
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    fast_result_valid[0] && branch_resolve_live |-> $onehot0(resolve_checkpoint_match));
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    branch_resolve_valid && branch_resolve_live |->
+      resolve_metadata_cp == branch_cp_q[fast_result_sequence[0]]);
+`endif
   always_comb begin
     bp_resolve_valid_o = branch_resolve_valid && branch_resolve_live;
     bp_resolve_pc_o = checkpoint_branch_meta_q[resolve_metadata_cp].pc;
@@ -2687,7 +2852,7 @@ module rv_backend #(
     .trap_redirect_pc_i(architectural_redirect_pc),
     .resolve_valid_i(branch_resolve_valid),.resolve_live_i(branch_resolve_live),
     .resolve_sequence_i(fast_result_sequence[0]),
-    .resolve_checkpoint_id_i(branch_cp_q[fast_result_sequence[0]]),
+    .resolve_checkpoint_id_i(resolve_metadata_cp),
     .resolve_mispredict_i(fast_result_mispredict[0]),
     .resolve_next_pc_i(fast_result_target[0]),.redirect_valid_o(redirect_valid_o),
     .redirect_pc_o(redirect_pc_o),.flush_valid_o(flush_valid),

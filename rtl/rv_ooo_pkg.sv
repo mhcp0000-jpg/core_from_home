@@ -29,9 +29,17 @@ package rv_ooo_pkg;
   // Register head-only system results before WB. CSR writes still commit in
   // ROB order; normal ALU/load result latency and ROB completion stay direct.
   localparam bit CORE_CFG_SYSTEM_RESULT_PIPELINE = 1'b1;
+  // Preserve WB/PRF/wakeup cycles; register only the four ROB completion
+  // payloads. Head-only system operations wait for this in-flight result.
+  localparam bit CORE_CFG_ROB_COMPLETION_PIPELINE = 1'b1;
+  // Register only AGU store/address-fault completions (WB sources 5/6).
+  // Normal load data/forwarding stays direct. Two entries isolate PMP->WB.
+  localparam bit CORE_CFG_LSU_VALIDATION_PIPELINE = 1'b1;
   // Compute each IQ candidate's EA before selecting its LSU port. No extra
   // cycle; the unchanged AGU receives {base=selected EA, immediate=0}.
-  localparam bit CORE_CFG_AGU_EA_PRECOMPUTE = 1'b1;
+  // AGU DEPTH2 stores operands; finish EA/mask/alignment AFTER its existing
+  // register, without adding an issue/update cycle. Keep tool defaults equal.
+  localparam bit CORE_CFG_AGU_EA_PRECOMPUTE = 1'b0;
   localparam int unsigned CORE_CFG_BR_CHECKPOINTS = 8;
   // Fast FPU arithmetic stages. 6 places a register between mantissa-product/
   // exponent preparation and sticky alignment. FDIV/FSQRT remain iterative.

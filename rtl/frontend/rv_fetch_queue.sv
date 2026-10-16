@@ -102,8 +102,49 @@ module rv_fetch_queue #(
     block_fault_q[head_block_q + BLOCK_INDEX_WIDTH'(1)];
   assign two_block_data = {next_block_data, current_block_data};
   assign two_block_fault = {next_block_fault, current_block_fault};
-  assign aligned_data = two_block_data >> (head_parcel_offset_q * 16);
-  assign aligned_fault = two_block_fault >> head_parcel_offset_q;
+  // Decode block and parcel position together, before selecting any data.
+  // Every leaf is a CONSTANT physical parcel address, including wraparound.
+  // This removes the serial block-read mux -> variable barrel shifter cone.
+  // These are wires only: queue state, fill/consume timing and reset remain
+  // identical, including stale payload when out_valid_o is zero.
+  localparam int unsigned PARCEL_CHOICES = QUEUE_BLOCKS * FETCH_PARCELS;
+  logic [PARCEL_CHOICES-1:0] parcel_position_select;
+  logic [PARCEL_CHOICES-1:0] parcel_position_q;
+  logic [PARCEL_CHOICES-1:0] position_plus1,position_plus2,position_plus3,position_plus4;
+  assign parcel_position_select = parcel_position_q;
+  // Shadow encoding of the SAME resident head address, not an added fetch
+  // stage. Constant rotations are available before late consumption arrives.
+  assign position_plus1 = {parcel_position_q[PARCEL_CHOICES-2:0],parcel_position_q[PARCEL_CHOICES-1]};
+  assign position_plus2 = {parcel_position_q[PARCEL_CHOICES-3:0],parcel_position_q[PARCEL_CHOICES-1 -: 2]};
+  assign position_plus3 = {parcel_position_q[PARCEL_CHOICES-4:0],parcel_position_q[PARCEL_CHOICES-1 -: 3]};
+  assign position_plus4 = {parcel_position_q[PARCEL_CHOICES-5:0],parcel_position_q[PARCEL_CHOICES-1 -: 4]};
+  for (genvar output_parcel = 0; output_parcel < 2*FETCH_PARCELS; output_parcel++) begin : g_parallel_parcel
+    wire [15:0] data_tree [0:2*PARCEL_CHOICES-2];
+    wire fault_tree [0:2*PARCEL_CHOICES-2];
+    for (genvar block = 0; block < QUEUE_BLOCKS; block++) begin : g_block
+      for (genvar offset = 0; offset < FETCH_PARCELS; offset++) begin : g_offset
+        localparam int CHOICE = block*FETCH_PARCELS+offset;
+        localparam int PHYSICAL = (CHOICE+output_parcel) % PARCEL_CHOICES;
+        if (offset+output_parcel < 2*FETCH_PARCELS) begin : g_in_window
+          assign data_tree[PARCEL_CHOICES-1+CHOICE] =
+            block_data_q[PHYSICAL/FETCH_PARCELS][(PHYSICAL%FETCH_PARCELS)*16 +: 16] &
+            {16{parcel_position_select[CHOICE]}};
+          assign fault_tree[PARCEL_CHOICES-1+CHOICE] =
+            block_fault_q[PHYSICAL/FETCH_PARCELS][PHYSICAL%FETCH_PARCELS] &&
+            parcel_position_select[CHOICE];
+        end else begin : g_shifted_zero
+          assign data_tree[PARCEL_CHOICES-1+CHOICE] = '0;
+          assign fault_tree[PARCEL_CHOICES-1+CHOICE] = 1'b0;
+        end
+      end
+    end
+    for (genvar node = 0; node < PARCEL_CHOICES-1; node++) begin : g_reduce
+      assign data_tree[node] = data_tree[2*node+1] | data_tree[2*node+2];
+      assign fault_tree[node] = fault_tree[2*node+1] | fault_tree[2*node+2];
+    end
+    assign aligned_data[output_parcel*16 +: 16] = data_tree[0];
+    assign aligned_fault[output_parcel] = fault_tree[0];
+  end
   assign parcel0 = aligned_data[15:0];
   assign parcel1 = aligned_data[31:16];
   assign parcel2 = aligned_data[47:32];
@@ -175,7 +216,7 @@ module rv_fetch_queue #(
       length1_parcels = (lane1_first_parcel[1:0] == 2'b11) ? 2 : 1;
       if (second_complete) begin
         out_valid_o[1] = 1'b1;
-        out_pc_o[1] = head_pc_q + XLEN'(lane1_offset_parcels * 2);
+        out_pc_o[1] = head_pc_after_lane0;
         if (lane1_offset_parcels == 1) begin
           out_instruction_o[1][15:0] = parcel1;
           out_fault_o[1] = fault1;
@@ -197,7 +238,7 @@ module rv_fetch_queue #(
     end
     if (UNGATED_PAYLOAD) begin
       out_pc_o[0] = head_pc_q;
-      out_pc_o[1] = head_pc_q + ((parcel0[1:0] == 2'b11) ? XLEN'(4) : XLEN'(2));
+      out_pc_o[1] = first_is_word ? head_pc_plus4 : head_pc_plus2;
       out_instruction_o[0] = (parcel0[1:0] == 2'b11) ? {parcel1,parcel0} : {16'b0,parcel0};
       if (parcel0[1:0] != 2'b11) begin
         out_instruction_o[1] = (parcel1[1:0] == 2'b11) ? {parcel2,parcel1} : {16'b0,parcel1};
@@ -342,7 +383,36 @@ module rv_fetch_queue #(
   end
   assign empty_o = (block_count_q == 0);
 
+  // Retain all original binary state updates above for the queue contract.
+  // This redundant read encoding must track them on reset, atomic redirect,
+  // normal consume, and the empty-queue fill special case (last writer wins).
+  always_ff @(posedge clk_i) begin : p_parcel_position
+    if (!rst_ni) begin
+      parcel_position_q <= PARCEL_CHOICES'(1);
+    end else if (redirect_valid_i) begin
+      parcel_position_q <= PARCEL_CHOICES'(1) << redirect_pc_i[FETCH_ADDR_LSB-1:1];
+    end else begin
+      if (consume_parcels != 0) begin
+        case (consume_parcels)
+          3'd1: parcel_position_q <= position_plus1;
+          3'd2: parcel_position_q <= position_plus2;
+          3'd3: parcel_position_q <= position_plus3;
+          3'd4: parcel_position_q <= position_plus4;
+          default: parcel_position_q <= parcel_position_q;
+        endcase
+      end
+      if ((SEPARATE_NORMAL_FILL_ADDRESS ? normal_fill_valid_i : fill_valid_i) &&
+          fill_ready_o && (block_count_q == 0)) begin
+        parcel_position_q <= PARCEL_CHOICES'(1) <<
+          (int'(tail_block_q)*FETCH_PARCELS+fill_head_offset);
+      end
+    end
+  end
+
 `ifndef SYNTHESIS
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    parcel_position_q == (PARCEL_CHOICES'(1) <<
+      (int'(head_block_q)*FETCH_PARCELS+int'(head_parcel_offset_q))));
   assert property (@(posedge clk_i) disable iff (!rst_ni)
     consume_blocks == ((int'(head_parcel_offset_q) + int'(consume_parcels)) >= FETCH_PARCELS));
   assert property (@(posedge clk_i) disable iff (!rst_ni)

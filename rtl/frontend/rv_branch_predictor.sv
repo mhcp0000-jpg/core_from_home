@@ -93,6 +93,10 @@ module rv_branch_predictor #(
   logic [RAS_PTR_BITS-1:0] speculative_ras_pointer_q,
                            committed_ras_pointer_q;
   logic [RAS_PTR_BITS:0] speculative_ras_count_q, committed_ras_count_q;
+  // Derived resident words: [0]=pointer-1, [1]=pointer-2, [2]=pointer.
+  // These registers mirror the EXISTING speculative RAS after each edge.
+  // No prediction stage/latency or same-cycle call write-through is added.
+  logic [XLEN-1:0] ras_read_cache_q [0:2], ras_read_cache_d [0:2];
 
   logic [1:0] query_conditional, query_direct_jump, query_indirect_jump;
   logic [1:0] query_call, query_return;
@@ -190,6 +194,11 @@ module rv_branch_predictor #(
     assign sequential_btb_lookup[0]=lookup_btb_sequential(query_pc_i[0],2'd1);
     assign sequential_btb_lookup[1]=lookup_btb_sequential(query_pc_i[0],2'd2);
 `ifndef SYNTHESIS
+    // Existing SEQUENTIAL_QUERIES contract includes invalid payloads. The
+    // tightly coupled UNGATED_PAYLOAD queue drives sequential PCs every cycle.
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      query_pc_i[1] == query_pc_i[0] +
+        ((query_inst_len_i[0]==INST_LEN_16) ? XLEN'(2) : XLEN'(4)));
     assert property (@(posedge clk_i) disable iff (!rst_ni)
       query_valid_i[1] |-> query_pc_i[1] ==
         query_pc_i[0]+((query_inst_len_i[0]==INST_LEN_16) ? XLEN'(2) : XLEN'(4)));
@@ -288,7 +297,28 @@ module rv_branch_predictor #(
     input logic [XLEN-1:0] pc,
     input inst_len_e length
   );
-    return pc + ((length == INST_LEN_16) ? XLEN'(2) : XLEN'(4));
+    // The late instruction length selects completed constant increments;
+    // it must not enter the carry chain of the successor-PC addition.
+    logic [XLEN-1:0] plus2, plus4;
+    plus2 = pc + XLEN'(2);
+    plus4 = pc + XLEN'(4);
+    return (length == INST_LEN_16) ? plus2 : plus4;
+  endfunction
+
+  function automatic logic [XLEN-1:0] sequential_pair_pc(
+    input logic [XLEN-1:0] first_pc,
+    input inst_len_e first_length, second_length
+  );
+    // Do not add length1 after a late length0-selected lane1 PC. All sums
+    // begin at the resident first PC; the two lengths select completed sums.
+    // NONE/reserved enum encodings keep the original non-16 => four rule.
+    logic [XLEN-1:0] plus4, plus6, plus8;
+    plus4 = first_pc + XLEN'(4);
+    plus6 = first_pc + XLEN'(6);
+    plus8 = first_pc + XLEN'(8);
+    return (first_length == INST_LEN_16) ?
+      ((second_length == INST_LEN_16) ? plus4 : plus6) :
+      ((second_length == INST_LEN_16) ? plus6 : plus8);
   endfunction
 
   // Shared target add: decode immediate first, then one 4-bit carry-select
@@ -426,6 +456,18 @@ module rv_branch_predictor #(
     logic [PHT_BITS-1:0] history_work;
     logic [RAS_PTR_BITS-1:0] ras_pointer_work;
     logic [RAS_PTR_BITS:0] ras_count_work;
+    logic [RAS_PTR_BITS-1:0] ras_pointer_before_return;
+    logic [XLEN-1:0] ras_target_unchanged, ras_target_after_call,
+                     ras_target_after_return;
+    // Read the three possible lane1 RAS words from resident state BEFORE
+    // lane0's late instruction classification. Select a completed word;
+    // do not put call/return -> pointer arithmetic -> array mux in series.
+    // A same-cycle call deliberately reads the OLD stored word, matching
+    // the original predictor (no new speculative write-through policy).
+    ras_pointer_before_return = speculative_ras_pointer_q - 1'b1;
+    ras_target_unchanged = ras_read_cache_q[0];
+    ras_target_after_call = ras_read_cache_q[2];
+    ras_target_after_return = ras_read_cache_q[1];
     history_work = speculative_history_q;
     ras_pointer_work = speculative_ras_pointer_q;
     ras_count_work = speculative_ras_count_q;
@@ -438,6 +480,20 @@ module rv_branch_predictor #(
     query_btb_way = '0;
 
     for (integer lane = 0; lane < 2; lane++) begin
+      logic ras_available;
+      ras_available = (ras_count_work != 0);
+      if (lane == 1) begin
+        // Call always leaves a nonempty stack; return leaves it nonempty
+        // exactly when the resident count exceeds one. Keep the work-count
+        // itself for snapshots/state updates, but bypass its late add/sub.
+        // Decode directly from inputs: no read of a vector bit assigned
+        // later by another iteration of this same combinational loop.
+        ras_available = (query_valid_i[0] && is_call_instruction(
+          query_instruction_i[0], query_inst_len_i[0])) ? 1'b1 :
+          ((query_valid_i[0] && is_return_instruction(
+            query_instruction_i[0], query_inst_len_i[0])) ?
+            (speculative_ras_count_q > 1) : (speculative_ras_count_q != 0));
+      end
       query_conditional[lane] = is_conditional_branch(
         query_instruction_i[lane], query_inst_len_i[lane]);
       query_direct_jump[lane] = is_direct_jump(
@@ -448,8 +504,9 @@ module rv_branch_predictor #(
         query_instruction_i[lane], query_inst_len_i[lane]);
       query_return[lane] = is_return_instruction(
         query_instruction_i[lane], query_inst_len_i[lane]);
-      query_sequential_pc[lane] = sequential_pc(query_pc_i[lane],
-                                                query_inst_len_i[lane]);
+      query_sequential_pc[lane] = (SEQUENTIAL_QUERIES && lane==1) ?
+        sequential_pair_pc(query_pc_i[0],query_inst_len_i[0],query_inst_len_i[1]) :
+        sequential_pc(query_pc_i[lane],query_inst_len_i[lane]);
       query_direct_target[lane] = calculate_direct_target(
         query_pc_i[lane], query_instruction_i[lane], query_inst_len_i[lane]);
       query_pht_index[lane] = query_pc_i[lane][PHT_BITS:1];
@@ -519,16 +576,28 @@ module rv_branch_predictor #(
          (!query_conditional[lane] && query_direct_jump[lane]) ||
          (!query_conditional[lane] && !query_direct_jump[lane] &&
           query_indirect_jump[lane] &&
-          ((query_return[lane] && (ras_count_work != 0)) || query_btb_hit[lane])));
+          ((query_return[lane] && ras_available) || query_btb_hit[lane])));
       if (query_valid_i[lane] && query_conditional[lane]) begin
         if (prediction_taken_o[lane])
           prediction_target_o[lane] = query_direct_target[lane];
       end else if (query_valid_i[lane] && query_direct_jump[lane]) begin
         prediction_target_o[lane] = query_direct_target[lane];
       end else if (query_valid_i[lane] && query_indirect_jump[lane]) begin
-        if (query_return[lane] && (ras_count_work != 0)) begin
-          prediction_target_o[lane] = speculative_ras_q[
-            (ras_pointer_work == 0) ? RAS_DEPTH-1 : ras_pointer_work-1'b1];
+        if (query_return[lane] && ras_available) begin
+          if (((2**RAS_PTR_BITS) == RAS_DEPTH) && (lane == 1)) begin
+            // Same call-first priority/count guard as the original work
+            // pointer. Non-power-of-two depths retain the old read below.
+            prediction_target_o[lane] =
+              (query_valid_i[0] && query_call[0]) ? ras_target_after_call :
+              ((query_valid_i[0] && query_return[0] &&
+                (speculative_ras_count_q != 0)) ? ras_target_after_return :
+                ras_target_unchanged);
+          end else begin
+            prediction_target_o[lane] =
+              (((RAS_DEPTH & (RAS_DEPTH-1)) == 0) && (lane == 0)) ?
+                ras_read_cache_q[0] : speculative_ras_q[
+              (ras_pointer_work == 0) ? RAS_DEPTH-1 : ras_pointer_work-1'b1];
+          end
         end else if (query_btb_hit[lane]) begin
           prediction_target_o[lane] = query_btb_target[lane];
         end
@@ -752,7 +821,81 @@ module rv_branch_predictor #(
     end
   end
 
+  // Compute the post-edge RAS view independently of the old RAS FF process.
+  // Resolution has priority over redirect, which has priority over prediction.
+  // Redirect copies OLD committed state, including when commit also occurs.
+  // The two write descriptors model original NBA last-writer-wins semantics.
+  always_comb begin : p_ras_read_cache_next
+    logic [RAS_PTR_BITS-1:0] next_pointer;
+    logic [RAS_PTR_BITS:0] next_count;
+    logic use_committed;
+    logic [1:0] write_valid;
+    logic [1:0][RAS_PTR_BITS-1:0] write_address;
+    logic [1:0][XLEN-1:0] write_data;
+    next_pointer = speculative_ras_pointer_q;
+    next_count = speculative_ras_count_q;
+    use_committed = 1'b0;
+    write_valid = '0;
+    write_address = '0;
+    write_data = '0;
+    if (resolve_valid_i) begin
+      if (resolve_mispredict_i) begin
+        next_pointer = RAS_PTR_BITS'(resolve_prediction_i.ras_pointer);
+        if (is_call_instruction(resolve_instruction_i, resolve_inst_len_i)) begin
+          write_valid[0] = 1'b1;
+          write_address[0] = next_pointer;
+          write_data[0] = sequential_pc(resolve_pc_i, resolve_inst_len_i);
+          next_pointer = next_pointer + 1'b1;
+        end else if (is_return_instruction(resolve_instruction_i, resolve_inst_len_i) &&
+                     (resolve_prediction_i.ras_count != 0)) begin
+          next_pointer = next_pointer - 1'b1;
+        end
+      end
+    end else if (redirect_valid_i) begin
+      use_committed = 1'b1;
+      next_pointer = committed_ras_pointer_q;
+    end else begin
+      for (int lane = 0; lane < 2; lane++) begin
+        if (prediction_fire_i[lane] && query_call[lane]) begin
+          write_valid[lane] = 1'b1;
+          write_address[lane] = next_pointer;
+          write_data[lane] = query_sequential_pc[lane];
+          next_pointer = next_pointer + 1'b1;
+          if (next_count < RAS_DEPTH) next_count = next_count + 1'b1;
+        end else if (prediction_fire_i[lane] && query_return[lane] &&
+                     (next_count != 0)) begin
+          next_pointer = next_pointer - 1'b1;
+          next_count = next_count - 1'b1;
+        end
+      end
+    end
+    for (int word = 0; word < 3; word++) begin
+      logic [RAS_PTR_BITS-1:0] read_address;
+      read_address = next_pointer - RAS_PTR_BITS'((word == 0) ? 1 :
+                                                 (word == 1) ? 2 : 0);
+      ras_read_cache_d[word] = use_committed ? committed_ras_q[read_address] :
+                                              speculative_ras_q[read_address];
+      for (int writer = 0; writer < 2; writer++) begin
+        if (write_valid[writer] && (write_address[writer] == read_address))
+          ras_read_cache_d[word] = write_data[writer];
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i) begin : p_ras_read_cache
+    for (int word = 0; word < 3; word++) begin
+      if (!rst_ni) ras_read_cache_q[word] <= '0;
+      else ras_read_cache_q[word] <= ras_read_cache_d[word];
+    end
+  end
+
 `ifndef SYNTHESIS
+  for (genvar word = 0; word < 3; word++) begin : g_ras_read_cache_equal
+    wire [RAS_PTR_BITS-1:0] resident_address = speculative_ras_pointer_q -
+      RAS_PTR_BITS'((word == 0) ? 1 : (word == 1) ? 2 : 0);
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+      ras_read_cache_q[word] == speculative_ras_q[resident_address]);
+  end
   // Sample cross-block handshakes at the clock boundary.  A separate
   // immediate-assertion always_comb can otherwise compare a newly changed
   // prediction_fire_i against the previous delta's prediction_taken_o in a

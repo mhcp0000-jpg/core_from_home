@@ -150,6 +150,7 @@ def main():
     parser.add_argument("--width", type=int, choices=(32, 64), default=32)
     parser.add_argument("--entries", type=int, choices=(4, 7, 48), default=48)
     parser.add_argument("--cycles", type=int, default=60000)
+    parser.add_argument("--package", type=Path, help="Optional source-bound package; no hardware override")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--resume", action="store_true", help="Reuse matching generated C++ after an interrupted build")
     parser.add_argument("--verilator-root", type=Path,
@@ -161,6 +162,7 @@ def main():
     if args.cycles<10000 or args.jobs<1:
         parser.error("cycles>=10000 and jobs>=1 required")
     root = Path(os.path.abspath(__file__)).parent.parent
+    package_path = args.package.absolute() if args.package else root/"rtl/rv_ooo_pkg.sv"
     commit = subprocess.check_output(["git", "rev-parse", "--verify", args.reference+"^{commit}"], cwd=root, text=True).strip()
     reference = subprocess.check_output(["git", "show", commit+":rtl/backend/rv_rob.sv"], cwd=root, text=True, encoding="utf-8")
     reference = re.sub(r"\bmodule\s+rv_rob\b", "module rv_rob_reference", reference, count=1)
@@ -173,7 +175,7 @@ def main():
                   entries=args.entries, cycles=args.cycles,
                   rtl_sha256=hashlib.sha256(current_path.read_bytes()).hexdigest(),
                   rtl_path=str(current_path),
-                  package_sha256=hashlib.sha256((root/"rtl/rv_ooo_pkg.sv").read_bytes()).hexdigest(),
+                  package_sha256=hashlib.sha256(package_path.read_bytes()).hexdigest(),
                   tb_sha256=hashlib.sha256(testbench.encode()).hexdigest(),
                   scope="All original outputs and internal state; finite cycle equivalence, not ISA/formal proof")
     reuse = False
@@ -205,7 +207,7 @@ def main():
         (output/"report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
         if not reuse:
             command([str(verilator), "--cc", "--exe", "--main", "--timing", "--assert", "-Wno-fatal", "-Werror-UNOPTFLAT",
-                     "--top-module", "rob_completion_equiv_tb", "--Mdir", "obj", str(root/"rtl/rv_ooo_pkg.sv").replace("\\","/"),
+                     "--top-module", "rob_completion_equiv_tb", "--Mdir", "obj", str(package_path).replace("\\","/"),
                      str(current_path).replace("\\","/"), "reference.sv", "miter.sv"], "build.log")
         command([make, "-j"+str(args.jobs), "-C", "obj", "-f", "Vrob_completion_equiv_tb.mk",
                  "CXX=g++", "CC=gcc", "LINK=g++", "VM_PARALLEL_BUILDS=1"], "make.log")

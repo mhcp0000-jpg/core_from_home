@@ -2,6 +2,7 @@ param(
   [string]$Baseline = "3f9b0ea",
   [string]$SourceRoot = "",
   [string]$BuildRoot = "",
+  [string]$TestbenchPath = "",
   [string]$VerilatorRoot = "C:\rv_toolchains\verilator-5.050",
   [string]$W64DevkitRoot = "C:\rv_toolchains\w64devkit-2.9.1\w64devkit",
   [int]$BuildJobs = 4
@@ -14,6 +15,11 @@ if(!$SourceRoot){$SourceRoot=$repo}
 $candidateRoot=(Resolve-Path -LiteralPath $SourceRoot).Path
 if($candidateRoot -ne $repo -and !$candidateRoot.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){
   throw 'Candidate source must be inside workspace'
+}
+if(!$TestbenchPath){$TestbenchPath=Join-Path $repo 'tb/unit/frontend/rv_branch_predictor_equiv_tb.sv'}
+$testbenchInput=(Resolve-Path -LiteralPath $TestbenchPath).Path
+if(!$testbenchInput.StartsWith($repo.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){
+  throw 'Testbench must be inside workspace'
 }
 $drive=@("Z","Y","X","W","U","T","S","R") |
   Where-Object { !(Test-Path "$_`:\") } | Select-Object -First 1
@@ -29,6 +35,8 @@ try {
   $locationPushed=$true
   if(!$BuildRoot){$BuildRoot="$drive`:/out/predictor_equivalence"}
   New-Item -ItemType Directory -Force $BuildRoot | Out-Null
+  $testbenchSnapshot="$BuildRoot/testbench.sv"
+  Copy-Item -LiteralPath $testbenchInput -Destination $testbenchSnapshot -Force
   $ref=& git show "${Baseline}:rtl/frontend/rv_branch_predictor.sv"
   if($LASTEXITCODE){throw "Cannot read immutable predictor reference $Baseline"}
   $ref=($ref -join "`n") -replace "module rv_branch_predictor\b","module rv_branch_predictor_ref"
@@ -39,7 +47,9 @@ try {
     candidateSha256=(Get-FileHash "$sourceAlias/rtl/frontend/rv_branch_predictor.sv" -Algorithm SHA256).Hash
     packageSha256=(Get-FileHash "$sourceAlias/rtl/rv_ooo_pkg.sv" -Algorithm SHA256).Hash
     sourceRoot=$candidateRoot
-    testbenchSha256=(Get-FileHash "$drive`:/tb/unit/frontend/rv_branch_predictor_equiv_tb.sv" -Algorithm SHA256).Hash
+    testbenchSha256=(Get-FileHash $testbenchSnapshot -Algorithm SHA256).Hash
+    testbenchInput=$testbenchInput
+    testbenchSnapshotPolicy='Immutable per-run testbench copy; not a hardware parameter override'
     cyclesPerConfiguration=100000
     configurations=@("XLEN32/PHT32/BTB16/WAYS2","XLEN64/PHT32/BTB16/WAYS2",
                      "XLEN32/PHT2048/BTB256/WAYS4","XLEN64/PHT2048/BTB256/WAYS4")
@@ -58,7 +68,7 @@ try {
     & "$VerilatorRoot\bin\verilator_bin.exe" --cc --exe --main --timing --assert -Wno-fatal -Werror-UNOPTFLAT `
       --top-module rv_branch_predictor_equiv_tb --Mdir $build "-GXLEN=$width" "-GPHT_ENTRIES=$pht" `
       "-GBTB_ENTRIES=$btb" "-GBTB_WAYS=$ways" "-GSEQUENTIAL_QUERIES=$sequential" "$sourceAlias/rtl/rv_ooo_pkg.sv" $refPath `
-      "$sourceAlias/rtl/frontend/rv_branch_predictor.sv" "$drive`:/tb/unit/frontend/rv_branch_predictor_equiv_tb.sv" *> "$build/compile.log"
+      "$sourceAlias/rtl/frontend/rv_branch_predictor.sv" $testbenchSnapshot *> "$build/compile.log"
     $ErrorActionPreference=$savedErrorAction
     if($LASTEXITCODE){throw "Predictor generation failed: $build/compile.log"}
     $savedErrorAction=$ErrorActionPreference

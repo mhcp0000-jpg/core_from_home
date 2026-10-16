@@ -28,6 +28,7 @@ def main():
     begin = text.index("  assign head_completion_inflight =")
     end = text.index("\n\n  always_comb begin", begin)
     block = text[begin:end]
+    has_system_pending = 'system_result_pending_head' in block
     if block.count("assign ") != 2 or "assign head_special_request =" not in block:
         raise ValueError("Unexpected actual head gate boundary")
     out = args.out.absolute()
@@ -38,6 +39,7 @@ def main():
     env["PATH"] = str(args.yosys.parent) + os.pathsep + str(args.yosys.parent.parent / "lib") + os.pathsep + env.get("PATH", "")
     report = dict(passed=False, status="prepared" if args.emit_only else "running",
                   backend_sha256=sha(raw), block_sha256=sha(block.encode()), cases=[],
+                  includes_system_result_pending=has_system_pending,
                   scope="Actual extracted pending-head/request gate, arbitrary binary flags/valids/sequences; no cohort assumption; NOT full CSR/ROB/flush/IRQ/CoreMark/ISA/IEEE-X/STA")
     for width, pipelined, negative in [(1,False,False),(1,True,False),
                                      (8,False,False),(8,True,False),
@@ -56,6 +58,7 @@ parameter int ROB_SEQ_WIDTH={width}, parameter bit ROB_COMPLETION_PIPELINE={int(
 input logic [3:0][ROB_SEQ_WIDTH-1:0] rob_complete_sequence,
 input logic [ROB_SEQ_WIDTH-1:0] rob_head_sequence,
 input logic head_is_special_instruction,rob_head_complete,flush_valid,system_redirect_pending_q,
+input logic system_result_pending_head,
 output logic equal_o);
 logic head_completion_inflight,head_special_request;
 {implementation}
@@ -65,7 +68,7 @@ for (genvar slot=0;slot<4;slot++) begin
 end
 wire pending=ROB_COMPLETION_PIPELINE && (|head_matches);
 wire request=head_is_special_instruction && !rob_head_complete && !flush_valid &&
-  !system_redirect_pending_q && !pending;
+  !system_redirect_pending_q && !pending{ ' && !system_result_pending_head' if has_system_pending else ''};
 assign equal_o=(head_completion_inflight==pending) && (head_special_request==request);
 endmodule
 """
@@ -75,7 +78,7 @@ endmodule
             "prep -top head_gate_miter\nflatten\ntechmap\nopt\n"
             "sat -verify -prove equal_o 1 -timeout 30\n", encoding="utf-8")
         case = dict(sequence_width=width,pipelined=pipelined,negative=negative,
-                    passed=False,native_exit=None,fixture_sha256=sha(fixture.encode()))
+                    passed=False,native_exit=None,fixture_sha256=sha((run / 'miter.sv').read_bytes()))
         if not args.emit_only:
             with (run / "proof.log").open("w", encoding="utf-8") as log:
                 result = subprocess.run([str(args.yosys),"-Q","-T","-s","proof.ys"],
